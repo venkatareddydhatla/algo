@@ -75,6 +75,10 @@ class HybridDecision:
     reasons: list[str]
     news_ids: list[str]
     bar_ts: datetime
+    # Structured explainability for API/UI (kind/summary chip + full detail)
+    reason_kind: str = "hybrid"
+    reason_summary: str = ""
+    reason_detail: str = ""
 
 
 @dataclass(frozen=True)

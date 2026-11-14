@@ -272,3 +272,80 @@ button:disabled {
 .wrap {
   overflow-wrap: anywhere;
 }
+
+.reason-chip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  max-width: 11rem;
+  padding: 0.2rem 0.45rem;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  color: var(--text);
+  background: color-mix(in srgb, var(--bg) 55%, var(--bg-elev));
+  border: 1px solid var(--line);
+  cursor: help;
+  text-align: left;
+}
+
+.reason-chip:hover,
+.reason-chip:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+  outline: none;
+}
+
+.reason-summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reason-popup {
+  display: none;
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 0.35rem);
+  z-index: 20;
+  min-width: 16rem;
+  max-width: min(28rem, 70vw);
+  padding: 0.55rem 0.65rem;
+  border: 1px solid var(--line);
+  background: var(--bg-elev);
+  color: var(--text);
+  box-shadow: 0 8px 24px color-mix(in srgb, #000 45%, transparent);
+  white-space: normal;
+  text-align: left;
+  pointer-events: none;
+}
+
+.reason-chip:hover .reason-popup,
+.reason-chip:focus-visible .reason-popup,
+.reason-chip:focus-within .reason-popup {
+  display: block;
+}
+
+.reason-popup-kind {
+  display: block;
+  margin-bottom: 0.35rem;
+  color: var(--accent);
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.reason-popup-body {
+  display: block;
+  font-family: var(--font);
+  font-size: 0.82rem;
+  line-height: 1.35;
+  color: var(--text);
+}
+
+.reason-chip[data-kind="news"] .reason-popup-kind,
+.reason-chip[data-kind="veto"] .reason-popup-kind {
+  color: var(--warn);
+}
+
+.reason-chip[data-kind="technical"] .reason-popup-kind {
+  color: var(--ce);
+}

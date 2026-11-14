@@ -58,17 +58,23 @@ async def list_watchlist(
             }
         )
 
+    max_active = trading.get("max_active_symbols", 0)
+    unlimited = max_active is None or int(max_active or 0) <= 0
     return {
         "items": items,
         "total": total,
         "offset": offset,
         "limit": limit,
         "universe": trading.get("universe") or trading.get("symbols"),
-        "max_active_symbols": trading.get("max_active_symbols", 20),
+        "max_active_symbols": max_active,
         "active_scan_count": len(active),
+        "scan_batch_size": trading.get("scan_batch_size_resolved")
+        or trading.get("scan_batch_size", 8),
         "source": "config+universe",
         "note": (
-            "Portal watches the full list. Worker/TA scans only max_active_symbols "
-            "(default 20) in batches to limit CPU — raise carefully."
+            "Worker scores the full NSE F&O watchlist when max_active_symbols is 0/null "
+            f"(active_scan={len(active)}{' unlimited' if unlimited else ''}). "
+            "Batched via scan_batch_size; expect ~2-5 min per full dry-run pass on one "
+            "Windows machine (synthetic MD), longer under live broker rate limits."
         ),
     }

@@ -69,7 +69,7 @@ def watchlist_symbols(config: dict[str, Any] | None = None) -> list[str]:
 
 
 def scan_symbols(config: dict[str, Any] | None = None) -> list[str]:
-    """Symbols the worker should actively scan (capped subset of watchlist)."""
+    """Symbols the worker should actively scan (full watchlist when uncapped)."""
     cfg = config or load_config()
     trading = cfg.get("trading", {})
     active = trading.get("symbols_active")
@@ -87,7 +87,7 @@ def _default_config() -> dict[str, Any]:
             "timeframe": "15m",
             "universe": "nse_fno",
             "symbols_demo": list(DEMO_SYMBOLS),
-            "max_active_symbols": 20,
+            "max_active_symbols": 0,  # 0/null = full universe
             "scan_batch_size": 8,
             "symbols": list(DEMO_SYMBOLS),
         },

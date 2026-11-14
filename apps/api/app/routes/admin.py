@@ -36,7 +36,10 @@ async def get_config() -> dict:
         "v1_note": "Live order placement remains blocked regardless of mode switch",
         "universe_note": (
             f"Watchlist {len(watchlist)} symbols (universe={trading.get('universe')}); "
-            f"active scan {len(active)} (max_active_symbols={trading.get('max_active_symbols', 20)})"
+            f"active scan {len(active)} "
+            f"(max_active_symbols={trading.get('max_active_symbols', 0)}; "
+            f"0/null=unlimited). Batch={trading.get('scan_batch_size_resolved') or trading.get('scan_batch_size', 8)}; "
+            f"expect ~2-5 min/full dry-run pass on one machine."
         ),
     }
 

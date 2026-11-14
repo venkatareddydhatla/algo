@@ -1,13 +1,22 @@
-"""In-memory mock payloads so the UI runs without a full DB."""
+"""In-memory mock payloads so the UI runs without a full DB.
+
+Dry-run path synthesizes non-placeholder hybrid scores for every watchlist
+symbol so the portal can surface actionable F&O names across the full universe.
+"""
 
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime, timezone
 from typing import Any
 
+from options_portal_domain.universe import INDEX_SYMBOLS
+from options_portal_hybrid.explain import attach_reason_fields, build_reason_fields
+
 NOW = datetime.now(tz=timezone.utc).isoformat()
 
-MOCK_SIGNALS: list[dict[str, Any]] = [
+# Hand-tuned showcase rows (also used as overrides when expanding the universe).
+_SEED_SIGNALS: list[dict[str, Any]] = [
     {
         "id": "sig-nifty-1",
         "symbol": "NIFTY",
@@ -24,6 +33,7 @@ MOCK_SIGNALS: list[dict[str, Any]] = [
             "RSI(14) 58 — rising",
             "Supertrend bullish",
             "News: mild positive last 3h",
+            "Headline: Foreign inflows lift benchmark indices into close",
         ],
     },
     {
@@ -37,7 +47,7 @@ MOCK_SIGNALS: list[dict[str, Any]] = [
         "confidence": 0.41,
         "expiry_hint": "weekly",
         "updated_at": NOW,
-        "reasons": ["Hybrid in neutral band"],
+        "reasons": ["Hybrid in neutral band", "RSI(14) 51 — neutral"],
     },
     {
         "id": "sig-rel-1",
@@ -50,7 +60,12 @@ MOCK_SIGNALS: list[dict[str, Any]] = [
         "confidence": 0.68,
         "expiry_hint": "monthly",
         "updated_at": NOW,
-        "reasons": ["EMA9 < EMA21", "Close below VWAP", "Bearish news cluster"],
+        "reasons": [
+            "EMA9 < EMA21",
+            "Close below VWAP",
+            "Bearish news cluster",
+            "Headline: Broker cuts target on Reliance amid margin pressure",
+        ],
     },
     {
         "id": "sig-tcs-1",
@@ -63,8 +78,12 @@ MOCK_SIGNALS: list[dict[str, Any]] = [
         "confidence": 0.36,
         "expiry_hint": "monthly",
         "updated_at": NOW,
-        "reasons": ["News/TA conflict — hold"],
+        "reasons": ["News/TA conflict — hold", "RSI(14) 48 — neutral"],
     },
+]
+
+MOCK_SIGNALS: list[dict[str, Any]] = [
+    attach_reason_fields(row) for row in _SEED_SIGNALS
 ]
 
 MOCK_NEWS: list[dict[str, Any]] = [
@@ -135,6 +154,8 @@ MOCK_CONFIG: dict[str, Any] = {
         "halt": False,
         "symbols": ["NIFTY", "BANKNIFTY", "RELIANCE", "TCS"],
         "timeframe": "15m",
+        "max_active_symbols": 0,
+        "scan_batch_size": 8,
         "note": "Live mode switch is UI-present but placement remains gated in v1",
     },
     "hybrid": {
@@ -144,3 +165,124 @@ MOCK_CONFIG: dict[str, Any] = {
         "news_veto_abs": 0.70,
     },
 }
+
+
+def _stable_unit(symbol: str, salt: str = "") -> float:
+    """Deterministic [0, 1) float from symbol (stable across runs)."""
+    digest = hashlib.sha256(f"{symbol}|{salt}".encode("ascii")).hexdigest()
+    return int(digest[:8], 16) / 0xFFFFFFFF
+
+
+def synthetic_signal_for_symbol(
+    symbol: str,
+    *,
+    timeframe: str = "15m",
+    updated_at: str | None = None,
+    enter_long: float = 0.45,
+    enter_short: float = -0.45,
+) -> dict[str, Any]:
+    """Build a non-placeholder dry-run hybrid score for one underlying."""
+    sym = symbol.upper()
+    # Map hash into [-0.85, 0.85] tech / news so a share of names clear entry bands.
+    tech_raw = (_stable_unit(sym, "tech") - 0.5) * 1.7
+    news_raw = (_stable_unit(sym, "news") - 0.5) * 1.5
+    tech_score = max(-1.0, min(1.0, round(tech_raw, 4)))
+    news_score = max(-1.0, min(1.0, round(news_raw, 4)))
+    hybrid = max(
+        -1.0,
+        min(1.0, round(0.65 * tech_score + 0.35 * news_score, 4)),
+    )
+    confidence = round(
+        min(1.0, 0.35 + abs(hybrid) * 0.45 + _stable_unit(sym, "conf") * 0.2),
+        4,
+    )
+
+    reasons: list[str] = []
+    if tech_score >= 0.15:
+        reasons.append("EMA9 > EMA21 on 15m")
+        reasons.append(f"RSI(14) {50 + int(tech_score * 20)} — rising")
+        if tech_score >= 0.35:
+            reasons.append("Supertrend bullish")
+    elif tech_score <= -0.15:
+        reasons.append("EMA9 < EMA21")
+        reasons.append(f"RSI(14) {50 + int(tech_score * 20)} — falling")
+        if tech_score <= -0.35:
+            reasons.append("Close below VWAP")
+    else:
+        reasons.append(f"RSI(14) {50 + int(tech_score * 10)} — neutral")
+
+    if abs(news_score) >= 0.35:
+        tone = "bullish" if news_score > 0 else "bearish"
+        reasons.append(f"News: {tone} cluster last 3h")
+        reasons.append(
+            f"Headline: Dry-run {tone} flow for {sym} "
+            f"(score {news_score:+.2f})"
+        )
+    elif abs(news_score) >= 0.15:
+        reasons.append(f"News: mild {'positive' if news_score > 0 else 'negative'} last 3h")
+
+    if hybrid >= enter_long:
+        action = "BUY_CE_BIAS"
+        reasons.append(f"Hybrid {hybrid:.2f} >= enter_long {enter_long}")
+    elif hybrid <= enter_short:
+        action = "BUY_PE_BIAS"
+        reasons.append(f"Hybrid {hybrid:.2f} <= enter_short {enter_short}")
+    else:
+        action = "HOLD"
+        reasons.append(f"Hybrid {hybrid:.2f} in neutral band")
+
+    explain = build_reason_fields(
+        action=action,
+        tech_score=tech_score,
+        news_score=news_score,
+        hybrid_score=hybrid,
+        reasons=reasons,
+    )
+    expiry = "weekly" if sym in INDEX_SYMBOLS else "monthly"
+    return {
+        "id": f"dry-{sym.lower()}",
+        "symbol": sym,
+        "timeframe": timeframe,
+        "action": action,
+        "hybrid_score": hybrid,
+        "tech_score": tech_score,
+        "news_score": news_score,
+        "confidence": confidence,
+        "expiry_hint": expiry,
+        "updated_at": updated_at or NOW,
+        "reasons": reasons,
+        "stub": False,
+        "dry_run_synthetic": True,
+        **explain,
+    }
+
+
+def build_universe_signals(
+    symbols: list[str],
+    *,
+    timeframe: str = "15m",
+    seed_rows: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Scores for the full watchlist: seed overrides + synthetic dry-run rows."""
+    seeds = {r["symbol"].upper(): attach_reason_fields(dict(r)) for r in (seed_rows or MOCK_SIGNALS)}
+    now = datetime.now(tz=timezone.utc).isoformat()
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for sym in symbols:
+        key = sym.upper()
+        if key in seen:
+            continue
+        seen.add(key)
+        if key in seeds:
+            row = dict(seeds[key])
+            row["updated_at"] = now
+            rows.append(attach_reason_fields(row))
+        else:
+            rows.append(
+                synthetic_signal_for_symbol(key, timeframe=timeframe, updated_at=now)
+            )
+    # Include any seed symbols not in the watchlist (demo leftovers)
+    for key, row in seeds.items():
+        if key not in seen:
+            rows.append(attach_reason_fields(dict(row)))
+    return rows

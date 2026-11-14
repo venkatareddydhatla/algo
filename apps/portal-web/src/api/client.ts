@@ -20,6 +20,9 @@ export type SignalRow = {
   expiry_hint?: string;
   updated_at: string;
   reasons?: string[];
+  reason_kind?: string;
+  reason_summary?: string;
+  reason_detail?: string;
   stub?: boolean;
 };
 
@@ -103,6 +106,11 @@ export const MOCK = {
         confidence: 0.74,
         expiry_hint: "weekly",
         updated_at: new Date().toISOString(),
+        reason_kind: "hybrid",
+        reason_summary: "EMA+RSI+news",
+        reason_detail:
+          "EMA9 > EMA21 on 15m; RSI(14) 58 — rising; Supertrend bullish; News: mild positive last 3h",
+        reasons: ["EMA9 > EMA21 on 15m", "RSI(14) 58 — rising", "Supertrend bullish"],
       },
       {
         id: "local-bn",
@@ -115,6 +123,10 @@ export const MOCK = {
         confidence: 0.4,
         expiry_hint: "weekly",
         updated_at: new Date().toISOString(),
+        reason_kind: "neutral",
+        reason_summary: "neutral",
+        reason_detail: "Hybrid in neutral band",
+        reasons: ["Hybrid in neutral band"],
       },
       {
         id: "local-rel",
@@ -127,6 +139,10 @@ export const MOCK = {
         confidence: 0.68,
         expiry_hint: "monthly",
         updated_at: new Date().toISOString(),
+        reason_kind: "hybrid",
+        reason_summary: "EMA+VWAP+news",
+        reason_detail: "EMA9 < EMA21; Close below VWAP; Bearish news cluster",
+        reasons: ["EMA9 < EMA21", "Close below VWAP", "Bearish news cluster"],
       },
       {
         id: "local-tcs",
@@ -139,6 +155,10 @@ export const MOCK = {
         confidence: 0.36,
         expiry_hint: "monthly",
         updated_at: new Date().toISOString(),
+        reason_kind: "veto",
+        reason_summary: "news veto",
+        reason_detail: "News/TA conflict — hold",
+        reasons: ["News/TA conflict — hold"],
       },
     ],
     total: 4,

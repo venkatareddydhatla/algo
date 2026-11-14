@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import signal
+import time
 
 from options_portal_domain.config import load_config, scan_symbols, watchlist_symbols
 from options_portal_domain.universe import scan_batch_size
@@ -47,21 +48,36 @@ async def loop() -> None:
     active = scan_symbols(cfg)
     trading = cfg.get("trading", {})
     interval = int(os.environ.get("WORKER_INTERVAL_SEC", "60"))
+    batch = trading.get("scan_batch_size_resolved") or scan_batch_size(trading)
+    max_active = trading.get("max_active_symbols", 0)
     logger.info(
-        "Worker starting watchlist=%d active_scan=%d batch=%s interval=%ss mode=%s "
-        "(full universe scanning is heavier — raise max_active_symbols carefully)",
+        "Worker starting watchlist=%d active_scan=%d max_active_symbols=%s "
+        "batch=%s interval=%ss mode=%s "
+        "(0/null max_active_symbols = full universe; expect ~2-5 min/pass dry-run)",
         len(watchlist),
         len(active),
-        trading.get("scan_batch_size_resolved") or scan_batch_size(trading),
+        max_active,
+        batch,
         interval,
         cfg.get("trading", {}).get("mode", "dry_run"),
     )
-    logger.info("Active scan symbols: %s", ",".join(active[:40]) + ("..." if len(active) > 40 else ""))
+    logger.info(
+        "Active scan symbols: %s",
+        ",".join(active[:40]) + ("..." if len(active) > 40 else ""),
+    )
     while not _stop.is_set():
         # Re-read caps each cycle so config edits apply without restart (when CONFIG_PATH shared)
         cfg = load_config()
         active = scan_symbols(cfg)
+        cycle_started = time.monotonic()
         await _run_batch(active, cfg)
+        elapsed = time.monotonic() - cycle_started
+        logger.info(
+            "Full scan cycle done symbols=%d elapsed=%.1fs (batch=%s)",
+            len(active),
+            elapsed,
+            scan_batch_size(cfg.get("trading", {})),
+        )
         try:
             await asyncio.wait_for(_stop.wait(), timeout=interval)
         except asyncio.TimeoutError:

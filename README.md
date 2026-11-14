@@ -88,7 +88,8 @@ cd apps/portal-web && npm install && npm run dev
 Default config uses **`trading.universe: nse_fno`**, which loads the checked-in snapshot at [`config/universe/nse_fno_underlyings.csv`](config/universe/nse_fno_underlyings.csv) (NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY, … + equity F&O underlyings).
 
 - Portal / API list the **full** watchlist (paginated: `GET /api/v1/watchlist`, `GET /api/v1/signals`).
-- Worker/TA scans only **`max_active_symbols`** (default **20**) in batches of **`scan_batch_size`** (default **8**) so a ~200-name universe does not explode CPU. Raise those knobs carefully.
+- Worker scores the **full** universe by default (`max_active_symbols: 0` or `null` = unlimited) in batches of **`scan_batch_size`** (default **8**). Expect about **2-5 minutes** per full dry-run pass on one Windows machine with synthetic market data; longer under live broker rate limits. Set a positive `max_active_symbols` only if you need a temporary first-N cap.
+- Signals sort **actionable first**, then by `|hybrid|` descending. Each row includes `reason_kind` / `reason_summary` / `reason_detail` for the Reason column + hover popup.
 - Quick tests: set `use_symbols_demo: true` (or `symbols: demo`) to use `symbols_demo` (NIFTY, BANKNIFTY, RELIANCE, TCS).
 
 Refresh the snapshot (NSE may block CI / datacenter egress):
