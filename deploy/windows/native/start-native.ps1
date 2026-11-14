@@ -109,11 +109,11 @@ function Start-LoggedProcess {
         -WindowStyle Hidden
 
     Set-Content -LiteralPath $PidPath -Value $proc.Id -Encoding ASCII
-    Write-Host "Started $Label PID $($proc.Id) (logs: $StdoutPath / $StderrPath)"
+    Write-Host ('Started {0} PID {1} (logs: {2} / {3})' -f $Label, $proc.Id, $StdoutPath, $StderrPath)
     return $proc.Id
 }
 
-Write-Host "Starting native Options Portal (no Docker)..."
+Write-Host 'Starting native Options Portal (no Docker)...'
 Write-Host "  PERSISTENCE_PROFILE=$($env:PERSISTENCE_PROFILE)"
 Write-Host "  TRADING_MODE=$($env:TRADING_MODE)"
 
@@ -145,8 +145,8 @@ if ($ForegroundApi) {
             -PidPath $workerPidFile `
             -Label 'worker' | Out-Null
     }
-    Write-Host "Running API in foreground (Ctrl+C to stop API only; use stop-native.ps1 for web/worker)..."
-    Write-Host "  UI:  http://127.0.0.1:5173"
+    Write-Host 'Running API in foreground (Ctrl+C to stop API only; use stop-native.ps1 for web/worker)...'
+    Write-Host '  UI:  http://127.0.0.1:5173'
     Write-Host "  API: http://127.0.0.1:$port/docs"
     Set-Location (Join-Path $repoRoot 'apps\api')
     & $uvicorn @apiArgs
@@ -187,10 +187,10 @@ if ($WithWorker) {
 
 Start-Sleep -Seconds 2
 
-Write-Host ""
-Write-Host "Native stack started (dry_run)."
-Write-Host "  UI:     http://127.0.0.1:5173"
+Write-Host ''
+Write-Host 'Native stack started (dry_run).'
+Write-Host '  UI:     http://127.0.0.1:5173'
 Write-Host "  API:    http://127.0.0.1:$port/docs"
 Write-Host "  Health: http://127.0.0.1:$port/health/ready"
-Write-Host "Stop with: .\deploy\windows\native\stop-native.ps1"
+Write-Host 'Stop with: .\deploy\windows\native\stop-native.ps1'
 Write-Host "Logs: $logsDir"

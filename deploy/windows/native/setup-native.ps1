@@ -73,7 +73,7 @@ if (-not $SkipPip) {
 
     # Pre-install PyYAML from binary wheels only so editable installs do not compile
     # (fails on Windows without MSVC, especially on Python 3.13+ / 3.15 with no wheels).
-    Write-Host "Pre-installing PyYAML (binary wheel only) ..."
+    Write-Host 'Pre-installing PyYAML (binary wheel only) ...'
     & $pip -m pip install --only-binary=:all: "PyYAML>=6.0,<7"
     if ($LASTEXITCODE -ne 0) {
         throw @"
@@ -92,7 +92,7 @@ Advanced: install Build Tools and re-run with -AllowUnsupportedPython (not neede
     }
     Write-Host "PyYAML binary wheel installed."
 
-    Write-Host "Installing editable packages (this may take a few minutes) ..."
+    Write-Host 'Installing editable packages (this may take a few minutes) ...'
     $packages = @(
         '.\packages\domain',
         '.\packages\broker-upstox',
@@ -133,10 +133,10 @@ if (-not $SkipNpm) {
     Write-Host "npm install complete."
 }
 
-Write-Host ""
-Write-Host "Setup complete (native / Docker-free)."
-Write-Host "Next:"
-Write-Host "  .\deploy\windows\native\start-native.ps1"
-Write-Host "  # optional worker: .\deploy\windows\native\start-native.ps1 -WithWorker"
-Write-Host "URLs after start: UI http://127.0.0.1:5173  API http://127.0.0.1:8000/docs"
-Write-Host "Trading mode: dry_run (default)."
+Write-Host ''
+Write-Host 'Setup complete (native / Docker-free).'
+Write-Host 'Next:'
+Write-Host '  .\deploy\windows\native\start-native.ps1'
+Write-Host '  # optional worker: .\deploy\windows\native\start-native.ps1 -WithWorker'
+Write-Host 'URLs after start: UI http://127.0.0.1:5173  API http://127.0.0.1:8000/docs'
+Write-Host 'Trading mode: dry_run (default).'

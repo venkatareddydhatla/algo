@@ -124,11 +124,11 @@ To force this interpreter anyway (requires MSVC Build Tools): pass -AllowUnsuppo
     } elseif ($ver.Major -eq 3 -and $ver.Minor -ge 13) {
         Write-Warning "Python $ver may lack prebuilt wheels for some packages (e.g. PyYAML). Prefer Python 3.12.x to avoid needing Microsoft Visual C++ Build Tools. Continuing..."
     } elseif ($ver.Major -eq 3 -and $ver.Minor -eq 12) {
-        Write-Host "Python $ver (recommended) at $pythonExe"
+        Write-Host ('Python {0} (recommended) at {1}' -f $ver, $pythonExe)
         return $pythonExe
     }
 
-    Write-Host "Python $ver at $pythonExe"
+    Write-Host ('Python {0} at {1}' -f $ver, $pythonExe)
     return $pythonExe
 }
 
@@ -152,13 +152,13 @@ function Ensure-NativeDotEnv {
     $examplePath = Join-Path $RepoRoot '.env.example'
 
     if (Test-Path -LiteralPath $envPath) {
-        Write-Host "Using existing .env at $envPath (secrets not overwritten)."
+        Write-Host ('Using existing .env at {0} (secrets not overwritten).' -f $envPath)
         return $envPath
     }
 
     if (Test-Path -LiteralPath $nativeExample) {
         Copy-Item -LiteralPath $nativeExample -Destination $envPath
-        Write-Host "Created .env from .env.native.example (SQLite / local profile)."
+        Write-Host 'Created .env from .env.native.example (SQLite / local profile).'
     } elseif (Test-Path -LiteralPath $examplePath) {
         Copy-Item -LiteralPath $examplePath -Destination $envPath
         # Patch in local defaults so first boot does not need Postgres/Redis
@@ -243,7 +243,7 @@ function Stop-PidFileProcess {
     }
     $proc = Get-Process -Id $id -ErrorAction SilentlyContinue
     if ($proc) {
-        Write-Host "Stopping $Label PID $id ($($proc.ProcessName))..."
+        Write-Host ('Stopping {0} PID {1} ({2})...' -f $Label, $id, $proc.ProcessName)
         Stop-Process -Id $id -Force -ErrorAction SilentlyContinue
         Start-Sleep -Milliseconds 400
     } else {

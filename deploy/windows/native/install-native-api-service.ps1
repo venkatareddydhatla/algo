@@ -86,7 +86,7 @@ if (-not $nssm) {
 $svc = $script:NativeServiceName
 $existing = Get-Service -Name $svc -ErrorAction SilentlyContinue
 if ($existing) {
-    Write-Host "Service '$svc' already exists (status $($existing.Status)). Remove with uninstall-native-api-service.ps1 first if reinstalling."
+    Write-Host ('Service ''{0}'' already exists (status {1}). Remove with uninstall-native-api-service.ps1 first if reinstalling.' -f $svc, $existing.Status)
     return
 }
 
@@ -119,5 +119,5 @@ if ($AutoStart) {
 }
 
 Write-Host "Installed. Start with: Start-Service $svc"
-Write-Host "Or prefer full stack (API+UI): .\deploy\windows\native\start-native.ps1"
-Write-Host "UI still needs Vite via start-native.ps1 (or npm run dev) — this service is API-only."
+Write-Host 'Or prefer full stack (API+UI): .\deploy\windows\native\start-native.ps1'
+Write-Host 'UI still needs Vite via start-native.ps1 (or npm run dev) — this service is API-only.'
