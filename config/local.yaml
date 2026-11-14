@@ -1,0 +1,146 @@
+# Sample application config (non-secret).
+# Secrets belong in environment / Docker secrets / Vault — see env.example.
+# Copy to config/local.yaml and adjust; do not commit real tokens.
+
+app:
+  name: options-portal
+  timezone: Asia/Kolkata
+  bind_host: 127.0.0.1
+  api_port: 8000
+  log_level: INFO
+
+trading:
+  mode: dry_run          # dry_run | demo | live
+  halt: false            # kill switch
+  timeframe: 15m
+  symbols:
+    - NIFTY
+    - BANKNIFTY
+    - RELIANCE
+    - TCS
+  session:
+    # NSE equity/F&O regular session (IST); calendar holidays applied in code
+    open: "09:15"
+    close: "15:30"
+    no_new_entries_after: "15:20"
+  expiry:
+    index_default: weekly      # NIFTY, BANKNIFTY
+    stock_default: monthly     # RELIANCE, TCS, …
+    avoid_expiry_after_ist: "15:00"  # same-day expiry cut-off unless overridden
+  risk:
+    max_lots_per_symbol: 2
+    max_open_symbols: 4
+    max_day_loss_inr: 25000
+    max_premium_spread_pct: 2.0
+    min_option_oi: 50000
+    require_news_context: false  # if true, skip orders when news pipeline degraded
+
+hybrid:
+  weights:
+    tech: 0.65
+    news: 0.35
+  enter_long: 0.45
+  enter_short: -0.45
+  news_veto_abs: 0.70      # conflict with TA → HOLD
+  news_lookback_minutes: 180
+
+ta:
+  plugins:
+    - name: rsi
+      period: 14
+    - name: ema_cross
+      fast: 9
+      slow: 21
+    - name: supertrend
+      atr_period: 10
+      multiplier: 3.0
+    - name: vwap
+      session_anchored: true
+
+options_recommender:
+  style: single_leg        # v1; future: vertical
+  index_strike_step: 50    # NIFTY; BANKNIFTY often 100 — override per symbol below
+  stock_strike_step: auto  # from chain
+  atm_offset: 0
+  prefer_delta_band: [0.35, 0.55]
+  per_symbol:
+    NIFTY:
+      strike_step: 50
+      lot_size: 25          # verify against current NSE circular
+    BANKNIFTY:
+      strike_step: 100
+      lot_size: 15
+    RELIANCE:
+      lot_size: 250
+    TCS:
+      lot_size: 175
+
+broker:
+  driver: upstox
+  # credentials via env: UPSTOX_API_KEY, UPSTOX_API_SECRET, UPSTOX_REDIRECT_URI
+  ratelimit_rpm: 30
+  candle_history_days: 30
+  retry:
+    max_attempts: 5
+    base_delay_ms: 400
+    max_delay_ms: 10000
+    jitter: true
+
+news:
+  poll_interval_sec: 120
+  sources:
+    - id: moneycontrol
+      type: rss
+      url: "https://www.moneycontrol.com/rss/latestnews.xml"
+    - id: economic_times
+      type: rss
+      url: "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms"
+    - id: livemint
+      type: rss
+      url: "https://www.livemint.com/rss/markets"
+    - id: nse_notices
+      type: rss
+      url: "REPLACE_WITH_OFFICIAL_NSE_NOTICES_FEED"
+    - id: bse_notices
+      type: rss
+      url: "REPLACE_WITH_OFFICIAL_BSE_NOTICES_FEED"
+    - id: sebi
+      type: rss
+      url: "REPLACE_WITH_OFFICIAL_SEBI_FEED"
+  # Confirm each URL/ToS before production use.
+
+sentiment:
+  vader:
+    enabled: true
+  finbert:
+    enabled: false
+    base_url: "http://127.0.0.1:8081"
+    timeout_ms: 1500
+    fallback_to_vader: true
+
+notify:
+  channels:
+    - type: telegram
+      enabled: false
+      # TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID from env
+    - type: webhook
+      enabled: false
+      url_env: ALERT_WEBHOOK_URL
+
+persistence:
+  postgres_url_env: DATABASE_URL
+  redis_url_env: REDIS_URL
+
+ui:
+  guest_hide_pnl: true
+  default_symbols: [NIFTY, BANKNIFTY, RELIANCE, TCS]
+
+backtest:
+  slippage_bps: 5
+  fee_model: approximate_inr_fno_v1
+  holiday_calendar: nse_fo
+
+health:
+  candle_max_age_minutes: 20
+  worker_heartbeat_max_sec: 90
+  check_interval_sec: 30

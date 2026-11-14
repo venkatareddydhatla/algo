@@ -1,0 +1,13 @@
+[project]
+name = "options-portal-persistence"
+version = "0.1.0"
+description = "Postgres/Redis persistence helpers + local SQLite dry-run profile"
+requires-python = ">=3.12"
+dependencies = ["asyncpg>=0.29", "redis>=5.0"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

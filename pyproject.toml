@@ -1,0 +1,46 @@
+[project]
+name = "options-portal"
+version = "0.1.0"
+description = "NSE/BSE F&O options trading signal portal monorepo"
+requires-python = ">=3.12"
+readme = "README.md"
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "pytest-asyncio>=0.24",
+]
+
+[tool.pytest.ini_options]
+pythonpath = [
+  "packages/domain/src",
+  "packages/broker-upstox/src",
+  "packages/ta-core/src",
+  "packages/news-rss/src",
+  "packages/sentiment/src",
+  "packages/hybrid-engine/src",
+  "packages/risk/src",
+  "packages/notify/src",
+  "packages/persistence/src",
+  "apps/api",
+  "apps/worker",
+]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.uv.workspace]
+members = [
+  "packages/domain",
+  "packages/broker-upstox",
+  "packages/ta-core",
+  "packages/news-rss",
+  "packages/sentiment",
+  "packages/hybrid-engine",
+  "packages/risk",
+  "packages/notify",
+  "packages/persistence",
+  "apps/api",
+  "apps/worker",
+]

@@ -1,0 +1,170 @@
+# UI wireframes (markdown mockups)
+
+Local web portal — desktop-first, usable on tablet. Currency in ₹. Times in IST. Mode badge always visible: `DRY-RUN` | `DEMO` | `LIVE`.
+
+India examples throughout: **NIFTY**, **BANKNIFTY**, **RELIANCE**, **TCS**; signals on **15m** candles; index **weekly** vs stock **monthly** expiry callouts.
+
+---
+
+## 1. Dashboard
+
+```text
+┌──────────────────────────────────────────────────────────────────────────┐
+│  Options Portal          IST 15:29   [DRY-RUN]   Health ● OK   user▾    │
+├──────────────────────────────────────────────────────────────────────────┤
+│  Watchlist signals · 15m                                                │
+│                                                                          │
+│  Symbol      Action        Hybrid   Tech  News   Expiry hint    Updated │
+│  NIFTY       BUY_CE_BIAS    +0.62   +0.71 +0.38  21-Nov weekly  15:15   │
+│  BANKNIFTY   HOLD           +0.12   +0.20 -0.05  21-Nov weekly  15:15   │
+│  RELIANCE    BUY_PE_BIAS    -0.55   -0.48 -0.67  28-Nov monthly 15:15   │
+│  TCS         HOLD           -0.08   +0.10 -0.35  28-Nov monthly 15:15   │
+│                                                                          │
+│  [Filter: F&O only ▾]  [Timeframe: 15m ▾]  [Refresh]                    │
+│                                                                          │
+│  Day P&L (paper):  ₹ +4,280     Open lots: 3     Alerts: 1 unread       │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+Notes: no card spam — one dense table + header status. Clicking a row → signal drill-down.
+
+---
+
+## 2. Signal drill-down (e.g. NIFTY)
+
+```text
+┌──────────────────────────────────────────────────────────────────────────┐
+│  ← Dashboard   NIFTY · 15m · bar 15:15 IST              [DRY-RUN]       │
+├──────────────────────────────────────────────────────────────────────────┤
+│  Action: BUY_CE_BIAS     Hybrid +0.62 (conf 0.74)                        │
+│  Tech +0.71 · News +0.38 · No veto                                       │
+│                                                                          │
+│  Reasons                                                                 │
+│  • EMA9 > EMA21 on 15m                                                   │
+│  • RSI(14) 58 — rising                                                   │
+│  • Supertrend bullish                                                    │
+│  • News: mild positive (Moneycontrol, ET) last 3h                        │
+│                                                                          │
+│  Recommendation                                                          │
+│  BUY NIFTY 21-Nov 24500 CE × 1 lot (25)  limit ₹142.50                   │
+│  Spot ref 24,486 · ATM±0 · OI OK · spread 0.8%                           │
+│  [Simulate order]   (Live disabled for analyst)                          │
+│                                                                          │
+│  Attached news                                                           │
+│  +0.4  ET        14:52  Foreign inflows lift benchmark…                  │
+│  +0.2  MC        13:10  Nifty holds above VWAP into close…               │
+│                                                                          │
+│  Feature snapshot (JSON expandable): rsi=58.2 ema_fast=24490 …           │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+Optional later: sparkline of last 40×15m bars (not required for v1 wireframe).
+
+---
+
+## 3. News feed
+
+```text
+┌──────────────────────────────────────────────────────────────────────────┐
+│  News · sentiment                                       [DRY-RUN]        │
+├──────────────────────────────────────────────────────────────────────────┤
+│  Sources: [x] Moneycontrol [x] ET [x] LiveMint [x] NSE [x] BSE [x] SEBI │
+│  Symbols: [NIFTY] [BANKNIFTY] [RELIANCE] [TCS] [All]                     │
+│                                                                          │
+│  IST     Sent   Syms              Title                        Source    │
+│  15:01   −0.72  RELIANCE          Broker cuts target on…       LiveMint  │
+│  14:52   +0.41  NIFTY,BANKNIFTY   Foreign inflows lift…        ET        │
+│  14:20    0.05  TCS               Quiet session ahead of…      MC        │
+│  12:05   −0.30  —                 SEBI circular: margin…       SEBI      │
+│                                                                          │
+│  Click row → article detail + linked signals                             │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 4. Trades / P&L
+
+```text
+┌──────────────────────────────────────────────────────────────────────────┐
+│  Trades & P&L · mode [DRY-RUN ▾]                                         │
+├──────────────────────────────────────────────────────────────────────────┤
+│  Open positions                                                          │
+│  NIFTY 21-Nov 24500 CE   +25 qty   avg ₹138.00   uPnL ₹ +1,125          │
+│  RELIANCE 28-Nov 2920 PE +250 qty  avg ₹64.50    uPnL ₹ −2,400          │
+│                                                                          │
+│  Today’s fills                                                           │
+│  15:16  SIM  BUY  NIFTY 24500 CE  25 @ 142.50   signal #a1b2             │
+│  11:02  SIM  BUY  RELIANCE 2920 PE 250 @ 64.50  signal #c3d4             │
+│                                                                          │
+│  Day realized ₹ +3,100   Day unrealized ₹ −1,275   Fees est ₹ 180        │
+│                                                                          │
+│  [Export CSV]                                                            │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+Guest role: hide fee/P&L breakdown if config `ui.guest_hide_pnl: true`.
+
+---
+
+## 5. Admin config (admin only)
+
+```text
+┌──────────────────────────────────────────────────────────────────────────┐
+│  Admin · configuration                                                   │
+├──────────────────────────────────────────────────────────────────────────┤
+│  Trading mode     ( ) dry_run  ( ) demo  (•) live   ⚠ requires confirm   │
+│  Kill switch      [ HALT ORDERS ]                                        │
+│                                                                          │
+│  Symbols          NIFTY, BANKNIFTY, RELIANCE, TCS                        │
+│  Timeframe        15m                                                    │
+│                                                                          │
+│  Hybrid weights   tech 0.65   news 0.35   veto |news|>0.7                │
+│  Expiry           index: weekly   stocks: monthly   cut-off: 15:00 IST   │
+│                                                                          │
+│  Risk             max_lots/symbol 2   max_day_loss ₹25,000               │
+│                   no new entries after 15:20 IST                         │
+│                                                                          │
+│  Sentiment        VADER on   FinBERT [enabled] endpoint http://finbert:8080 │
+│                                                                          │
+│  [Save version]  last change by admin @ 10:12 IST (v14)                  │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+Live mode toggle: modal “Type LIVE to confirm” + audit event.
+
+---
+
+## 6. Health
+
+```text
+┌──────────────────────────────────────────────────────────────────────────┐
+│  System health                                            refreshed 5s   │
+├──────────────────────────────────────────────────────────────────────────┤
+│  Component          Status     Latency   Detail                          │
+│  API                ● ok       12 ms     /health/ready                   │
+│  Postgres           ● ok       3 ms                                      │
+│  Redis              ● ok       1 ms                                      │
+│  Worker heartbeat   ● ok       —         last tick 15:15:02 IST          │
+│  Upstox auth        ● ok       80 ms     token exp 18:40 IST             │
+│  Upstox candles     ● ok       —         NIFTY 15m age 14m               │
+│  RSS Moneycontrol   ● ok       —         last item 15:01                 │
+│  RSS ET             ● degraded —         2 parse errors / 1h             │
+│  FinBERT sidecar    ● ok       45 ms                                     │
+│                                                                          │
+│  Recent errors (audit)                                                   │
+│  14:44  upstox 429 backoff 4s                                            │
+│  13:12  rss:et timeout — quarantined 10m                                 │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Navigation IA
+
+```text
+Dashboard | Signals | News | Trades | Health | Admin*
+* Admin visible only to admin role
+```
+
+Mobile: collapse table to stacked symbol rows; mode + health remain in sticky header.

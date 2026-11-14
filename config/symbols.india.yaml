@@ -1,0 +1,30 @@
+# India F&O underlyings (examples). Lot sizes change — verify NSE circular.
+timezone: Asia/Kolkata
+
+underlyings:
+  NIFTY:
+    exchange: NSE
+    kind: index
+    expiry_rule: weekly
+    lot_size: 25
+    strike_step: 50
+  BANKNIFTY:
+    exchange: NSE
+    kind: index
+    expiry_rule: weekly
+    lot_size: 15
+    strike_step: 100
+  RELIANCE:
+    exchange: NSE
+    kind: equity
+    expiry_rule: monthly
+    lot_size: 250
+  TCS:
+    exchange: NSE
+    kind: equity
+    expiry_rule: monthly
+    lot_size: 175
+
+session:
+  open: "09:15"
+  close: "15:30"

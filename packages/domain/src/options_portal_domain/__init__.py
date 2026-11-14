@@ -1,0 +1,53 @@
+"""Shared domain types, protocols, and India market helpers."""
+
+from options_portal_domain.types import (
+    Candle,
+    HybridDecision,
+    NewsItem,
+    OptionLeg,
+    OptionsRecommendation,
+    OrderResult,
+    SentimentResult,
+    SignalAction,
+    TechnicalSignal,
+    Timeframe,
+    TradingMode,
+)
+from options_portal_domain.protocols import (
+    BrokerAdapter,
+    HybridScorer,
+    IndicatorPlugin,
+    MarketCalendar,
+    NewsIngestor,
+    Notifier,
+    OptionsRecommender,
+    OrderRouter,
+    RiskGate,
+    SentimentScorer,
+    SignalGenerator,
+)
+
+__all__ = [
+    "BrokerAdapter",
+    "Candle",
+    "HybridDecision",
+    "HybridScorer",
+    "IndicatorPlugin",
+    "MarketCalendar",
+    "NewsIngestor",
+    "NewsItem",
+    "Notifier",
+    "OptionLeg",
+    "OptionsRecommendation",
+    "OptionsRecommender",
+    "OrderResult",
+    "OrderRouter",
+    "RiskGate",
+    "SentimentResult",
+    "SentimentScorer",
+    "SignalAction",
+    "SignalGenerator",
+    "TechnicalSignal",
+    "Timeframe",
+    "TradingMode",
+]
