@@ -83,6 +83,24 @@ cd apps/worker && python -m app.main
 cd apps/portal-web && npm install && npm run dev
 ```
 
+## NSE F&O watchlist universe
+
+Default config uses **`trading.universe: nse_fno`**, which loads the checked-in snapshot at [`config/universe/nse_fno_underlyings.csv`](config/universe/nse_fno_underlyings.csv) (NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY, … + equity F&O underlyings).
+
+- Portal / API list the **full** watchlist (paginated: `GET /api/v1/watchlist`, `GET /api/v1/signals`).
+- Worker/TA scans only **`max_active_symbols`** (default **20**) in batches of **`scan_batch_size`** (default **8**) so a ~200-name universe does not explode CPU. Raise those knobs carefully.
+- Quick tests: set `use_symbols_demo: true` (or `symbols: demo`) to use `symbols_demo` (NIFTY, BANKNIFTY, RELIANCE, TCS).
+
+Refresh the snapshot (NSE may block CI / datacenter egress):
+
+```bash
+python scripts/refresh_nse_fno_universe.py
+# or after a manual download:
+python scripts/refresh_nse_fno_universe.py --from-file path/to/fo_mktlots.csv
+```
+
+Source notes: [`config/universe/SOURCE.md`](config/universe/SOURCE.md). Native Python **3.12** start path is unchanged.
+
 ## Tests
 
 ```bash
@@ -124,10 +142,11 @@ packages/risk       Risk gates + SafeOrderRouter (live blocked)
 packages/notify     Console / webhook / telegram notifiers
 packages/persistence  Postgres/Redis health helpers + local SQLite profile
 db/migrations       SQL schema + seed
-config/             default.yaml, local.yaml, symbols.india.yaml
+config/             default.yaml, local.yaml, symbols.india.yaml, universe/
+scripts/            install_dev, smoke_health, refresh_nse_fno_universe
 deploy/             docker-compose.yml + windows/ (+ native/)
 docs/               Architecture + Windows guides
-tests/unit          TA + hybrid + calendar + router tests
+tests/unit          TA + hybrid + calendar + universe + router tests
 ```
 
 ## Requirements

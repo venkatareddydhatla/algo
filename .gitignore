@@ -23,9 +23,11 @@ apps/portal-web/dist/
 npm-debug.log*
 yarn-error.log*
 
-# Local data & logs (keep data/.gitkeep)
+# Local data & logs (keep data/.gitkeep; allow checked-in universe refresh copies)
 data/*
 !data/.gitkeep
+!data/universe/
+!data/universe/**
 *.sqlite
 *.local.sqlite
 *.log

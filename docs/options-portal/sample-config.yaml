@@ -13,11 +13,15 @@ trading:
   mode: dry_run          # dry_run | demo | live
   halt: false            # kill switch
   timeframe: 15m
-  symbols:
+  universe: nse_fno       # full NSE F&O indices + equities (config/universe/)
+  symbols_demo:          # quick-test set (set use_symbols_demo: true)
     - NIFTY
     - BANKNIFTY
     - RELIANCE
     - TCS
+  use_symbols_demo: false
+  max_active_symbols: 20 # worker/TA scan cap; portal still lists full universe
+  scan_batch_size: 8
   session:
     # NSE equity/F&O regular session (IST); calendar holidays applied in code
     open: "09:15"
@@ -133,7 +137,8 @@ persistence:
 
 ui:
   guest_hide_pnl: true
-  default_symbols: [NIFTY, BANKNIFTY, RELIANCE, TCS]
+  default_symbols: nse_fno
+  page_size: 50
 
 backtest:
   slippage_bps: 5

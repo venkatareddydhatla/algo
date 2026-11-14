@@ -7,7 +7,8 @@ import logging
 import os
 import signal
 
-from options_portal_domain.config import load_config
+from options_portal_domain.config import load_config, scan_symbols, watchlist_symbols
+from options_portal_domain.universe import scan_batch_size
 from app.pipeline import run_symbol_tick
 
 logging.basicConfig(
@@ -23,28 +24,44 @@ def _handle_stop(*_args: object) -> None:
     _stop.set()
 
 
-async def loop() -> None:
-    cfg = load_config()
-    symbols = cfg.get("trading", {}).get("symbols") or [
-        "NIFTY",
-        "BANKNIFTY",
-        "RELIANCE",
-        "TCS",
-    ]
-    interval = int(os.environ.get("WORKER_INTERVAL_SEC", "60"))
-    logger.info(
-        "Worker starting symbols=%s interval=%ss mode=%s",
-        symbols,
-        interval,
-        cfg.get("trading", {}).get("mode", "dry_run"),
-    )
-    while not _stop.is_set():
-        for symbol in symbols:
+async def _run_batch(symbols: list[str], cfg: dict) -> None:
+    """Scan a batch of symbols with bounded concurrency."""
+    trading = cfg.get("trading", {})
+    batch = scan_batch_size(trading)
+    sem = asyncio.Semaphore(batch)
+
+    async def _one(symbol: str) -> None:
+        async with sem:
             try:
                 result = await run_symbol_tick(symbol, cfg)
                 logger.info("tick %s -> %s", symbol, result.get("hybrid_action"))
             except Exception:  # noqa: BLE001
                 logger.exception("tick failed for %s", symbol)
+
+    await asyncio.gather(*[_one(s) for s in symbols])
+
+
+async def loop() -> None:
+    cfg = load_config()
+    watchlist = watchlist_symbols(cfg)
+    active = scan_symbols(cfg)
+    trading = cfg.get("trading", {})
+    interval = int(os.environ.get("WORKER_INTERVAL_SEC", "60"))
+    logger.info(
+        "Worker starting watchlist=%d active_scan=%d batch=%s interval=%ss mode=%s "
+        "(full universe scanning is heavier — raise max_active_symbols carefully)",
+        len(watchlist),
+        len(active),
+        trading.get("scan_batch_size_resolved") or scan_batch_size(trading),
+        interval,
+        cfg.get("trading", {}).get("mode", "dry_run"),
+    )
+    logger.info("Active scan symbols: %s", ",".join(active[:40]) + ("..." if len(active) > 40 else ""))
+    while not _stop.is_set():
+        # Re-read caps each cycle so config edits apply without restart (when CONFIG_PATH shared)
+        cfg = load_config()
+        active = scan_symbols(cfg)
+        await _run_batch(active, cfg)
         try:
             await asyncio.wait_for(_stop.wait(), timeout=interval)
         except asyncio.TimeoutError:

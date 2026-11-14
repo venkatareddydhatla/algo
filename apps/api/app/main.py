@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routes import admin, health, news, signals, trades
+from app.routes import admin, health, news, signals, trades, watchlist
 from options_portal_domain.config import load_config, trading_mode
 
 
@@ -47,6 +47,7 @@ app.add_middleware(
 
 app.include_router(health.router)
 app.include_router(signals.router)
+app.include_router(watchlist.router)
 app.include_router(news.router)
 app.include_router(trades.router)
 app.include_router(admin.router)

@@ -1,4 +1,6 @@
-# India F&O underlyings (examples). Lot sizes change — verify NSE circular.
+# India F&O underlyings metadata (examples + index defaults).
+# Full equity+index universe: config/universe/nse_fno_underlyings.csv
+# Refresh: python scripts/refresh_nse_fno_universe.py
 timezone: Asia/Kolkata
 
 underlyings:
@@ -6,19 +8,31 @@ underlyings:
     exchange: NSE
     kind: index
     expiry_rule: weekly
-    lot_size: 25
+    lot_size: 65
     strike_step: 50
   BANKNIFTY:
     exchange: NSE
     kind: index
     expiry_rule: weekly
-    lot_size: 15
+    lot_size: 30
     strike_step: 100
+  FINNIFTY:
+    exchange: NSE
+    kind: index
+    expiry_rule: weekly
+    lot_size: 60
+    strike_step: 50
+  MIDCPNIFTY:
+    exchange: NSE
+    kind: index
+    expiry_rule: weekly
+    lot_size: 120
+    strike_step: 25
   RELIANCE:
     exchange: NSE
     kind: equity
     expiry_rule: monthly
-    lot_size: 250
+    lot_size: 500
   TCS:
     exchange: NSE
     kind: equity

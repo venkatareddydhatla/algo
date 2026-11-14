@@ -135,7 +135,8 @@ options-portal/
 │   └── seeds/               # Roles, sample underlyings
 ├── config/
 │   ├── default.yaml
-│   └── symbols.india.yaml   # NIFTY, BANKNIFTY, RELIANCE, TCS, …
+│   ├── symbols.india.yaml   # index/stock metadata examples
+│   └── universe/            # NSE F&O underlyings CSV snapshot (+ SOURCE.md)
 ├── deploy/
 │   ├── docker-compose.yml
 │   └── prometheus/          # Optional local metrics
@@ -245,7 +246,7 @@ Detailed ASCII/markdown wireframes: [ui-wireframes.md](./options-portal/ui-wiref
 
 | Page | Purpose |
 |------|---------|
-| Dashboard | Live signals for NIFTY, BANKNIFTY, RELIANCE, TCS; mode badge; health strip |
+| Dashboard | Paginated NSE F&O watchlist signals; mode badge; health strip |
 | Signal drill-down | 15m chart context, TA reasons, news attachments, hybrid score breakdown |
 | News | Feed with sentiment tags + symbol links |
 | Trades / P&L | Paper + live fills, open positions, day P&L (₹) |

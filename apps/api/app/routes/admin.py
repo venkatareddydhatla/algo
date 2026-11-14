@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.mock_data import MOCK_CONFIG
-from options_portal_domain.config import load_config
+from options_portal_domain.config import load_config, scan_symbols, watchlist_symbols
 
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
 
@@ -19,11 +19,25 @@ class ModeUpdate(BaseModel):
 @router.get("/config")
 async def get_config() -> dict:
     cfg = load_config()
+    trading = dict(cfg.get("trading", MOCK_CONFIG["trading"]))
+    watchlist = watchlist_symbols(cfg)
+    active = scan_symbols(cfg)
+    trading["symbols_watchlist_count"] = len(watchlist)
+    trading["symbols_active_count"] = len(active)
+    trading["symbols_active"] = active
+    # Avoid dumping 200+ names into a single line in admin by default;
+    # clients can call /api/v1/watchlist for the full paginated list.
+    trading["symbols_preview"] = watchlist[:40]
+    trading["symbols"] = watchlist  # resolved list for compatibility
     return {
-        "trading": cfg.get("trading", MOCK_CONFIG["trading"]),
+        "trading": trading,
         "hybrid": cfg.get("hybrid", MOCK_CONFIG["hybrid"]),
         "source": "config+defaults",
         "v1_note": "Live order placement remains blocked regardless of mode switch",
+        "universe_note": (
+            f"Watchlist {len(watchlist)} symbols (universe={trading.get('universe')}); "
+            f"active scan {len(active)} (max_active_symbols={trading.get('max_active_symbols', 20)})"
+        ),
     }
 
 
@@ -50,4 +64,8 @@ async def set_trading_mode(body: ModeUpdate) -> dict:
 @router.post("/halt")
 async def set_halt(halt: bool = True) -> dict:
     # TODO: set TRADING_HALT via config store
-    return {"halt": halt, "persisted": False, "message": "Kill switch stub — set TRADING_HALT env for process-level halt"}
+    return {
+        "halt": halt,
+        "persisted": False,
+        "message": "Kill switch stub — set TRADING_HALT env for process-level halt",
+    }
