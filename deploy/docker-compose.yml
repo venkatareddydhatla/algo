@@ -1,0 +1,105 @@
+# Local single-operator stack. Secrets via .env (chmod 600). Never commit real tokens.
+#
+#   cp .env.example .env && chmod 600 .env
+#   docker compose -f deploy/docker-compose.yml up --build
+#
+# Default TRADING_MODE=dry_run. Live placement is blocked in application code for v1.
+
+name: options-portal
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: portal
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: options_portal
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ../db/migrations:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U portal -d options_portal"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    env_file: [../.env]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://portal:${POSTGRES_PASSWORD}@postgres:5432/options_portal
+      REDIS_URL: redis://redis:6379/0
+      CONFIG_PATH: /config/local.yaml
+      TRADING_MODE: dry_run
+      BIND_HOST: 0.0.0.0
+    volumes:
+      - ../config/local.yaml:/config/local.yaml:ro
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8000/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  worker:
+    build:
+      context: ..
+      dockerfile: apps/worker/Dockerfile
+    env_file: [../.env]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://portal:${POSTGRES_PASSWORD}@postgres:5432/options_portal
+      REDIS_URL: redis://redis:6379/0
+      CONFIG_PATH: /config/local.yaml
+      TRADING_MODE: dry_run
+      WORKER_INTERVAL_SEC: "60"
+    volumes:
+      - ../config/local.yaml:/config/local.yaml:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+
+  portal-web:
+    build:
+      context: ..
+      dockerfile: apps/portal-web/Dockerfile
+      args:
+        VITE_API_BASE: http://127.0.0.1:8000
+    ports:
+      - "127.0.0.1:5173:80"
+    depends_on:
+      - api
+
+  # Optional FinBERT sidecar — enable with: docker compose --profile finbert up
+  # finbert:
+  #   image: ghcr.io/example/finbert-sidecar:latest
+  #   ports:
+  #     - "127.0.0.1:8081:8080"
+  #   profiles: ["finbert"]
+
+volumes:
+  pgdata:

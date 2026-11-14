@@ -1,0 +1,110 @@
+# Outline only — not a runnable production file until the app is scaffolded.
+# Intent: local single-operator stack on localhost with secrets via env file.
+#
+# Usage (future):
+#   cp docs/options-portal/env.example .env   # chmod 600
+#   docker compose -f deploy/docker-compose.yml up --build
+
+name: options-portal
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: portal
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}  # from .env — never hardcode
+      POSTGRES_DB: options_portal
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ../db/migrations:/docker-entrypoint-initdb.d:ro
+    # Prefer no host publish on shared networks; for local-only:
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U portal -d options_portal"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    env_file: [.env]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://portal:${POSTGRES_PASSWORD}@postgres:5432/options_portal
+      REDIS_URL: redis://redis:6379/0
+      CONFIG_PATH: /config/local.yaml
+      TRADING_MODE: dry_run
+    volumes:
+      - ../config/local.yaml:/config/local.yaml:ro
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8000/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  worker:
+    build:
+      context: ..
+      dockerfile: apps/worker/Dockerfile
+    env_file: [.env]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://portal:${POSTGRES_PASSWORD}@postgres:5432/options_portal
+      REDIS_URL: redis://redis:6379/0
+      CONFIG_PATH: /config/local.yaml
+    volumes:
+      - ../config/local.yaml:/config/local.yaml:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+
+  portal-web:
+    build:
+      context: ..
+      dockerfile: apps/portal-web/Dockerfile
+    environment:
+      VITE_API_BASE: http://127.0.0.1:8000
+    ports:
+      - "127.0.0.1:5173:80"
+    depends_on:
+      - api
+
+  # Optional — enable when sentiment.finbert.enabled=true
+  # finbert:
+  #   image: ghcr.io/example/finbert-sidecar:latest
+  #   ports:
+  #     - "127.0.0.1:8081:8080"
+  #   profiles: ["finbert"]
+
+volumes:
+  pgdata:
+
+# Secure local practices:
+# - Keep trading.mode=dry_run until paper results reviewed.
+# - chmod 600 .env; never commit .env.
+# - Bind to 127.0.0.1 only; use SSH tunnel if remote access needed.
+# - Separate Upstox sandbox vs prod credentials.
+# - Back up pgdata volume before flipping to live.

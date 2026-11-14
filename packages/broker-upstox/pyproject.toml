@@ -1,0 +1,13 @@
+[project]
+name = "options-portal-broker"
+version = "0.1.0"
+description = "Upstox broker adapter"
+requires-python = ">=3.12"
+dependencies = ["options-portal-domain", "httpx>=0.27"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

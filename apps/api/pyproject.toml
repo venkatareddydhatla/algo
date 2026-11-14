@@ -1,0 +1,29 @@
+[project]
+name = "options-portal-api"
+version = "0.1.0"
+description = "FastAPI portal backend"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "pydantic>=2.7",
+  "options-portal-domain",
+  "options-portal-broker",
+  "options-portal-persistence",
+  "options-portal-ta",
+  "options-portal-hybrid",
+  "options-portal-risk",
+  "options-portal-sentiment",
+  "options-portal-news",
+  "options-portal-notify",
+]
+
+[project.scripts]
+options-portal-api = "app.main:run"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]

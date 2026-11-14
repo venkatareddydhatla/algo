@@ -1,0 +1,43 @@
+# Secrets / local env (keep *.example)
+.env
+.env.local
+.env.*.local
+
+# Python
+*.pyc
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+coverage/
+htmlcov/
+
+# Node / frontend
+node_modules/
+apps/portal-web/dist/
+npm-debug.log*
+yarn-error.log*
+
+# Local data & logs (keep data/.gitkeep)
+data/*
+!data/.gitkeep
+*.sqlite
+*.local.sqlite
+*.log
+
+# Windows deploy artifacts
+config/secrets.yaml
+deploy/windows/tools/
+deploy/windows/logs/
+deploy/windows/native/logs/
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+Thumbs.db

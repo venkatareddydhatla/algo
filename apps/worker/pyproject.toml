@@ -1,0 +1,26 @@
+[project]
+name = "options-portal-worker"
+version = "0.1.0"
+description = "Pipeline worker"
+requires-python = ">=3.12"
+dependencies = [
+  "options-portal-domain",
+  "options-portal-broker",
+  "options-portal-ta",
+  "options-portal-news",
+  "options-portal-sentiment",
+  "options-portal-hybrid",
+  "options-portal-risk",
+  "options-portal-notify",
+  "options-portal-persistence",
+]
+
+[project.scripts]
+options-portal-worker = "app.main:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
