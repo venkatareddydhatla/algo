@@ -120,4 +120,4 @@ if ($AutoStart) {
 
 Write-Host "Installed. Start with: Start-Service $svc"
 Write-Host 'Or prefer full stack (API+UI): .\deploy\windows\native\start-native.ps1'
-Write-Host 'UI still needs Vite via start-native.ps1 (or npm run dev) — this service is API-only.'
+Write-Host 'UI still needs Vite via start-native.ps1 (or npm run dev) - this service is API-only.'

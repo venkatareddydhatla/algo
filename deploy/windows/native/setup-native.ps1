@@ -6,7 +6,7 @@
   - Creates Python venv at repo\.venv
   - pip installs editable packages (API, worker, plugins)
   - npm install for apps\portal-web
-  - Copies .env.native.example → .env if .env is missing (SQLite / local profile)
+  - Copies .env.native.example -> .env if .env is missing (SQLite / local profile)
   - Ensures data\ directory for the SQLite file
 
   Does NOT require Docker, WSL, Virtual Machine Platform, Postgres, or Redis.

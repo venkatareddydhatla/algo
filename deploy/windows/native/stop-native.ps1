@@ -26,7 +26,7 @@ Stop-PidFileProcess -PidFile (Join-Path $logsDir 'worker.pid') -Label 'worker'
 Stop-PidFileProcess -PidFile (Join-Path $logsDir 'api.pid') -Label 'API'
 
 # Best-effort: stop orphaned child node/uvicorn if PID file was stale but ports held
-# (optional — do not kill unrelated processes by name globally)
+# (optional - do not kill unrelated processes by name globally)
 
 Write-Host "Native stop complete."
-Write-Host 'Docker/NSSM stack (if any) is unchanged — use .\deploy\windows\stop-portal.ps1 for that.'
+Write-Host 'Docker/NSSM stack (if any) is unchanged - use .\deploy\windows\stop-portal.ps1 for that.'

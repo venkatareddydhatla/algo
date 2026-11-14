@@ -57,7 +57,7 @@ if ($dbUrl -and $dbUrl -match '^sqlite:///(\./)?data/') {
     $env:DATABASE_URL = "sqlite:///$unixPath"
 }
 
-# CONFIG_PATH relative to repo root — set absolute so apps\* cwd works
+# CONFIG_PATH relative to repo root - set absolute so apps\* cwd works
 $cfg = $env:CONFIG_PATH
 if ($cfg -and -not [System.IO.Path]::IsPathRooted($cfg)) {
     $env:CONFIG_PATH = (Join-Path $repoRoot ($cfg -replace '^\./', '' -replace '/', '\'))
@@ -93,7 +93,7 @@ function Start-LoggedProcess {
     if ($null -ne $existing) {
         $alive = Get-Process -Id $existing -ErrorAction SilentlyContinue
         if ($alive) {
-            Write-Host "$Label already running as PID $existing — skip."
+            Write-Host ('{0} already running as PID {1} - skip.' -f $Label, $existing)
             return $existing
         }
         Remove-Item -LiteralPath $PidPath -Force -ErrorAction SilentlyContinue

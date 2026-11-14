@@ -74,7 +74,7 @@ function Resolve-HostPython {
                     }
                 }
             } catch {
-                # tag not installed — continue
+                # tag not installed - continue
             }
         }
     }
