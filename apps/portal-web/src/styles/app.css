@@ -228,3 +228,47 @@ button.danger {
   background: var(--bg-elev);
   font-size: 0.9rem;
 }
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.85rem;
+}
+
+.filter {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.85rem;
+}
+
+.filter input {
+  font-family: var(--mono);
+  background: var(--bg-elev);
+  color: var(--text);
+  border: 1px solid var(--line);
+  padding: 0.4rem 0.6rem;
+  min-width: 12rem;
+}
+
+.pager {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.stub-row td {
+  opacity: 0.72;
+}
+
+.wrap {
+  overflow-wrap: anywhere;
+}

@@ -17,7 +17,14 @@ NSE_HOLIDAYS_2026: set[date] = {
     date(2026, 11, 8),  # Diwali (approx — verify)
 }
 
-INDEX_WEEKLY_SYMBOLS = {"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"}
+INDEX_WEEKLY_SYMBOLS = {
+    "NIFTY",
+    "BANKNIFTY",
+    "FINNIFTY",
+    "MIDCPNIFTY",
+    "NIFTYNXT50",
+    "NIFTYFPI",
+}
 
 
 class IndiaMarketCalendar:

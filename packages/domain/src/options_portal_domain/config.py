@@ -8,6 +8,13 @@ from typing import Any
 
 import yaml
 
+from options_portal_domain.universe import (
+    DEMO_SYMBOLS,
+    active_scan_symbols,
+    resolve_watchlist_symbols,
+    scan_batch_size,
+)
+
 
 def load_config(path: str | Path | None = None) -> dict[str, Any]:
     """Load application config from CONFIG_PATH or the given path."""
@@ -28,6 +35,16 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
     halt = os.environ.get("TRADING_HALT")
     if halt is not None:
         data.setdefault("trading", {})["halt"] = halt.lower() in {"1", "true", "yes"}
+    # Resolve universe aliases into concrete symbol lists for consumers
+    trading = data.setdefault("trading", {})
+    config_dir = cfg_path.parent
+    watchlist = resolve_watchlist_symbols(trading, config_dir=config_dir)
+    trading["symbols_resolved"] = watchlist
+    trading["symbols_watchlist"] = watchlist
+    trading["symbols_active"] = active_scan_symbols(watchlist, trading)
+    trading["scan_batch_size_resolved"] = scan_batch_size(trading)
+    # Keep UI/admin readable: if symbols was an alias string, expose resolved list
+    # under symbols_resolved; leave original symbols / universe keys intact.
     return data
 
 
@@ -41,6 +58,26 @@ def is_halted(config: dict[str, Any] | None = None) -> bool:
     return bool(cfg.get("trading", {}).get("halt", False))
 
 
+def watchlist_symbols(config: dict[str, Any] | None = None) -> list[str]:
+    """Full portal watchlist (may be the entire NSE F&O universe)."""
+    cfg = config or load_config()
+    trading = cfg.get("trading", {})
+    resolved = trading.get("symbols_resolved") or trading.get("symbols_watchlist")
+    if isinstance(resolved, list) and resolved:
+        return [str(s).upper() for s in resolved]
+    return resolve_watchlist_symbols(trading)
+
+
+def scan_symbols(config: dict[str, Any] | None = None) -> list[str]:
+    """Symbols the worker should actively scan (capped subset of watchlist)."""
+    cfg = config or load_config()
+    trading = cfg.get("trading", {})
+    active = trading.get("symbols_active")
+    if isinstance(active, list) and active:
+        return [str(s).upper() for s in active]
+    return active_scan_symbols(watchlist_symbols(cfg), trading)
+
+
 def _default_config() -> dict[str, Any]:
     return {
         "app": {"name": "options-portal", "timezone": "Asia/Kolkata"},
@@ -48,7 +85,11 @@ def _default_config() -> dict[str, Any]:
             "mode": "dry_run",
             "halt": False,
             "timeframe": "15m",
-            "symbols": ["NIFTY", "BANKNIFTY", "RELIANCE", "TCS"],
+            "universe": "nse_fno",
+            "symbols_demo": list(DEMO_SYMBOLS),
+            "max_active_symbols": 20,
+            "scan_batch_size": 8,
+            "symbols": list(DEMO_SYMBOLS),
         },
         "hybrid": {
             "weights": {"tech": 0.65, "news": 0.35},

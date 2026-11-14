@@ -11,7 +11,15 @@ export default function AdminPage() {
         setCfg(await api.config());
       } catch {
         setCfg({
-          trading: { mode: "dry_run", halt: false, symbols: ["NIFTY", "BANKNIFTY", "RELIANCE", "TCS"] },
+          trading: {
+            mode: "dry_run",
+            halt: false,
+            symbols_demo: ["NIFTY", "BANKNIFTY", "RELIANCE", "TCS"],
+            universe: "nse_fno",
+            symbols_watchlist_count: 0,
+            symbols_active_count: 0,
+            symbols_preview: ["NIFTY", "BANKNIFTY", "RELIANCE", "TCS"],
+          },
           v1_note: "API offline — showing defaults",
         });
       }
@@ -19,6 +27,7 @@ export default function AdminPage() {
   }, []);
 
   const trading = (cfg?.trading as Record<string, unknown>) || {};
+  const preview = (trading.symbols_preview as string[]) || (trading.symbols as string[]) || [];
 
   async function requestMode(mode: string) {
     try {
@@ -42,6 +51,7 @@ export default function AdminPage() {
       <div className="section-head">
         <h1>Admin · configuration</h1>
         <p className="muted">{String(cfg?.v1_note ?? "")}</p>
+        {cfg?.universe_note ? <p className="muted">{String(cfg.universe_note)}</p> : null}
       </div>
       <div className="admin-grid">
         <div>
@@ -61,8 +71,19 @@ export default function AdminPage() {
           {msg ? <p className="notice">{msg}</p> : null}
         </div>
         <div>
-          <h2>Symbols</h2>
-          <p className="mono">{((trading.symbols as string[]) || []).join(", ")}</p>
+          <h2>Watchlist / universe</h2>
+          <p className="mono">
+            universe={String(trading.universe ?? "—")} · watchlist=
+            {String(trading.symbols_watchlist_count ?? preview.length)} · active_scan=
+            {String(trading.symbols_active_count ?? "—")} / max=
+            {String(trading.max_active_symbols ?? 20)}
+          </p>
+          <p className="muted">Preview (first symbols):</p>
+          <p className="mono wrap">{preview.slice(0, 40).join(", ")}</p>
+          <p className="muted">
+            Full list: GET /api/v1/watchlist. Demo set:{" "}
+            {((trading.symbols_demo as string[]) || []).join(", ") || "NIFTY, BANKNIFTY, RELIANCE, TCS"}
+          </p>
           <h2>Kill switch</h2>
           <p>halt={String(trading.halt ?? false)} — set TRADING_HALT=true in env for process halt</p>
         </div>

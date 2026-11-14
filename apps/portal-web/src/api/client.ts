@@ -20,6 +20,7 @@ export type SignalRow = {
   expiry_hint?: string;
   updated_at: string;
   reasons?: string[];
+  stub?: boolean;
 };
 
 export type NewsRow = {
@@ -32,8 +33,55 @@ export type NewsRow = {
   source: string;
 };
 
+export type WatchlistRow = {
+  symbol: string;
+  name: string;
+  kind: string;
+  expiry_rule: string;
+  lot_size?: number | null;
+  active_scan: boolean;
+};
+
+export type Paged<T> = {
+  items: T[];
+  total?: number;
+  offset?: number;
+  limit?: number;
+  source: string;
+  note?: string;
+  universe?: string;
+  max_active_symbols?: number;
+  active_scan_count?: number;
+};
+
+function qs(params: Record<string, string | number | boolean | undefined>): string {
+  const sp = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v === undefined || v === "") continue;
+    sp.set(k, String(v));
+  }
+  const s = sp.toString();
+  return s ? `?${s}` : "";
+}
+
 export const api = {
-  signals: () => getJson<{ items: SignalRow[]; source: string }>("/api/v1/signals"),
+  signals: (opts?: { offset?: number; limit?: number; symbol?: string }) =>
+    getJson<Paged<SignalRow>>(
+      `/api/v1/signals${qs({
+        offset: opts?.offset ?? 0,
+        limit: opts?.limit ?? 50,
+        symbol: opts?.symbol,
+        expand_watchlist: true,
+      })}`,
+    ),
+  watchlist: (opts?: { offset?: number; limit?: number; q?: string }) =>
+    getJson<Paged<WatchlistRow>>(
+      `/api/v1/watchlist${qs({
+        offset: opts?.offset ?? 0,
+        limit: opts?.limit ?? 50,
+        q: opts?.q,
+      })}`,
+    ),
   news: () => getJson<{ items: NewsRow[]; source: string }>("/api/v1/news"),
   trades: () => getJson<Record<string, unknown>>("/api/v1/trades"),
   health: () => getJson<Record<string, unknown>>("/api/v1/health"),
@@ -93,6 +141,9 @@ export const MOCK = {
         updated_at: new Date().toISOString(),
       },
     ],
+    total: 4,
+    offset: 0,
+    limit: 50,
     source: "local-mock",
   },
 };
