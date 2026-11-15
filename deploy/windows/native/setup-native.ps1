@@ -103,6 +103,7 @@ Advanced: install Build Tools and re-run with -AllowUnsupportedPython (not neede
         '.\packages\risk',
         '.\packages\notify',
         '.\packages\persistence',
+        '.\packages\backtest',
         '.\apps\api',
         '.\apps\worker'
     )

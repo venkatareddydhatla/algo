@@ -23,6 +23,7 @@ pythonpath = [
   "packages/risk/src",
   "packages/notify/src",
   "packages/persistence/src",
+  "packages/backtest/src",
   "apps/api",
   "apps/worker",
 ]
@@ -41,6 +42,7 @@ members = [
   "packages/risk",
   "packages/notify",
   "packages/persistence",
+  "packages/backtest",
   "apps/api",
   "apps/worker",
 ]

@@ -1,0 +1,20 @@
+[project]
+name = "options-portal-backtest"
+version = "0.1.0"
+description = "Dry-run historical backtest engine for options portal signals"
+requires-python = ">=3.12"
+dependencies = [
+  "options-portal-domain",
+  "options-portal-ta",
+  "options-portal-hybrid",
+]
+
+[project.scripts]
+options-portal-backtest = "options_portal_backtest.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

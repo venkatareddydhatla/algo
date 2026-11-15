@@ -16,6 +16,7 @@ dependencies = [
   "options-portal-sentiment",
   "options-portal-news",
   "options-portal-notify",
+  "options-portal-backtest",
 ]
 
 [project.scripts]

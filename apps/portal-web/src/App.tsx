@@ -1,6 +1,7 @@
 import { NavLink, Route, Routes } from "react-router-dom";
 import { ModeBadge } from "./components/ModeBadge";
 import AdminPage from "./pages/AdminPage";
+import BacktestPage from "./pages/BacktestPage";
 import DashboardPage from "./pages/DashboardPage";
 import HealthPage from "./pages/HealthPage";
 import NewsPage from "./pages/NewsPage";
@@ -17,6 +18,7 @@ export default function App() {
           </NavLink>
           <NavLink to="/news">News</NavLink>
           <NavLink to="/trades">Trades</NavLink>
+          <NavLink to="/backtest">Backtest</NavLink>
           <NavLink to="/health">Health</NavLink>
           <NavLink to="/admin">Admin</NavLink>
         </nav>
@@ -30,6 +32,7 @@ export default function App() {
           <Route path="/" element={<DashboardPage />} />
           <Route path="/news" element={<NewsPage />} />
           <Route path="/trades" element={<TradesPage />} />
+          <Route path="/backtest" element={<BacktestPage />} />
           <Route path="/health" element={<HealthPage />} />
           <Route path="/admin" element={<AdminPage />} />
         </Routes>

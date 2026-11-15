@@ -129,16 +129,17 @@ pytest -q
 ## Module map
 
 ```text
-apps/api            FastAPI — health, signals, news, trades, admin stubs
+apps/api            FastAPI — health, signals, news, trades, backtest, admin stubs
 apps/worker         15m pipeline tick + RSS news poll loop (TA → hybrid → dry-run)
-apps/portal-web     React/Vite dashboard shell
-apps/backtest-cli   Placeholder for offline replay
+apps/portal-web     React/Vite dashboard shell (Signals strip + Backtest page)
+apps/backtest-cli   Docs entrypoint; engine is packages/backtest
 packages/domain     Types, protocols, India calendar, config loader
 packages/broker-upstox  Upstox adapter (synthetic MD; OAuth TODO)
 packages/ta-core    RSI/EMA/Supertrend/VWAP + confluence signal generator
 packages/news-rss   RSS poller + VADER ingest → SQLite (skips broken placeholder feeds)
 packages/sentiment  VADER scorer + FinBERT stub hook
 packages/hybrid-engine  Weighted hybrid + single-leg ATM recommender
+packages/backtest   Dry-run historical hybrid signal replay
 packages/risk       Risk gates + SafeOrderRouter (live blocked)
 packages/notify     Console / webhook / telegram notifiers
 packages/persistence  Postgres/Redis health + local SQLite news store

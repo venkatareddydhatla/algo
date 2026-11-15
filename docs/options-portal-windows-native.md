@@ -42,6 +42,24 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\deploy\windows\native\stop-native.ps1
 ```
 
+### Pull a feature branch (Top hybrid strip + Backtest)
+
+When checking out work that adds `packages/backtest` or UI routes, reinstall editables and restart:
+
+```powershell
+cd C:\algo
+Set-ExecutionPolicy -Scope Process Bypass
+.\deploy\windows\native\stop-native.ps1
+git fetch origin
+git checkout cursor/top-hybrid-backtest-2198
+git pull origin cursor/top-hybrid-backtest-2198
+# Re-run setup so packages\backtest is installed editable
+.\deploy\windows\native\setup-native.ps1
+.\deploy\windows\native\start-native.ps1
+```
+
+Signals page: Top CE / Top PE strip above the table. Nav **Backtest** runs `/api/v1/backtest/run` (always `dry_run`).
+
 | Surface | URL |
 |---------|-----|
 | Web UI | http://127.0.0.1:5173 |

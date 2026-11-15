@@ -8,6 +8,25 @@ async function getJson<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+async function postJson<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    let detail = `${res.status} ${res.statusText}`;
+    try {
+      const err = (await res.json()) as { detail?: string };
+      if (err.detail) detail = String(err.detail);
+    } catch {
+      /* ignore */
+    }
+    throw new Error(detail);
+  }
+  return res.json() as Promise<T>;
+}
+
 export type SignalRow = {
   id: string;
   symbol: string;
@@ -57,6 +76,47 @@ export type Paged<T> = {
   active_scan_count?: number;
 };
 
+export type TopHybrid = {
+  ce: SignalRow[];
+  pe: SignalRow[];
+  limit: number;
+  source: string;
+  note?: string;
+};
+
+export type BacktestFill = {
+  entry_ts: string;
+  exit_ts: string;
+  side: "CE" | "PE";
+  entry_price: number;
+  exit_price: number;
+  pnl: number;
+  bars_held: number;
+  entry_action: string;
+  exit_reason: string;
+};
+
+export type BacktestResult = {
+  symbol: string;
+  mode: string;
+  dry_run: boolean;
+  source: string;
+  from_date?: string | null;
+  to_date?: string | null;
+  bars: number;
+  bars_evaluated: number;
+  trades: number;
+  wins: number;
+  losses: number;
+  win_rate: number;
+  pnl: number;
+  max_drawdown: number;
+  profit_factor: number;
+  avg_trade_pnl: number;
+  fills: BacktestFill[];
+  note?: string;
+};
+
 function qs(params: Record<string, string | number | boolean | undefined>): string {
   const sp = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) {
@@ -77,6 +137,13 @@ export const api = {
         expand_watchlist: true,
       })}`,
     ),
+  topHybrid: (opts?: { limit?: number }) =>
+    getJson<TopHybrid>(
+      `/api/v1/signals/top-hybrid${qs({
+        limit: opts?.limit ?? 5,
+        expand_watchlist: true,
+      })}`,
+    ),
   watchlist: (opts?: { offset?: number; limit?: number; q?: string }) =>
     getJson<Paged<WatchlistRow>>(
       `/api/v1/watchlist${qs({
@@ -85,6 +152,13 @@ export const api = {
         q: opts?.q,
       })}`,
     ),
+  backtestRun: (body: {
+    symbol: string;
+    bars?: number;
+    from_date?: string;
+    to_date?: string;
+    dry_run?: boolean;
+  }) => postJson<BacktestResult>("/api/v1/backtest/run", body),
   news: () => getJson<{ items: NewsRow[]; source: string }>("/api/v1/news"),
   trades: () => getJson<Record<string, unknown>>("/api/v1/trades"),
   health: () => getJson<Record<string, unknown>>("/api/v1/health"),

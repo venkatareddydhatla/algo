@@ -1,14 +1,58 @@
 import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { MOCK, SignalRow, api } from "../api/client";
+import { HybridStrip } from "../components/HybridStrip";
 
 const PAGE_SIZE = 50;
 
 export default function DashboardPage() {
+  const [params, setParams] = useSearchParams();
   const [rows, setRows] = useState<SignalRow[]>([]);
   const [source, setSource] = useState("loading");
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
-  const [filter, setFilter] = useState("");
+  const [filter, setFilter] = useState((params.get("symbol") || "").toUpperCase());
+  const [highlight, setHighlight] = useState((params.get("symbol") || "").toUpperCase());
+  const [topCe, setTopCe] = useState<SignalRow[]>([]);
+  const [topPe, setTopPe] = useState<SignalRow[]>([]);
+  const [stripSource, setStripSource] = useState("");
+
+  useEffect(() => {
+    const s = (params.get("symbol") || "").toUpperCase();
+    if (s) {
+      setFilter(s);
+      setHighlight(s);
+      setOffset(0);
+    }
+  }, [params]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const top = await api.topHybrid({ limit: 5 });
+        if (!cancelled) {
+          setTopCe(top.ce);
+          setTopPe(top.pe);
+          setStripSource(top.source);
+        }
+      } catch {
+        if (!cancelled) {
+          const local = sortLocal(MOCK.signals.items);
+          setTopCe(
+            local.filter((r) => r.hybrid_score > 0).slice(0, 5),
+          );
+          setTopPe(
+            local.filter((r) => r.hybrid_score < 0).slice(0, 5),
+          );
+          setStripSource("local-mock");
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -45,6 +89,29 @@ export default function DashboardPage() {
   const page = Math.floor(offset / PAGE_SIZE) + 1;
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
+  function selectSymbol(symbol: string) {
+    const sym = symbol.toUpperCase();
+    setFilter(sym);
+    setHighlight(sym);
+    setOffset(0);
+    setParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.set("symbol", sym);
+      return next;
+    });
+  }
+
+  function clearFilter() {
+    setFilter("");
+    setHighlight("");
+    setOffset(0);
+    setParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete("symbol");
+      return next;
+    });
+  }
+
   return (
     <section>
       <div className="section-head">
@@ -55,6 +122,15 @@ export default function DashboardPage() {
           decision rationale.
         </p>
       </div>
+
+      <HybridStrip
+        ce={topCe}
+        pe={topPe}
+        selected={highlight}
+        onSelect={selectSymbol}
+        source={stripSource}
+      />
+
       <div className="toolbar">
         <label className="filter">
           <span className="muted">Symbol</span>
@@ -64,10 +140,23 @@ export default function DashboardPage() {
             placeholder="e.g. NIFTY / RELIANCE"
             onChange={(e) => {
               setOffset(0);
-              setFilter(e.target.value.toUpperCase());
+              const v = e.target.value.toUpperCase();
+              setFilter(v);
+              setHighlight(v);
+              setParams((prev) => {
+                const next = new URLSearchParams(prev);
+                if (v.trim()) next.set("symbol", v.trim());
+                else next.delete("symbol");
+                return next;
+              });
             }}
           />
         </label>
+        {filter ? (
+          <button type="button" onClick={clearFilter}>
+            Clear
+          </button>
+        ) : null}
         <div className="pager">
           <button type="button" disabled={offset <= 0} onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}>
             Prev
@@ -100,8 +189,24 @@ export default function DashboardPage() {
           </thead>
           <tbody>
             {rows.map((r) => (
-              <tr key={r.id} className={r.stub ? "stub-row" : undefined}>
-                <td className="mono">{r.symbol}</td>
+              <tr
+                key={r.id}
+                className={[
+                  r.stub ? "stub-row" : "",
+                  highlight && r.symbol === highlight ? "row-highlight" : "",
+                ]
+                  .filter(Boolean)
+                  .join(" ") || undefined}
+              >
+                <td className="mono">
+                  <button
+                    type="button"
+                    className="sym-link"
+                    onClick={() => selectSymbol(r.symbol)}
+                  >
+                    {r.symbol}
+                  </button>
+                </td>
                 <td>
                   <span className={`action action-${r.action}`}>{r.action}</span>
                 </td>
