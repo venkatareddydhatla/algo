@@ -12,6 +12,7 @@ from options_portal_domain.types import (
     SignalAction,
     TechnicalSignal,
 )
+from options_portal_hybrid.explain import build_reason_fields
 
 
 class WeightedHybridScorer:
@@ -70,18 +71,43 @@ class WeightedHybridScorer:
 
         if news:
             reasons.append(f"News context: {len(news)} item(s), score {news_score:.2f}")
+            for item in list(news)[:2]:
+                title = (item.title or "").strip()
+                if title:
+                    reasons.append(f"Headline: {title[:120]}")
 
         confidence = min(1.0, (tech.confidence + news_conf) / 2 + abs(hybrid) * 0.2)
+        tech_score = tech.score
+        news_rounded = round(news_score, 6)
+        hybrid_rounded = round(hybrid, 6)
+        explain = build_reason_fields(
+            action=action,
+            tech_score=tech_score,
+            news_score=news_rounded,
+            hybrid_score=hybrid_rounded,
+            reasons=reasons,
+            tech_reasons=tech.reasons,
+            weight_tech=self.weight_tech,
+            weight_news=self.weight_news,
+            enter_long=self.enter_long,
+            enter_short=self.enter_short,
+            tech_confidence=tech.confidence,
+            news_confidence=news_conf if sentiments else 0.0,
+            vetoed=veto,
+        )
         return HybridDecision(
             symbol=tech.symbol,
             action=action,
-            tech_score=tech.score,
-            news_score=round(news_score, 6),
-            hybrid_score=round(hybrid, 6),
+            tech_score=tech_score,
+            news_score=news_rounded,
+            hybrid_score=hybrid_rounded,
             confidence=round(confidence, 4),
             reasons=reasons,
             news_ids=news_ids,
             bar_ts=tech.bar_ts,
+            reason_kind=explain["reason_kind"],
+            reason_summary=explain["reason_summary"],
+            reason_detail=explain["reason_detail"],
         )
 
 

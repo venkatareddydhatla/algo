@@ -74,6 +74,9 @@ class HybridDecision:
     reasons: list[str]
     news_ids: list[str]
     bar_ts: datetime
+    reason_kind: str = "hybrid"       # technical | news | hybrid | veto | neutral
+    reason_summary: str = ""          # short chip e.g. EMA+RSI / earnings+tech
+    reason_detail: str = ""           # full explainability for hover popup
 
 @dataclass(frozen=True)
 class OptionLeg:

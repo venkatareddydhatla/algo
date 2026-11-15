@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
 from fastapi import APIRouter, HTTPException, Query
 
-from app.mock_data import MOCK_SIGNALS
+from app.mock_data import MOCK_SIGNALS, build_universe_signals
 from options_portal_domain.config import load_config, watchlist_symbols
+from options_portal_hybrid.explain import attach_reason_fields, sort_signal_rows
 
 router = APIRouter(prefix="/api/v1", tags=["signals"])
 
@@ -19,42 +18,31 @@ async def list_signals(
     limit: int = Query(50, ge=1, le=500),
     expand_watchlist: bool = Query(
         True,
-        description="Pad HOLD stubs for watchlist symbols without a mock signal",
+        description="Score the full watchlist (dry-run synthetic) instead of seed rows only",
     ),
 ) -> dict:
-    """List signals. When expand_watchlist is true, include HOLD rows for the full universe page."""
-    by_sym = {s["symbol"].upper(): s for s in MOCK_SIGNALS}
-    rows = list(MOCK_SIGNALS)
+    """List signals sorted actionable-first, then by |hybrid| desc.
+
+    Dry-run / mock path returns non-placeholder hybrid scores for every symbol
+    in the configured NSE F&O universe (not HOLD/0.00 inactive stubs).
+    """
+    cfg = load_config()
+    trading = cfg.get("trading", {})
+    timeframe = str(trading.get("timeframe", "15m"))
 
     if expand_watchlist:
-        cfg = load_config()
         watchlist = watchlist_symbols(cfg)
-        now = datetime.now(tz=timezone.utc).isoformat()
-        for sym in watchlist:
-            if sym in by_sym:
-                continue
-            rows.append(
-                {
-                    "id": f"watch-{sym.lower()}",
-                    "symbol": sym,
-                    "timeframe": cfg.get("trading", {}).get("timeframe", "15m"),
-                    "action": "HOLD",
-                    "hybrid_score": 0.0,
-                    "tech_score": 0.0,
-                    "news_score": 0.0,
-                    "confidence": 0.0,
-                    "expiry_hint": "weekly"
-                    if sym in {"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50", "NIFTYFPI"}
-                    else "monthly",
-                    "updated_at": now,
-                    "reasons": ["Awaiting active scan / no signal yet"],
-                    "stub": True,
-                }
-            )
+        rows = build_universe_signals(watchlist, timeframe=timeframe)
+        source = "mock+universe"
+    else:
+        rows = [attach_reason_fields(dict(s)) for s in MOCK_SIGNALS]
+        source = "mock"
 
     if symbol:
-        rows = [s for s in rows if s["symbol"].upper() == symbol.upper()]
+        needle = symbol.upper()
+        rows = [s for s in rows if s["symbol"].upper() == needle]
 
+    rows = sort_signal_rows(rows)
     total = len(rows)
     page = rows[offset : offset + limit]
     return {
@@ -62,13 +50,24 @@ async def list_signals(
         "total": total,
         "offset": offset,
         "limit": limit,
-        "source": "mock+watchlist" if expand_watchlist else "mock",
+        "source": source,
+        "sort": "actionable,|hybrid|desc,confidence,symbol",
+        "note": (
+            "Actionable symbols (non-HOLD) sort first. "
+            "Hover reason_summary for reason_detail explainability."
+        ),
     }
 
 
 @router.get("/signals/{signal_id}")
 async def get_signal(signal_id: str) -> dict:
-    for s in MOCK_SIGNALS:
+    cfg = load_config()
+    watchlist = watchlist_symbols(cfg)
+    rows = build_universe_signals(
+        watchlist,
+        timeframe=str(cfg.get("trading", {}).get("timeframe", "15m")),
+    )
+    for s in rows:
         if s["id"] == signal_id:
             return {
                 **s,

@@ -69,15 +69,31 @@ async def run_symbol_tick(symbol: str, config: dict[str, Any] | None = None) -> 
         "tech_action": tech.action.value,
         "hybrid_action": decision.action.value,
         "hybrid_score": decision.hybrid_score,
+        "tech_score": decision.tech_score,
+        "news_score": decision.news_score,
+        "confidence": decision.confidence,
+        "reasons": list(decision.reasons),
+        "reason_kind": decision.reason_kind,
+        "reason_summary": decision.reason_summary,
+        "reason_detail": decision.reason_detail,
         "mode": mode,
     }
 
     if decision.action == SignalAction.HOLD:
-        logger.info("%s HOLD hybrid=%.3f", symbol, decision.hybrid_score)
+        logger.info(
+            "%s HOLD hybrid=%.3f reason=%s",
+            symbol,
+            decision.hybrid_score,
+            decision.reason_summary,
+        )
         await notifier.send(
             f"{symbol} HOLD",
-            f"hybrid={decision.hybrid_score}",
-            {"reasons": decision.reasons},
+            f"hybrid={decision.hybrid_score} ({decision.reason_summary})",
+            {
+                "reasons": decision.reasons,
+                "reason_kind": decision.reason_kind,
+                "reason_detail": decision.reason_detail,
+            },
         )
         return result
 

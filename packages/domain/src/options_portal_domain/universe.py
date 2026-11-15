@@ -177,19 +177,23 @@ def active_scan_symbols(
     watchlist: list[str],
     trading_cfg: dict[str, Any] | None = None,
 ) -> list[str]:
-    """Subset of the watchlist that worker/TA loops should scan this cycle.
+    """Symbols the worker/TA loop should score this cycle.
 
-    Full watchlist remains visible in the portal; scanning is capped to avoid
-    CPU blow-ups on ~200 underlyings.
+    ``max_active_symbols`` of ``0`` or ``null`` means unlimited (full watchlist).
+    A positive integer caps the scan to the first N symbols. Batching is controlled
+    separately by ``scan_batch_size`` so one machine can finish a full NSE F&O
+    pass without hanging.
     """
     cfg = trading_cfg or {}
-    max_active = cfg.get("max_active_symbols")
+    max_active = cfg.get("max_active_symbols", None)
+    if max_active is None and "max_active_symbols" not in cfg:
+        max_active = cfg.get("scan", {}).get("max_active_symbols", 0)
     if max_active is None:
-        max_active = cfg.get("scan", {}).get("max_active_symbols", 20)
+        return list(watchlist)
     try:
         limit = int(max_active)
     except (TypeError, ValueError):
-        limit = 20
+        limit = 0
     if limit <= 0:
         return list(watchlist)
     return list(watchlist[:limit])

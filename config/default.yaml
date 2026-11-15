@@ -13,7 +13,7 @@ trading:
   mode: dry_run          # dry_run | demo | live
   halt: false            # kill switch
   timeframe: 15m
-  # Full NSE F&O watchlist (indices + equities). Portal lists all; worker scans a capped subset.
+  # Full NSE F&O watchlist (indices + equities). Worker scores the full universe by default.
   universe: nse_fno       # alias -> config/universe/nse_fno_underlyings.csv
   # symbols: nse_fno      # alternate: string alias instead of universe key
   # symbols_file: config/universe/nse_fno_underlyings.csv
@@ -23,8 +23,11 @@ trading:
     - RELIANCE
     - TCS
   use_symbols_demo: false
-  max_active_symbols: 20 # worker/TA active scan cap (full list still watched in portal)
-  scan_batch_size: 8     # concurrent symbols per worker batch
+  # 0 or null = unlimited (score all ~224 F&O names). Positive N = first-N cap.
+  max_active_symbols: 0
+  scan_batch_size: 8     # concurrent symbols per worker batch (rate-limit friendly)
+  # Expected cycle: ~2-5 min full dry-run pass on one Windows machine (synthetic MD);
+  # longer with live broker ratelimit_rpm. Keep batch size modest to avoid hangs.
   session:
     # NSE equity/F&O regular session (IST); calendar holidays applied in code
     open: "09:15"

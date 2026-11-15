@@ -12,21 +12,20 @@ India examples throughout: **NIFTY**, **BANKNIFTY**, **RELIANCE**, **TCS**; sign
 ┌──────────────────────────────────────────────────────────────────────────┐
 │  Options Portal          IST 15:29   [DRY-RUN]   Health ● OK   user▾    │
 ├──────────────────────────────────────────────────────────────────────────┤
-│  Watchlist signals · 15m                                                │
+│  Watchlist signals · 15m · full F&O · actionable first                   │
 │                                                                          │
-│  Symbol      Action        Hybrid   Tech  News   Expiry hint    Updated │
-│  NIFTY       BUY_CE_BIAS    +0.62   +0.71 +0.38  21-Nov weekly  15:15   │
-│  BANKNIFTY   HOLD           +0.12   +0.20 -0.05  21-Nov weekly  15:15   │
-│  RELIANCE    BUY_PE_BIAS    -0.55   -0.48 -0.67  28-Nov monthly 15:15   │
-│  TCS         HOLD           -0.08   +0.10 -0.35  28-Nov monthly 15:15   │
+│  Symbol      Action        Reason        Hybrid  Tech  News  Expiry     │
+│  NIFTY       BUY_CE_BIAS   EMA+RSI+news   +0.62  +0.71 +0.38 weekly     │
+│  RELIANCE    BUY_PE_BIAS   EMA+VWAP+news  -0.55  -0.48 -0.67 monthly    │
+│  BANKNIFTY   HOLD          neutral        +0.12  +0.20 -0.05 weekly     │
+│  TCS         HOLD          news veto      -0.08  +0.10 -0.35 monthly    │
 │                                                                          │
-│  [Filter: F&O only ▾]  [Timeframe: 15m ▾]  [Refresh]                    │
-│                                                                          │
-│  Day P&L (paper):  ₹ +4,280     Open lots: 3     Alerts: 1 unread       │
+│  Hover Reason -> popup with reason_detail (indicators + headlines)       │
+│  [Filter symbol]  [Prev] 1/5 [Next]                                      │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-Notes: no card spam — one dense table + header status. Clicking a row → signal drill-down.
+Notes: one dense table; actionable rows sort above HOLDs; Reason chip uses API `reason_summary` with hover/focus popup from `reason_detail`.
 
 ---
 

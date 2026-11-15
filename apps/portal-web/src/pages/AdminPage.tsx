@@ -1,6 +1,13 @@
 import { useEffect, useState } from "react";
 import { api } from "../api/client";
 
+function formatMaxActive(value: unknown): string {
+  if (value === null || value === undefined || value === "" || Number(value) <= 0) {
+    return "unlimited (0)";
+  }
+  return String(value);
+}
+
 export default function AdminPage() {
   const [cfg, setCfg] = useState<Record<string, unknown> | null>(null);
   const [msg, setMsg] = useState("");
@@ -73,10 +80,10 @@ export default function AdminPage() {
         <div>
           <h2>Watchlist / universe</h2>
           <p className="mono">
-            universe={String(trading.universe ?? "—")} · watchlist=
+            universe={String(trading.universe ?? "-")} · watchlist=
             {String(trading.symbols_watchlist_count ?? preview.length)} · active_scan=
-            {String(trading.symbols_active_count ?? "—")} / max=
-            {String(trading.max_active_symbols ?? 20)}
+            {String(trading.symbols_active_count ?? "-")} / max=
+            {formatMaxActive(trading.max_active_symbols)}
           </p>
           <p className="muted">Preview (first symbols):</p>
           <p className="mono wrap">{preview.slice(0, 40).join(", ")}</p>
