@@ -32,7 +32,7 @@ def build_ta_registry() -> IndicatorRegistry:
 
 
 async def run_symbol_tick(symbol: str, config: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Run one dry-run pipeline tick for a symbol (synthetic MD if no Upstox token)."""
+    """Run one dry-run pipeline tick (live Upstox candles when token set)."""
     cfg = config or load_config()
     hybrid_cfg = cfg.get("hybrid", {})
     risk_cfg = cfg.get("trading", {}).get("risk", {})
@@ -55,8 +55,11 @@ async def run_symbol_tick(symbol: str, config: dict[str, Any] | None = None) -> 
     sentiment = VaderScorer()
 
     end = datetime.now(tz=timezone.utc)
-    start = end - timedelta(days=2)
+    history_days = int(cfg.get("broker", {}).get("candle_history_days", 5))
+    # V3 minutes≤15: max ~1 month; keep short for scan throughput
+    start = end - timedelta(days=min(max(history_days, 2), 10))
     candles = await broker.get_candles(symbol, "15m", start, end)
+    market_data_source = broker.last_candle_source
     features = registry.compute_all(candles)
     tech = signal_gen.evaluate(symbol, candles, features)
 
@@ -93,6 +96,8 @@ async def run_symbol_tick(symbol: str, config: dict[str, Any] | None = None) -> 
         "reason_summary": decision.reason_summary,
         "reason_detail": decision.reason_detail,
         "mode": mode,
+        "market_data_source": market_data_source,
+        "candle_count": len(candles),
     }
 
     if decision.action == SignalAction.HOLD:

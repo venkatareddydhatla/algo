@@ -44,11 +44,14 @@ async def ready() -> dict:
         if c.get("status") == "down"
     ]
     status = "ok" if not degraded else "degraded"
+    data_source = broker.get("market_data_source") or broker.get("data_source") or "synthetic"
     return {
         "status": status,
         "components": components,
         "degraded": degraded,
         "local_profile": is_local_profile(),
+        "market_data_source": data_source,
+        "data_source": data_source,
     }
 
 
@@ -57,15 +60,33 @@ async def health_dashboard() -> dict:
     """UI health strip payload."""
     payload = await ready()
     db_name = "sqlite" if is_local_profile() else "postgres"
+    broker = payload["components"]["broker"]
+    data_source = broker.get("market_data_source") or broker.get("data_source") or "synthetic"
     return {
         "status": payload["status"],
         "mode": payload["components"]["trading_mode"],
         "halt": payload["components"]["halt"],
         "persistence_profile": payload["components"].get("persistence_profile"),
+        "market_data_source": data_source,
+        "data_source": data_source,
         "components": [
             {"name": db_name, **payload["components"]["postgres"]},
             {"name": "redis", **payload["components"]["redis"]},
-            {"name": "upstox", **payload["components"]["broker"]},
+            {
+                "name": "upstox",
+                **broker,
+                "detail": (
+                    f"market_data={data_source}; {broker.get('detail', '')}"
+                    if "market_data=" not in str(broker.get("detail", ""))
+                    else broker.get("detail", "")
+                ),
+            },
             {"name": "worker", "status": "unknown", "detail": "heartbeat TODO"},
+            {
+                "name": "market_data",
+                "status": "ok" if data_source == "upstox" else "mock",
+                "detail": f"source={data_source}",
+                "data_source": data_source,
+            },
         ],
     }

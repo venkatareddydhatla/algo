@@ -94,9 +94,9 @@ pytest -q
 
 ## Still stubbed / needs credentials
 
-- Upstox OAuth, live market data, and live orders (synthetic candles/chain used locally)
+- Upstox **live candles/quotes** when `UPSTOX_ACCESS_TOKEN` is set (else synthetic); interactive OAuth UI and live **orders** still stubbed / gated
 - Full DB persistence for signals (API still synthesizes dry-run scores); news RSS → VADER → SQLite is live on local profile
 - FinBERT sidecar (optional later)
-- Backtest CLI (placeholder)
+- Live option-chain REST (spot may use LTP; strikes still synthetic)
 
 See the code README for the detailed module map.
