@@ -345,12 +345,15 @@ class UpstoxAdapter:
                 )
             raise LiveTradingBlockedError("Live Upstox placement not implemented yet.")
 
+        instrument = order.get("instrument") or "equity"
         return OrderResult(
             client_order_id=client_order_id,
             status="simulated",
             mode=mode,
             broker_order_id=f"SIM-{client_order_id}",
-            message="Dry-run / demo: order recorded in paper ledger only",
+            message=(
+                f"Dry-run / demo ({instrument}): order recorded in paper ledger only"
+            ),
         )
 
     async def cancel_order(self, broker_order_id: str) -> OrderResult:
@@ -372,16 +375,16 @@ class UpstoxAdapter:
         if has_token:
             status = "ok"
             detail = (
-                f"market_data={effective}; token present; orders dry_run-gated"
+                f"market_data={effective}; token present; instrument=equity dry_run; orders gated"
                 if effective == "upstox" or self.last_candle_detail == "no request yet"
-                else f"market_data={effective}; {self.last_candle_detail}"
+                else f"market_data={effective}; instrument=equity dry_run; {self.last_candle_detail}"
             )
         elif has_key:
             status = "degraded"
-            detail = "API key set but no UPSTOX_ACCESS_TOKEN — synthetic MD"
+            detail = "API key set but no UPSTOX_ACCESS_TOKEN — synthetic MD; instrument=equity dry_run"
         else:
             status = "mock"
-            detail = "Using synthetic MD until UPSTOX_ACCESS_TOKEN configured"
+            detail = "Using synthetic MD until UPSTOX_ACCESS_TOKEN configured; instrument=equity dry_run"
         return {
             "component": "upstox",
             "status": status,
@@ -394,6 +397,8 @@ class UpstoxAdapter:
             "data_source": effective,
             "preferred_data_source": preferred,
             "last_candle_detail": self.last_candle_detail,
+            "instrument": "equity",
+            "execution": "dry_run",
             "detail": detail,
         }
 

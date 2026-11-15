@@ -13,6 +13,11 @@ trading:
   mode: dry_run          # dry_run | demo | live
   halt: false            # kill switch
   timeframe: 15m
+  # Equity dry-run auto-orders (v1): CE bias → BUY shares; PE bias → SELL short.
+  equity:
+    enabled: true
+    share_qty: 1
+    max_qty_per_symbol: 1
   # Full NSE F&O watchlist (indices + equities). Worker scores the full universe by default.
   universe: nse_fno       # alias -> config/universe/nse_fno_underlyings.csv
   # symbols: nse_fno      # alternate: string alias instead of universe key
@@ -43,6 +48,8 @@ trading:
     max_day_loss_inr: 25000
     max_premium_spread_pct: 2.0
     min_option_oi: 50000
+    equity_share_qty: 1
+    max_equity_qty_per_symbol: 1
     require_news_context: false  # if true, skip orders when news pipeline degraded
 
 hybrid:

@@ -42,21 +42,23 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\deploy\windows\native\stop-native.ps1
 ```
 
-### Pull a feature branch (Top hybrid strip + Backtest)
+### Pull a feature branch (equity dry-run auto-orders)
 
-When checking out work that adds `packages/backtest` or UI routes, reinstall editables and restart:
+When checking out work that adds paper equity fills / Trades ledger, reinstall editables and restart:
 
 ```powershell
 cd C:\algo
 Set-ExecutionPolicy -Scope Process Bypass
 .\deploy\windows\native\stop-native.ps1
 git fetch origin
-git checkout cursor/top-hybrid-backtest-2198
-git pull origin cursor/top-hybrid-backtest-2198
-# Re-run setup so packages\backtest + tzdata are installed
+git checkout cursor/equity-dry-run-orders-c815
+git pull origin cursor/equity-dry-run-orders-c815
+# Re-run setup so editable packages pick up paper ledger + equity planner
 .\deploy\windows\native\setup-native.ps1
 .\deploy\windows\native\start-native.ps1 -WithWorker
 ```
+
+Verify: http://127.0.0.1:5173/trades shows paper fills (side/qty/price/IST/reason/dry_run); http://127.0.0.1:8000/api/v1/health has `instrument=equity` and `execution=dry_run`. No live Upstox orders are placed.
 
 If the API fails with `ZoneInfoNotFoundError: 'No time zone found with key Asia/Kolkata'`, install tzdata and restart:
 

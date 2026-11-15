@@ -9,9 +9,11 @@ from options_portal_persistence.db import (
     redis_url,
 )
 from options_portal_persistence.news_store import NewsStore
+from options_portal_persistence.paper_trades import PaperTradeStore
 
 __all__ = [
     "NewsStore",
+    "PaperTradeStore",
     "check_postgres",
     "check_redis",
     "database_url",

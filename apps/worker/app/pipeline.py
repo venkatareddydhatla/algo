@@ -1,4 +1,4 @@
-"""15m pipeline tick — skeleton orchestration."""
+"""15m pipeline tick — equity dry-run auto-order orchestration."""
 
 from __future__ import annotations
 
@@ -7,10 +7,9 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from options_portal_broker.adapter import UpstoxAdapter
-from options_portal_domain.calendar import IndiaMarketCalendar
 from options_portal_domain.config import load_config, trading_mode
+from options_portal_domain.equity import plan_equity_intents
 from options_portal_domain.types import SignalAction
-from options_portal_hybrid.options_recommender import SingleLegATMRecommender
 from options_portal_hybrid.scorer import WeightedHybridScorer
 from options_portal_notify.notifiers import ConsoleNotifier
 from options_portal_risk.order_router import SafeOrderRouter
@@ -31,15 +30,36 @@ def build_ta_registry() -> IndicatorRegistry:
     return reg
 
 
+def _equity_share_qty(cfg: dict[str, Any], risk_cfg: dict[str, Any]) -> int:
+    equity_cfg = cfg.get("trading", {}).get("equity") or {}
+    raw = equity_cfg.get("share_qty", risk_cfg.get("equity_share_qty", 1))
+    try:
+        return max(1, int(raw))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _equity_enabled(cfg: dict[str, Any]) -> bool:
+    equity_cfg = cfg.get("trading", {}).get("equity") or {}
+    return bool(equity_cfg.get("enabled", True))
+
+
 async def run_symbol_tick(symbol: str, config: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Run one dry-run pipeline tick (live Upstox candles when token set)."""
+    """Run one dry-run pipeline tick with equity paper auto-orders."""
     cfg = config or load_config()
     hybrid_cfg = cfg.get("hybrid", {})
-    risk_cfg = cfg.get("trading", {}).get("risk", {})
+    risk_cfg = dict(cfg.get("trading", {}).get("risk", {}) or {})
+    equity_cfg = cfg.get("trading", {}).get("equity") or {}
     mode = trading_mode(cfg)  # type: ignore[arg-type]
+    share_qty = _equity_share_qty(cfg, risk_cfg)
+    # Expose share qty to risk gate as max entry size default
+    risk_cfg.setdefault("equity_share_qty", share_qty)
+    risk_cfg.setdefault(
+        "max_equity_qty_per_symbol",
+        int(equity_cfg.get("max_qty_per_symbol", risk_cfg.get("max_equity_qty_per_symbol", share_qty))),
+    )
 
     broker = UpstoxAdapter()
-    calendar = IndiaMarketCalendar()
     registry = build_ta_registry()
     signal_gen = ConfluenceSignalGenerator()
     scorer = WeightedHybridScorer(
@@ -49,7 +69,6 @@ async def run_symbol_tick(symbol: str, config: dict[str, Any] | None = None) -> 
         enter_short=float(hybrid_cfg.get("enter_short", -0.45)),
         news_veto_abs=float(hybrid_cfg.get("news_veto_abs", 0.70)),
     )
-    recommender = SingleLegATMRecommender(min_oi=int(risk_cfg.get("min_option_oi", 50000)))
     router = SafeOrderRouter(broker=broker, halt=bool(cfg.get("trading", {}).get("halt")))
     notifier = ConsoleNotifier()
     sentiment = VaderScorer()
@@ -96,11 +115,52 @@ async def run_symbol_tick(symbol: str, config: dict[str, Any] | None = None) -> 
         "reason_summary": decision.reason_summary,
         "reason_detail": decision.reason_detail,
         "mode": mode,
+        "instrument": "equity",
+        "execution": "dry_run",
         "market_data_source": market_data_source,
         "candle_count": len(candles),
     }
 
-    if decision.action == SignalAction.HOLD:
+    last_price = float(candles[-1].close) if candles else 0.0
+    result["last_price"] = last_price
+
+    if not _equity_enabled(cfg):
+        result["order"] = None
+        result["note"] = "equity auto-order disabled"
+        return result
+
+    # Paper ledger for open positions + risk portfolio snapshot
+    paper = None
+    try:
+        from options_portal_persistence.paper_trades import PaperTradeStore
+
+        paper = PaperTradeStore()
+    except Exception:  # noqa: BLE001
+        logger.exception("paper ledger init failed for %s", symbol)
+
+    open_side = None
+    open_qty = 0
+    portfolio: dict[str, Any] = {}
+    if paper is not None and paper.available:
+        safe_mode_for_ledger = "dry_run" if mode == "live" else mode
+        portfolio = paper.portfolio_snapshot(mode=safe_mode_for_ledger)  # type: ignore[arg-type]
+        pos = paper.get_position(symbol, mode=safe_mode_for_ledger)  # type: ignore[arg-type]
+        if pos:
+            open_side = pos.get("side")
+            open_qty = int(pos.get("qty") or 0)
+
+    reason_summary = decision.reason_summary or decision.action.value
+    intents = plan_equity_intents(
+        symbol,
+        decision.action,
+        open_side=open_side,  # type: ignore[arg-type]
+        open_qty=open_qty,
+        qty=share_qty,
+        price=last_price or 1.0,
+        reason=reason_summary,
+    )
+
+    if decision.action == SignalAction.HOLD and not intents:
         logger.info(
             "%s HOLD hybrid=%.3f reason=%s",
             symbol,
@@ -118,27 +178,65 @@ async def run_symbol_tick(symbol: str, config: dict[str, Any] | None = None) -> 
         )
         return result
 
-    expiry = calendar.pick_expiry(symbol)
-    chain = await broker.get_option_chain(symbol, expiry)
-    reco = recommender.recommend(decision, chain, risk_cfg)
-    if reco is None:
+    if not intents:
         result["order"] = None
-        result["note"] = "no recommendation"
+        result["note"] = "no equity intent (already positioned or no action)"
         return result
 
-    # Force dry_run path for safety even if config says otherwise in worker skeleton
+    # Force dry_run path for safety even if config says otherwise in worker
     safe_mode = "dry_run" if mode == "live" else mode
-    order = await router.execute(reco, safe_mode, actor_user_id=None, limits={**risk_cfg, "halt": cfg.get("trading", {}).get("halt")})
-    result["recommendation"] = reco.rationale
-    result["order"] = {
-        "status": order.status,
-        "mode": order.mode,
-        "client_order_id": order.client_order_id,
-        "message": order.message,
-    }
+    limits = {**risk_cfg, "halt": cfg.get("trading", {}).get("halt")}
+    order_rows: list[dict[str, Any]] = []
+
+    for intent in intents:
+        # Refresh portfolio between flip_close and flip_open
+        if paper is not None and paper.available:
+            portfolio = paper.portfolio_snapshot(mode=safe_mode)  # type: ignore[arg-type]
+
+        order = await router.execute_equity(
+            intent,
+            safe_mode,  # type: ignore[arg-type]
+            actor_user_id=None,
+            portfolio=portfolio,
+            limits=limits,
+        )
+        persist_meta: dict[str, Any] = {}
+        if (
+            paper is not None
+            and paper.available
+            and order.status == "simulated"
+        ):
+            persist_meta = paper.record_simulated_fill(
+                intent, order, mode=safe_mode  # type: ignore[arg-type]
+            )
+
+        order_rows.append(
+            {
+                "status": order.status,
+                "mode": order.mode,
+                "client_order_id": order.client_order_id,
+                "message": order.message,
+                "side": intent.side,
+                "qty": intent.qty,
+                "price": intent.limit_price,
+                "reason": intent.reason,
+                "action_kind": intent.action_kind,
+                "dry_run": True,
+                "instrument": "equity",
+                "persisted": persist_meta.get("persisted", False),
+                "ts_ist_display": persist_meta.get("ts_ist_display"),
+            }
+        )
+
+    result["orders"] = order_rows
+    result["order"] = order_rows[-1] if order_rows else None
+    result["recommendation"] = (
+        f"Equity dry_run: {decision.action.value} → "
+        + "; ".join(f"{o['side']} {o['qty']} @ {o['price']:.2f}" for o in order_rows)
+    )
     await notifier.send(
-        f"{symbol} {decision.action.value}",
-        reco.rationale,
-        {"order": result["order"]},
+        f"{symbol} {decision.action.value} equity",
+        result["recommendation"],
+        {"orders": order_rows},
     )
     return result
