@@ -87,6 +87,9 @@ export type TopHybrid = {
 export type BacktestFill = {
   entry_ts: string;
   exit_ts: string;
+  /** Display timestamp, e.g. ``2024-01-15 09:30 IST`` */
+  entry_at_ist?: string;
+  exit_at_ist?: string;
   side: "CE" | "PE";
   entry_price: number;
   exit_price: number;

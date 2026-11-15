@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Literal
 
+from options_portal_domain.tz import ist
 from options_portal_domain.types import Candle, SignalAction, TechnicalSignal
 from options_portal_hybrid.scorer import WeightedHybridScorer
 from options_portal_ta.indicators import (
@@ -22,10 +23,29 @@ from options_portal_backtest.candles import resolve_candles
 Side = Literal["CE", "PE"]
 
 
+def _to_ist(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        # Treat naive bar times as UTC (candle store convention)
+        from datetime import timezone
+
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(ist())
+
+
+def format_bar_ts_ist(dt: datetime) -> tuple[str, str]:
+    """Return (ISO-8601 with IST offset, display ``YYYY-MM-DD HH:MM IST``)."""
+    local = _to_ist(dt)
+    iso = local.isoformat()
+    display = local.strftime("%Y-%m-%d %H:%M IST")
+    return iso, display
+
+
 @dataclass
 class TradeFill:
     entry_ts: str
     exit_ts: str
+    entry_at_ist: str
+    exit_at_ist: str
     side: Side
     entry_price: float
     exit_price: float
@@ -137,10 +157,14 @@ def run_backtest(
             gross_wins += pnl
         else:
             gross_losses += abs(pnl)
+        entry_iso, entry_disp = format_bar_ts_ist(candles[entry_idx].ts)
+        exit_iso, exit_disp = format_bar_ts_ist(candles[i].ts)
         fills.append(
             TradeFill(
-                entry_ts=candles[entry_idx].ts.isoformat(),
-                exit_ts=candles[i].ts.isoformat(),
+                entry_ts=entry_iso,
+                exit_ts=exit_iso,
+                entry_at_ist=entry_disp,
+                exit_at_ist=exit_disp,
                 side=open_side,
                 entry_price=round(entry_price, 4),
                 exit_price=round(exit_px, 4),
@@ -196,8 +220,12 @@ def run_backtest(
     if pf == float("inf"):
         pf = 99.0
 
-    from_s = candles[0].ts.date().isoformat() if candles else (start.isoformat() if start else None)
-    to_s = candles[-1].ts.date().isoformat() if candles else (end.isoformat() if end else None)
+    if candles:
+        from_s = _to_ist(candles[0].ts).date().isoformat()
+        to_s = _to_ist(candles[-1].ts).date().isoformat()
+    else:
+        from_s = start.isoformat() if start else None
+        to_s = end.isoformat() if end else None
 
     return BacktestResult(
         symbol=sym,
@@ -219,6 +247,7 @@ def run_backtest(
         fills=[asdict(f) for f in fills[:max_fills]],
         note=(
             "Dry-run spot-proxy PnL (not full options chain). "
+            "Fill times are Asia/Kolkata (IST). "
             "Uses confluence TA + hybrid scorer with empty news."
         ),
     )

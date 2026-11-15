@@ -176,13 +176,16 @@ export default function BacktestPage() {
             {result.to_date ? ` → ${result.to_date}` : ""}
           </p>
           <h2>Fills</h2>
+          <p className="muted bt-fills-note">Entry / exit times when the signal met · Asia/Kolkata (IST)</p>
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
                   <th>Side</th>
-                  <th>Entry</th>
-                  <th>Exit</th>
+                  <th>Entry (IST)</th>
+                  <th>Exit (IST)</th>
+                  <th>Entry px</th>
+                  <th>Exit px</th>
                   <th>Bars</th>
                   <th>PnL</th>
                   <th>Reason</th>
@@ -191,7 +194,7 @@ export default function BacktestPage() {
               <tbody>
                 {fills.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="muted">
+                    <td colSpan={8} className="muted">
                       No fills in this window
                     </td>
                   </tr>
@@ -201,6 +204,8 @@ export default function BacktestPage() {
                       <td className={f.side === "CE" ? "action-BUY_CE_BIAS" : "action-BUY_PE_BIAS"}>
                         {f.side}
                       </td>
+                      <td className="mono">{fmtFillIst(f.entry_at_ist, f.entry_ts)}</td>
+                      <td className="mono">{fmtFillIst(f.exit_at_ist, f.exit_ts)}</td>
                       <td className="mono">{f.entry_price.toFixed(2)}</td>
                       <td className="mono">{f.exit_price.toFixed(2)}</td>
                       <td className="mono">{f.bars_held}</td>
@@ -239,4 +244,23 @@ function Metric({
       </span>
     </div>
   );
+}
+
+/** Prefer server ``*_at_ist`` display; fall back to formatting ISO ts in IST. */
+function fmtFillIst(display: string | undefined, iso: string): string {
+  if (display && display.trim()) return display;
+  if (!iso) return "-";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(d);
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
+  return `${get("year")}-${get("month")}-${get("day")} ${get("hour")}:${get("minute")} IST`;
 }
