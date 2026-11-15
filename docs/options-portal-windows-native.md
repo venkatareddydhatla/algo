@@ -60,6 +60,23 @@ git pull origin cursor/equity-dry-run-orders-c815
 
 Verify: http://127.0.0.1:5173/trades shows paper fills (side/qty/price/IST/reason/dry_run); http://127.0.0.1:8000/api/v1/health has `instrument=equity` and `execution=dry_run`. No live Upstox orders are placed.
 
+### Pull soft EOD + market sentiment (stacked)
+
+Soft flatten at **15:20 IST** (close paper equity unless strong same-side `|hybrid|` overnight conviction). Session close stays **15:30** NSE. User monitoring note: **09:15–15:40 IST** — no hard force square-off at 15:40. Optional light NIFTY/BANKNIFTY gate blocks new *opposite* entries only when index hybrid strongly conflicts.
+
+```powershell
+cd C:\algo
+Set-ExecutionPolicy -Scope Process Bypass
+.\deploy\windows\native\stop-native.ps1
+git fetch origin
+git checkout cursor/soft-eod-market-sentiment-bc84
+git pull origin cursor/soft-eod-market-sentiment-bc84
+.\deploy\windows\native\setup-native.ps1
+.\deploy\windows\native\start-native.ps1 -WithWorker
+```
+
+Config knobs (non-secret): `trading.session.soft_flatten_ist`, `overnight_hold_min_hybrid_abs`, `trading.market_sentiment.enabled`. Worker logs flatten / overnight-hold / index-block reasons. Still `dry_run` only.
+
 If the API fails with `ZoneInfoNotFoundError: 'No time zone found with key Asia/Kolkata'`, install tzdata and restart:
 
 ```powershell

@@ -9,6 +9,15 @@ from typing import Any
 from options_portal_broker.adapter import UpstoxAdapter
 from options_portal_domain.config import load_config, trading_mode
 from options_portal_domain.equity import plan_equity_intents
+from options_portal_domain.session_gates import (
+    MarketSentimentPolicy,
+    SoftEodPolicy,
+    compute_index_bias,
+    entry_conflicts_with_index,
+    filter_entry_intents,
+    soft_flatten_decision,
+)
+from options_portal_domain.tz import now_ist
 from options_portal_domain.types import SignalAction
 from options_portal_hybrid.scorer import WeightedHybridScorer
 from options_portal_notify.notifiers import ConsoleNotifier
@@ -19,6 +28,23 @@ from options_portal_ta.registry import IndicatorRegistry
 from options_portal_ta.signal_generator import ConfluenceSignalGenerator
 
 logger = logging.getLogger(__name__)
+
+# Last hybrid scores for index symbols — light market_sentiment gate (process-local).
+_INDEX_HYBRID_CACHE: dict[str, float] = {}
+
+
+def get_index_hybrid_cache() -> dict[str, float]:
+    return dict(_INDEX_HYBRID_CACHE)
+
+
+def clear_index_hybrid_cache() -> None:
+    _INDEX_HYBRID_CACHE.clear()
+
+
+def _remember_index_hybrid(symbol: str, hybrid_score: float, policy: MarketSentimentPolicy) -> None:
+    sym = symbol.upper()
+    if sym in policy.symbols:
+        _INDEX_HYBRID_CACHE[sym] = float(hybrid_score)
 
 
 def build_ta_registry() -> IndicatorRegistry:
@@ -149,16 +175,111 @@ async def run_symbol_tick(symbol: str, config: dict[str, Any] | None = None) -> 
             open_side = pos.get("side")
             open_qty = int(pos.get("qty") or 0)
 
+    soft_policy = SoftEodPolicy.from_config(cfg)
+    mkt_policy = MarketSentimentPolicy.from_config(cfg)
+    _remember_index_hybrid(symbol, decision.hybrid_score, mkt_policy)
+    ist_now = now_ist()
+    result["session"] = {
+        "soft_flatten_ist": soft_policy.soft_flatten_ist,
+        "no_new_entries_after": soft_policy.no_new_entries_after,
+        "close_ist": soft_policy.close_ist,
+        "user_hours_note": soft_policy.user_hours_note,
+        "past_soft_flatten": soft_policy.past_soft_flatten(ist_now),
+        "past_no_new_entries": soft_policy.past_no_new_entries(ist_now),
+    }
+
     reason_summary = decision.reason_summary or decision.action.value
-    intents = plan_equity_intents(
-        symbol,
-        decision.action,
+    flatten = soft_flatten_decision(
         open_side=open_side,  # type: ignore[arg-type]
         open_qty=open_qty,
-        qty=share_qty,
-        price=last_price or 1.0,
-        reason=reason_summary,
+        hybrid_score=decision.hybrid_score,
+        policy=soft_policy,
+        now=ist_now,
     )
+    result["soft_eod"] = flatten
+
+    if flatten["action"] == "overnight_hold":
+        logger.info("%s %s", symbol, flatten["reason"])
+        intents = []
+        result["order"] = None
+        result["note"] = flatten["reason"]
+        result["overnight_hold"] = True
+        await notifier.send(
+            f"{symbol} overnight hold",
+            flatten["reason"],
+            {"hybrid_score": decision.hybrid_score, "open_side": open_side},
+        )
+        return result
+
+    if flatten["action"] == "flatten":
+        logger.info("%s %s", symbol, flatten["reason"])
+        intents = plan_equity_intents(
+            symbol,
+            SignalAction.HOLD,
+            open_side=open_side,  # type: ignore[arg-type]
+            open_qty=open_qty,
+            qty=share_qty,
+            price=last_price or 1.0,
+            reason=flatten["reason"],
+        )
+    else:
+        intents = plan_equity_intents(
+            symbol,
+            decision.action,
+            open_side=open_side,  # type: ignore[arg-type]
+            open_qty=open_qty,
+            qty=share_qty,
+            price=last_price or 1.0,
+            reason=reason_summary,
+        )
+
+    # Soft cut-off: no new entries after configured IST time (exits still allowed)
+    if soft_policy.past_no_new_entries(ist_now):
+        before = len(intents)
+        intents = filter_entry_intents(intents, allow_entries=False)
+        if before and not intents:
+            logger.info(
+                "%s no_new_entries_after=%s — blocked entry intents",
+                symbol,
+                soft_policy.no_new_entries_after,
+            )
+            result["order"] = None
+            result["note"] = (
+                f"no_new_entries_after={soft_policy.no_new_entries_after} IST"
+            )
+            return result
+        if len(intents) < before:
+            result["note"] = (
+                f"no_new_entries_after={soft_policy.no_new_entries_after} "
+                "— entry legs dropped; exits kept"
+            )
+
+    # Light index gate: block new opposite entries when NIFTY/BANKNIFTY strongly conflict
+    if mkt_policy.enabled and any(
+        getattr(i, "action_kind", None) in {"entry", "flip_open"} for i in intents
+    ):
+        index_info = compute_index_bias(
+            _INDEX_HYBRID_CACHE,
+            symbols=mkt_policy.symbols,
+            disagree_min_abs=mkt_policy.disagree_min_abs,
+        )
+        result["market_sentiment"] = index_info
+        blocked, block_reason = entry_conflicts_with_index(
+            decision.action,
+            index_info.get("bias"),
+            conflict_abs=mkt_policy.conflict_abs,
+        )
+        if blocked:
+            logger.info("%s %s", symbol, block_reason)
+            intents = filter_entry_intents(intents, allow_entries=False)
+            # Keep flip_close / exit if present; if only entries were planned, stop
+            if not intents:
+                result["order"] = None
+                result["note"] = block_reason
+                return result
+            result["note"] = block_reason
+        else:
+            logger.debug("%s market_sentiment ok: %s", symbol, block_reason)
 
     if decision.action == SignalAction.HOLD and not intents:
         logger.info(
