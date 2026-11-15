@@ -28,6 +28,7 @@ from options_portal_notify.gmail import (
     format_fill_email,
     gmail_settings,
     send_gmail_message,
+    soften_reason,
 )
 
 
@@ -51,8 +52,19 @@ def test_gmail_settings_disabled_without_password(clear_gmail_env):
     assert cfg.configured is False
 
 
+def test_soften_reason_truncates():
+    short = soften_reason("ok")
+    assert short == "ok"
+    long_reason = "x" * 100
+    soft = soften_reason(long_reason, max_len=20)
+    assert soft.endswith("…")
+    assert len(soft) == 20
+    assert soften_reason("") == "—"
+    assert soften_reason(None) == "—"
+
+
 def test_format_fill_email():
-    subject, body = format_fill_email(
+    subject, body, html_body = format_fill_email(
         symbol="RELIANCE",
         side="BUY",
         qty=1,
@@ -66,10 +78,16 @@ def test_format_fill_email():
     assert "BUY" in body
     assert "2500.50" in body
     assert "dry_run" in body
+    assert "<table" in html_body
+    assert "RELIANCE" in html_body
 
 
 def test_format_daily_summary_email():
-    subject, body = format_daily_summary_email(
+    long_reason = (
+        "hybrid bullish: RSI recovery + positive news cluster on earnings "
+        "beat and guidance raise with elevated volume confirmation"
+    )
+    subject, body, html_body = format_daily_summary_email(
         day_ist="2026-11-15",
         day_realized=12.5,
         positions=[{"symbol": "TCS", "side": "long", "qty": 1, "avg_price": 3900}],
@@ -80,13 +98,22 @@ def test_format_daily_summary_email():
                 "qty": 1,
                 "price": 3900,
                 "ts_ist_display": "2026-11-15 11:00 IST",
-                "reason": "entry",
+                "reason": long_reason,
+                "realized_pnl": None,
             }
         ],
     )
     assert "2026-11-15" in subject
     assert "TCS" in body
     assert "12.50" in body
+    assert "Time (IST)" in body
+    assert "Reason" in body
+    assert "…" in body  # truncated reason in plain table
+    assert long_reason in body  # full reason appendix
+    assert "<table" in html_body
+    assert "Today's fills" in html_body or "Today&#x27;s fills" in html_body
+    assert "Open positions" in html_body
+    assert "title=" in html_body  # hover full reason
 
 
 def test_send_gmail_message_mocked(clear_gmail_env, monkeypatch: pytest.MonkeyPatch):
@@ -102,6 +129,7 @@ def test_send_gmail_message_mocked(clear_gmail_env, monkeypatch: pytest.MonkeyPa
     ok = send_gmail_message(
         subject="[dry-run] Test",
         body="hello",
+        html_body="<p>hello</p>",
         smtp_factory=smtp_factory,
     )
     assert ok is True
@@ -111,6 +139,8 @@ def test_send_gmail_message_mocked(clear_gmail_env, monkeypatch: pytest.MonkeyPa
         "venkatareddy.dhatla@gmail.com", "test-app-password"
     )
     smtp_instance.send_message.assert_called_once()
+    sent_msg = smtp_instance.send_message.call_args.args[0]
+    assert sent_msg.get_content_type() == "multipart/alternative"
 
 
 def test_send_gmail_skipped_without_password(clear_gmail_env):
@@ -241,6 +271,46 @@ def test_maybe_send_daily_summary_mocked(
     )
     assert status2["sent"] is False
     assert status2["reason"] == "not_due"
+
+
+def test_force_send_without_mark_preserves_schedule(
+    clear_gmail_env, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    monkeypatch.setenv("GMAIL_APP_PASSWORD", "pw")
+    smtp_instance = MagicMock()
+    smtp_factory = MagicMock(return_value=smtp_instance)
+    smtp_instance.__enter__ = MagicMock(return_value=smtp_instance)
+    smtp_instance.__exit__ = MagicMock(return_value=False)
+
+    class EmptyStore:
+        available = True
+
+        def portfolio_snapshot(self, *, mode="dry_run"):
+            return {"positions": [], "day_realized_pnl": 0.0}
+
+        def list_fills(self, *, mode="dry_run", limit=200, offset=0):
+            return []
+
+    gmail = GmailSMTPNotifier(enabled=True, smtp_factory=smtp_factory)
+    # Before 16:00 — only force can send
+    now = datetime(2026, 11, 15, 10, 0, tzinfo=ist())
+    state = tmp_path / "notify_state.json"
+    status = maybe_send_daily_summary(
+        config={"notify": {"daily_summary": {"enabled": True, "hour_ist": 16}}},
+        gmail=gmail,
+        paper_store=EmptyStore(),
+        now=now,
+        state_file=state,
+        force=True,
+        mark_sent=False,
+    )
+    assert status["sent"] is True
+    assert status["marked_sent"] is False
+    assert load_last_sent_day(state) is None
+
+    # Scheduled path still eligible later today
+    later = datetime(2026, 11, 15, 16, 5, tzinfo=ist())
+    assert should_send_daily_summary(later, last_sent=load_last_sent_day(state))
 
 
 def test_send_fill_helper(clear_gmail_env, monkeypatch: pytest.MonkeyPatch):
