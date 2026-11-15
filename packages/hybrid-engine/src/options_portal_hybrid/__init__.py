@@ -6,6 +6,7 @@ from options_portal_hybrid.explain import (
     build_reason_fields,
     classify_reason_kind,
     is_actionable,
+    pick_top_hybrid_sides,
     sort_signal_rows,
 )
 from options_portal_hybrid.options_recommender import SingleLegATMRecommender
@@ -19,7 +20,6 @@ __all__ = [
     "build_reason_fields",
     "classify_reason_kind",
     "is_actionable",
+    "pick_top_hybrid_sides",
     "sort_signal_rows",
 ]
-
-__all__ = ["SingleLegATMRecommender", "WeightedHybridScorer"]

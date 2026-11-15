@@ -92,6 +92,12 @@ Advanced: install Build Tools and re-run with -AllowUnsupportedPython (not neede
     }
     Write-Host "PyYAML binary wheel installed."
 
+    # IANA zones (Asia/Kolkata) — required on Windows; CPython has no system zoneinfo DB.
+    Write-Host 'Installing tzdata (IANA time zones for Windows) ...'
+    & $pip -m pip install "tzdata>=2024.1"
+    if ($LASTEXITCODE -ne 0) { throw "pip install tzdata failed with code $LASTEXITCODE" }
+    Write-Host "tzdata installed."
+
     Write-Host 'Installing editable packages (this may take a few minutes) ...'
     $packages = @(
         '.\packages\domain',
@@ -103,6 +109,7 @@ Advanced: install Build Tools and re-run with -AllowUnsupportedPython (not neede
         '.\packages\risk',
         '.\packages\notify',
         '.\packages\persistence',
+        '.\packages\backtest',
         '.\apps\api',
         '.\apps\worker'
     )

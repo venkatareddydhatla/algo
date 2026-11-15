@@ -6,28 +6,21 @@ from fastapi import APIRouter, HTTPException, Query
 
 from app.mock_data import MOCK_SIGNALS, build_universe_signals
 from options_portal_domain.config import load_config, watchlist_symbols
-from options_portal_hybrid.explain import attach_reason_fields, sort_signal_rows
+from options_portal_hybrid.explain import (
+    attach_reason_fields,
+    pick_top_hybrid_sides,
+    sort_signal_rows,
+)
 from options_portal_persistence.news_store import NewsStore
 
 router = APIRouter(prefix="/api/v1", tags=["signals"])
 
 
-@router.get("/signals")
-async def list_signals(
+def _load_signal_rows(
+    *,
     symbol: str | None = None,
-    offset: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=500),
-    expand_watchlist: bool = Query(
-        True,
-        description="Score the full watchlist (dry-run synthetic) instead of seed rows only",
-    ),
-) -> dict:
-    """List signals sorted actionable-first, then by |hybrid| desc.
-
-    Dry-run / mock path returns non-placeholder hybrid scores for every symbol
-    in the configured NSE F&O universe (not HOLD/0.00 inactive stubs).
-    When live RSS news exists for a symbol, reason/news_score use real headlines.
-    """
+    expand_watchlist: bool = True,
+) -> tuple[list[dict], str]:
     cfg = load_config()
     trading = cfg.get("trading", {})
     timeframe = str(trading.get("timeframe", "15m"))
@@ -57,6 +50,26 @@ async def list_signals(
         needle = symbol.upper()
         rows = [s for s in rows if s["symbol"].upper() == needle]
 
+    return rows, source
+
+
+@router.get("/signals")
+async def list_signals(
+    symbol: str | None = None,
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=500),
+    expand_watchlist: bool = Query(
+        True,
+        description="Score the full watchlist (dry-run synthetic) instead of seed rows only",
+    ),
+) -> dict:
+    """List signals sorted actionable-first, then by |hybrid| desc.
+
+    Dry-run / mock path returns non-placeholder hybrid scores for every symbol
+    in the configured NSE F&O universe (not HOLD/0.00 inactive stubs).
+    When live RSS news exists for a symbol, reason/news_score use real headlines.
+    """
+    rows, source = _load_signal_rows(symbol=symbol, expand_watchlist=expand_watchlist)
     rows = sort_signal_rows(rows)
     total = len(rows)
     page = rows[offset : offset + limit]
@@ -70,6 +83,25 @@ async def list_signals(
         "note": (
             "Actionable symbols (non-HOLD) sort first. "
             "Hover reason_summary for reason_detail explainability."
+        ),
+    }
+
+
+@router.get("/signals/top-hybrid")
+async def top_hybrid(
+    limit: int = Query(5, ge=1, le=20),
+    expand_watchlist: bool = Query(True),
+) -> dict:
+    """Top positive (CE) and negative (PE) hybrid strip candidates."""
+    rows, source = _load_signal_rows(expand_watchlist=expand_watchlist)
+    sides = pick_top_hybrid_sides(rows, limit=limit)
+    return {
+        "ce": sides["ce"],
+        "pe": sides["pe"],
+        "limit": limit,
+        "source": source,
+        "note": (
+            "Prefers reason_kind=hybrid; falls back to strongest actionable |hybrid|."
         ),
     }
 

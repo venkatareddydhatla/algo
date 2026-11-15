@@ -9,9 +9,12 @@ import signal
 import time
 
 from options_portal_domain.config import load_config, scan_symbols, watchlist_symbols
+from options_portal_domain.tz import ensure_tzdata
 from options_portal_domain.universe import scan_batch_size
 from app.news_ingest import news_poll_loop
 from app.pipeline import run_symbol_tick
+
+ensure_tzdata()
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),

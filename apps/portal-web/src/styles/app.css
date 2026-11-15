@@ -370,3 +370,187 @@ button:disabled {
 .reason-chip[data-kind="technical"] .reason-popup-kind {
   color: var(--ce);
 }
+
+/* Top CE / PE hybrid strip — compact, not card-heavy */
+.hybrid-strip {
+  display: grid;
+  gap: 0.75rem;
+  margin-bottom: 1.15rem;
+  padding-bottom: 0.85rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.hybrid-side {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.55rem 0.75rem;
+}
+
+.hybrid-side-label {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  min-width: 4.5rem;
+  color: var(--muted);
+}
+
+.hybrid-side-ce .hybrid-side-label {
+  color: var(--ce);
+}
+
+.hybrid-side-pe .hybrid-side-label {
+  color: var(--pe);
+}
+
+.hybrid-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  flex: 1;
+}
+
+.hybrid-chip-wrap {
+  display: inline-flex;
+  align-items: stretch;
+  gap: 0;
+}
+
+.hybrid-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  padding: 0.28rem 0.5rem;
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--text);
+  font-size: 0.82rem;
+}
+
+.hybrid-chip:hover,
+.hybrid-chip.is-active {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+}
+
+.hybrid-side-ce .hybrid-chip.is-active {
+  border-color: color-mix(in srgb, var(--ce) 60%, var(--line));
+}
+
+.hybrid-side-pe .hybrid-chip.is-active {
+  border-color: color-mix(in srgb, var(--pe) 60%, var(--line));
+}
+
+.hybrid-chip-score {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.hybrid-side-ce .hybrid-chip-score {
+  color: var(--ce);
+}
+
+.hybrid-side-pe .hybrid-chip-score {
+  color: var(--pe);
+}
+
+.hybrid-chip-kind {
+  font-size: 0.65rem;
+  letter-spacing: 0.04em;
+}
+
+.hybrid-bt-link {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 0.4rem;
+  border: 1px solid var(--line);
+  border-left: none;
+  text-decoration: none;
+  font-family: var(--mono);
+  font-size: 0.65rem;
+  letter-spacing: 0.04em;
+}
+
+.hybrid-bt-link:hover {
+  color: var(--text);
+  border-color: var(--muted);
+}
+
+.hybrid-strip-meta {
+  margin: 0;
+  font-size: 0.78rem;
+}
+
+.row-highlight td {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.sym-link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: inherit;
+  font-family: var(--mono);
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--muted) 40%, transparent);
+  text-underline-offset: 0.15em;
+}
+
+.sym-link:hover {
+  color: var(--accent);
+}
+
+/* Backtest screen */
+.bt-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.75rem;
+  margin-bottom: 0.85rem;
+}
+
+.bt-hints {
+  margin: 0 0 1rem;
+  font-size: 0.85rem;
+}
+
+.chip-link {
+  margin-right: 0.35rem;
+  padding: 0.15rem 0.4rem;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+}
+
+.bt-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem 1.5rem;
+  margin: 0.5rem 0 0.75rem;
+  padding: 0.65rem 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.bt-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 5.5rem;
+}
+
+.bt-metric .muted {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.bt-meta {
+  margin: 0 0 0.75rem;
+  font-size: 0.82rem;
+}
+
+.bt-fills-note {
+  margin: -0.25rem 0 0.55rem;
+  font-size: 0.82rem;
+}

@@ -10,9 +10,13 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routes import admin, health, news, signals, trades, watchlist
+from app.routes import admin, backtest, health, news, signals, trades, watchlist
 from options_portal_domain.config import load_config, trading_mode
+from options_portal_domain.tz import ensure_tzdata
 from options_portal_persistence.db import is_local_profile
+
+# Windows ships without system IANA zones — load tzdata before any ZoneInfo use.
+ensure_tzdata()
 
 logger = logging.getLogger("api")
 
@@ -78,6 +82,7 @@ app.include_router(signals.router)
 app.include_router(watchlist.router)
 app.include_router(news.router)
 app.include_router(trades.router)
+app.include_router(backtest.router)
 app.include_router(admin.router)
 
 
