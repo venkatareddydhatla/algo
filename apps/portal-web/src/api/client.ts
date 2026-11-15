@@ -163,7 +163,13 @@ export const api = {
     dry_run?: boolean;
   }) => postJson<BacktestResult>("/api/v1/backtest/run", body),
   news: () => getJson<{ items: NewsRow[]; source: string }>("/api/v1/news"),
-  trades: () => getJson<Record<string, unknown>>("/api/v1/trades"),
+  trades: (opts?: { offset?: number; limit?: number }) =>
+    getJson<Record<string, unknown>>(
+      `/api/v1/trades${qs({
+        offset: opts?.offset ?? 0,
+        limit: opts?.limit ?? 50,
+      })}`,
+    ),
   health: () => getJson<Record<string, unknown>>("/api/v1/health"),
   config: () => getJson<Record<string, unknown>>("/api/v1/admin/config"),
 };

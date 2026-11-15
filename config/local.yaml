@@ -18,6 +18,11 @@ trading:
     enabled: true
     share_qty: 1
     max_qty_per_symbol: 1
+    # Paper ledger: keep dry-run fills until explicit purge before live.
+    paper_retention:
+      auto_purge: false
+      allow_purge_before_live: true
+      live_min_retain_days: 90
   # Full NSE F&O watchlist (indices + equities). Worker scores the full universe by default.
   universe: nse_fno       # alias -> config/universe/nse_fno_underlyings.csv
   # symbols: nse_fno      # alternate: string alias instead of universe key

@@ -1,11 +1,20 @@
-"""Equity dry-run paper ledger (SQLite local profile)."""
+"""Equity dry-run paper ledger (SQLite local profile).
+
+Retention policy (see docs/options-portal-paper-retention.md):
+
+- **dry_run / demo:** never auto-delete fills or open positions. Keep history
+  for the review week (and beyond) until an explicit purge/archive.
+- **Before live:** call ``archive_and_purge`` (API or script) with confirm.
+- **After live:** ``run_live_retention`` may drop fills older than
+  ``live_min_retain_days`` (default ≥90). Never runs while mode is dry_run/demo.
+"""
 
 from __future__ import annotations
 
 import logging
 import sqlite3
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +26,14 @@ from options_portal_persistence.sqlite_schema import apply_paper_ledger_schema
 
 logger = logging.getLogger(__name__)
 
+# Closing an open position removes the row from paper_positions — that is not
+# fill/history deletion. Fill rows are append-only until explicit purge/retention.
+_FILL_ROW_COLS = (
+    "id, client_order_id, broker_order_id, mode, symbol, side, qty, price, "
+    "status, reason, signal_action, action_kind, position_side, dry_run, "
+    "realized_pnl, ts_utc, ts_ist, ts_ist_display"
+)
+
 
 def _utc_now() -> datetime:
     return datetime.now(tz=timezone.utc)
@@ -27,6 +44,29 @@ def _format_ist(dt: datetime) -> tuple[str, str]:
         dt = dt.replace(tzinfo=timezone.utc)
     local = dt.astimezone(ist())
     return local.isoformat(), local.strftime("%Y-%m-%d %H:%M IST")
+
+
+def _row_to_fill(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "client_order_id": row["client_order_id"],
+        "broker_order_id": row["broker_order_id"],
+        "ts": row["ts_utc"],
+        "ts_ist": row["ts_ist"],
+        "ts_ist_display": row["ts_ist_display"],
+        "status": row["status"],
+        "side": row["side"],
+        "symbol": row["symbol"],
+        "qty": int(row["qty"]),
+        "price": float(row["price"]),
+        "reason": row["reason"] or "",
+        "signal_action": row["signal_action"],
+        "action_kind": row["action_kind"],
+        "position_side": row["position_side"],
+        "dry_run": bool(row["dry_run"]),
+        "realized_pnl": row["realized_pnl"],
+        "mode": row["mode"],
+    }
 
 
 class PaperTradeStore:
@@ -229,54 +269,52 @@ class PaperTradeStore:
             "dry_run": True,
         }
 
+    def count_fills(self, *, mode: TradingMode = "dry_run") -> int:
+        if not self.available:
+            return 0
+        with self._connect() as conn:
+            apply_paper_ledger_schema(conn)
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM paper_fills WHERE mode = ?",
+                (mode,),
+            ).fetchone()
+        return int(row["n"] if row else 0)
+
     def list_fills(
         self,
         *,
         mode: TradingMode = "dry_run",
         limit: int = 100,
+        offset: int = 0,
     ) -> list[dict[str, Any]]:
+        """Return fills newest-first (full history — not today-only)."""
         if not self.available:
             return []
+        lim = max(1, min(int(limit), 500))
+        off = max(0, int(offset))
         with self._connect() as conn:
             apply_paper_ledger_schema(conn)
             rows = conn.execute(
-                """
-                SELECT * FROM paper_fills
+                f"""
+                SELECT {_FILL_ROW_COLS} FROM paper_fills
                 WHERE mode = ?
                 ORDER BY ts_utc DESC
-                LIMIT ?
+                LIMIT ? OFFSET ?
                 """,
-                (mode, max(1, int(limit))),
+                (mode, lim, off),
             ).fetchall()
-        out: list[dict[str, Any]] = []
-        for row in rows:
-            out.append(
-                {
-                    "id": row["id"],
-                    "client_order_id": row["client_order_id"],
-                    "broker_order_id": row["broker_order_id"],
-                    "ts": row["ts_utc"],
-                    "ts_ist": row["ts_ist"],
-                    "ts_ist_display": row["ts_ist_display"],
-                    "status": row["status"],
-                    "side": row["side"],
-                    "symbol": row["symbol"],
-                    "qty": int(row["qty"]),
-                    "price": float(row["price"]),
-                    "reason": row["reason"] or "",
-                    "signal_action": row["signal_action"],
-                    "action_kind": row["action_kind"],
-                    "position_side": row["position_side"],
-                    "dry_run": bool(row["dry_run"]),
-                    "realized_pnl": row["realized_pnl"],
-                    "mode": row["mode"],
-                }
-            )
-        return out
+        return [_row_to_fill(row) for row in rows]
 
-    def summary(self, *, mode: TradingMode = "dry_run") -> dict[str, Any]:
+    def summary(
+        self,
+        *,
+        mode: TradingMode = "dry_run",
+        fills_limit: int = 50,
+        fills_offset: int = 0,
+    ) -> dict[str, Any]:
         positions_raw = self.list_positions(mode=mode)
-        fills = self.list_fills(mode=mode, limit=200)
+        total_fills = self.count_fills(mode=mode)
+        fills = self.list_fills(mode=mode, limit=fills_limit, offset=fills_offset)
         day_realized = self.day_realized_pnl(mode=mode)
         positions = [
             {
@@ -289,6 +327,8 @@ class PaperTradeStore:
             }
             for p in positions_raw
         ]
+        lim = max(1, min(int(fills_limit), 500))
+        off = max(0, int(fills_offset))
         return {
             "mode": mode,
             "instrument": "equity",
@@ -297,8 +337,149 @@ class PaperTradeStore:
             "source": "paper_ledger",
             "positions": positions,
             "fills": fills,
+            "fills_total": total_fills,
+            "fills_offset": off,
+            "fills_limit": lim,
             "day_realized": day_realized,
             "day_unrealized": 0.0,
             "fees_est": 0.0,
             "open_symbols": [p["symbol"] for p in positions],
+            "retention": {
+                "auto_purge": False,
+                "history_scope": "all_fills",
+                "note": (
+                    "Dry-run fills are retained until an explicit purge/archive "
+                    "before live. Trades UI paginates full history (not today-only)."
+                ),
+            },
+        }
+
+    def archive_and_purge(
+        self,
+        *,
+        mode: TradingMode = "dry_run",
+        confirm: bool = False,
+        archive: bool = True,
+        clear_positions: bool = True,
+    ) -> dict[str, Any]:
+        """Explicit purge path before starting live — never auto-called in dry_run.
+
+        Copies fills into ``paper_fills_archive`` (when ``archive=True``), then
+        deletes live ``paper_fills`` (and optionally ``paper_positions``) for
+        ``mode``. Requires ``confirm=True``.
+        """
+        if not confirm:
+            return {
+                "purged": False,
+                "reason": "confirm=false — refusing to purge paper ledger",
+                "fills_deleted": 0,
+                "positions_deleted": 0,
+                "archived": 0,
+            }
+        if not self.available:
+            return {
+                "purged": False,
+                "reason": "store unavailable",
+                "fills_deleted": 0,
+                "positions_deleted": 0,
+                "archived": 0,
+            }
+
+        archived_at = _utc_now().isoformat()
+        with self._connect() as conn:
+            apply_paper_ledger_schema(conn)
+            archived = 0
+            if archive:
+                cur = conn.execute(
+                    f"""
+                    INSERT OR REPLACE INTO paper_fills_archive (
+                      {_FILL_ROW_COLS}, archived_at
+                    )
+                    SELECT {_FILL_ROW_COLS}, ? FROM paper_fills WHERE mode = ?
+                    """,
+                    (archived_at, mode),
+                )
+                archived = int(cur.rowcount or 0)
+            fills_cur = conn.execute(
+                "DELETE FROM paper_fills WHERE mode = ?",
+                (mode,),
+            )
+            fills_deleted = int(fills_cur.rowcount or 0)
+            positions_deleted = 0
+            if clear_positions:
+                pos_cur = conn.execute(
+                    "DELETE FROM paper_positions WHERE mode = ?",
+                    (mode,),
+                )
+                positions_deleted = int(pos_cur.rowcount or 0)
+            conn.commit()
+
+        logger.warning(
+            "paper ledger purge mode=%s archived=%d fills_deleted=%d positions_deleted=%d",
+            mode,
+            archived,
+            fills_deleted,
+            positions_deleted,
+        )
+        return {
+            "purged": True,
+            "mode": mode,
+            "archived": archived if archive else 0,
+            "fills_deleted": fills_deleted,
+            "positions_deleted": positions_deleted,
+            "archived_at": archived_at if archive else None,
+        }
+
+    def run_live_retention(
+        self,
+        *,
+        mode: TradingMode,
+        min_retain_days: int = 90,
+        as_of: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Drop fills older than ``min_retain_days`` — **live mode only**.
+
+        During dry_run/demo this is a no-op so review-week history is kept.
+        After live unlock, prefer ``min_retain_days >= 90``.
+        """
+        if mode in {"dry_run", "demo"}:
+            return {
+                "purged": 0,
+                "skipped": True,
+                "reason": f"mode={mode} — auto-delete disabled; keep all paper fills",
+            }
+        if not self.available:
+            return {"purged": 0, "skipped": True, "reason": "store unavailable"}
+
+        days = max(90, int(min_retain_days))  # never retain less than 90 days
+        now = as_of or _utc_now()
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+        cutoff = (now - timedelta(days=days)).astimezone(timezone.utc).isoformat()
+
+        with self._connect() as conn:
+            apply_paper_ledger_schema(conn)
+            cur = conn.execute(
+                """
+                DELETE FROM paper_fills
+                WHERE mode = ? AND ts_utc < ?
+                """,
+                (mode, cutoff),
+            )
+            purged = int(cur.rowcount or 0)
+            conn.commit()
+
+        if purged:
+            logger.info(
+                "live paper fill retention purged=%d mode=%s older_than_days=%d",
+                purged,
+                mode,
+                days,
+            )
+        return {
+            "purged": purged,
+            "skipped": False,
+            "mode": mode,
+            "min_retain_days": days,
+            "cutoff_utc": cutoff,
         }

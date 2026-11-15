@@ -1,13 +1,16 @@
 import { useEffect, useState } from "react";
 import { api } from "../api/client";
 
+const PAGE_SIZE = 50;
+
 export default function TradesPage() {
   const [data, setData] = useState<Record<string, unknown> | null>(null);
+  const [offset, setOffset] = useState(0);
 
   useEffect(() => {
     (async () => {
       try {
-        setData(await api.trades());
+        setData(await api.trades({ offset, limit: PAGE_SIZE }));
       } catch {
         setData({
           mode: "dry_run",
@@ -16,18 +19,24 @@ export default function TradesPage() {
           dry_run: true,
           positions: [],
           fills: [],
+          fills_total: 0,
+          fills_offset: offset,
+          fills_limit: PAGE_SIZE,
           day_realized: 0,
           day_unrealized: 0,
           source: "local-empty",
         });
       }
     })();
-  }, []);
+  }, [offset]);
 
   const positions = (data?.positions as Array<Record<string, unknown>>) || [];
   const fills = (data?.fills as Array<Record<string, unknown>>) || [];
   const instrument = String(data?.instrument ?? "equity");
   const execution = String(data?.execution ?? data?.mode ?? "dry_run");
+  const total = Number(data?.fills_total ?? fills.length);
+  const page = Math.floor(offset / PAGE_SIZE) + 1;
+  const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   return (
     <section>
@@ -37,6 +46,7 @@ export default function TradesPage() {
           Paper ledger · {instrument} · {execution}
           {data?.dry_run === false ? "" : " · dry_run"}
           {data?.source ? ` · ${String(data.source)}` : ""}
+          {" · history kept (not today-only)"}
         </p>
       </div>
       <h2>Open positions</h2>
@@ -72,7 +82,24 @@ export default function TradesPage() {
           </tbody>
         </table>
       </div>
-      <h2>Fills</h2>
+      <div className="section-head" style={{ marginTop: "1.5rem" }}>
+        <h2>Fills</h2>
+        <div className="pager">
+          <button type="button" disabled={offset <= 0} onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}>
+            Prev
+          </button>
+          <span className="muted mono">
+            {page}/{pages} · {total} total
+          </span>
+          <button
+            type="button"
+            disabled={offset + PAGE_SIZE >= total}
+            onClick={() => setOffset(offset + PAGE_SIZE)}
+          >
+            Next
+          </button>
+        </div>
+      </div>
       <div className="table-wrap">
         <table>
           <thead>
@@ -96,7 +123,7 @@ export default function TradesPage() {
               </tr>
             ) : (
               fills.map((f, i) => (
-                <tr key={i}>
+                <tr key={String(f.id ?? i)}>
                   <td className="mono">
                     {String(f.ts_ist_display || f.ts_ist || f.ts || "—")}
                   </td>
@@ -116,6 +143,10 @@ export default function TradesPage() {
       <p className="pnl">
         Day realized ₹ {Number(data?.day_realized ?? 0).toLocaleString()} · unrealized ₹{" "}
         {Number(data?.day_unrealized ?? 0).toLocaleString()}
+      </p>
+      <p className="muted" style={{ fontSize: "0.85rem" }}>
+        Dry-run fills are retained for review. Purge/archive only before live — see
+        paper retention docs / admin purge / scripts/purge_paper_ledger.py.
       </p>
     </section>
   );

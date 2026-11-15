@@ -17,6 +17,10 @@ trading:
     enabled: true
     share_qty: 1           # fixed shares per dry-run equity entry
     max_qty_per_symbol: 1
+    paper_retention:
+      auto_purge: false
+      allow_purge_before_live: true
+      live_min_retain_days: 90
   universe: nse_fno       # full NSE F&O indices + equities (config/universe/)
   symbols_demo:          # quick-test set (set use_symbols_demo: true)
     - NIFTY

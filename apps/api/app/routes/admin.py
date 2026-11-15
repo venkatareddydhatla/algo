@@ -6,7 +6,13 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.mock_data import MOCK_CONFIG
-from options_portal_domain.config import load_config, scan_symbols, watchlist_symbols
+from options_portal_domain.config import (
+    load_config,
+    paper_retention_config,
+    scan_symbols,
+    trading_mode,
+    watchlist_symbols,
+)
 
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
 
@@ -14,6 +20,15 @@ router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
 class ModeUpdate(BaseModel):
     mode: str = Field(pattern="^(dry_run|demo|live)$")
     confirm_live: bool = False
+
+
+class PaperLedgerPurge(BaseModel):
+    """Explicit purge/archive of paper fills before starting live orders."""
+
+    confirm: bool = False
+    archive: bool = True
+    clear_positions: bool = True
+    mode: str = Field(default="dry_run", pattern="^(dry_run|demo)$")
 
 
 @router.get("/config")
@@ -71,4 +86,53 @@ async def set_halt(halt: bool = True) -> dict:
         "halt": halt,
         "persisted": False,
         "message": "Kill switch stub — set TRADING_HALT env for process-level halt",
+    }
+
+
+@router.post("/paper-ledger/purge")
+async def purge_paper_ledger(body: PaperLedgerPurge) -> dict:
+    """Archive + clear dry-run paper fills/positions — only when starting live.
+
+    During the dry-run review week do **not** call this. Fills are kept for
+    analysis. See docs/options-portal-paper-retention.md and
+    ``scripts/purge_paper_ledger.py``.
+    """
+    retention = paper_retention_config()
+    if not retention.get("allow_purge_before_live", True):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "trading.equity.paper_retention.allow_purge_before_live is false — "
+                "enable it in config before purging"
+            ),
+        )
+    if not body.confirm:
+        raise HTTPException(
+            status_code=400,
+            detail="confirm=true required to purge paper ledger",
+        )
+
+    from options_portal_persistence.paper_trades import PaperTradeStore
+
+    store = PaperTradeStore()
+    if not store.available:
+        raise HTTPException(
+            status_code=503,
+            detail="Paper ledger unavailable (set PERSISTENCE_PROFILE=local)",
+        )
+
+    result = store.archive_and_purge(
+        mode=body.mode,  # type: ignore[arg-type]
+        confirm=True,
+        archive=body.archive,
+        clear_positions=body.clear_positions,
+    )
+    return {
+        **result,
+        "trading_mode": trading_mode(),
+        "retention": retention,
+        "message": (
+            "Paper ledger purged. Review archive table / SQLite backup if needed, "
+            "then proceed toward live only after Project unlock."
+        ),
     }
