@@ -8,8 +8,10 @@ from options_portal_persistence.db import (
     persistence_profile,
     redis_url,
 )
+from options_portal_persistence.news_store import NewsStore
 
 __all__ = [
+    "NewsStore",
     "check_postgres",
     "check_redis",
     "database_url",

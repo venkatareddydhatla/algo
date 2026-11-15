@@ -130,24 +130,24 @@ pytest -q
 
 ```text
 apps/api            FastAPI — health, signals, news, trades, admin stubs
-apps/worker         15m pipeline tick (TA → hybrid → risk → dry-run order)
+apps/worker         15m pipeline tick + RSS news poll loop (TA → hybrid → dry-run)
 apps/portal-web     React/Vite dashboard shell
 apps/backtest-cli   Placeholder for offline replay
 packages/domain     Types, protocols, India calendar, config loader
 packages/broker-upstox  Upstox adapter (synthetic MD; OAuth TODO)
 packages/ta-core    RSI/EMA/Supertrend/VWAP + confluence signal generator
-packages/news-rss   RSS poller
+packages/news-rss   RSS poller + VADER ingest → SQLite (skips broken placeholder feeds)
 packages/sentiment  VADER scorer + FinBERT stub hook
 packages/hybrid-engine  Weighted hybrid + single-leg ATM recommender
 packages/risk       Risk gates + SafeOrderRouter (live blocked)
 packages/notify     Console / webhook / telegram notifiers
-packages/persistence  Postgres/Redis health helpers + local SQLite profile
+packages/persistence  Postgres/Redis health + local SQLite news store
 db/migrations       SQL schema + seed
 config/             default.yaml, local.yaml, symbols.india.yaml, universe/
 scripts/            install_dev, smoke_health, refresh_nse_fno_universe
 deploy/             docker-compose.yml + windows/ (+ native/)
 docs/               Architecture + Windows guides
-tests/unit          TA + hybrid + calendar + universe + router tests
+tests/unit          TA + hybrid + calendar + universe + news ingest tests
 ```
 
 ## Requirements

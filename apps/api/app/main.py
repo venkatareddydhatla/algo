@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 from contextlib import asynccontextmanager
 
@@ -10,6 +12,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.routes import admin, health, news, signals, trades, watchlist
 from options_portal_domain.config import load_config, trading_mode
+from options_portal_persistence.db import is_local_profile
+
+logger = logging.getLogger("api")
 
 
 @asynccontextmanager
@@ -22,7 +27,30 @@ async def lifespan(_app: FastAPI):
             "WARNING: TRADING_MODE=live requested but v1 blocks live placement. "
             "Prefer dry_run."
         )
+
+    news_task: asyncio.Task | None = None
+    stop = asyncio.Event()
+    # Local/SQLite: poll RSS inside the API so News UI works without -WithWorker.
+    # Worker also runs the same loop; UNIQUE(source, content_hash) keeps upserts safe.
+    poll_in_api = os.environ.get("NEWS_POLL_IN_API", "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+    }
+    if poll_in_api and is_local_profile():
+        from app.news_poller import run_api_news_poller
+
+        news_task = asyncio.create_task(run_api_news_poller(stop), name="api-news-poll")
+        logger.info("API news poller started (local profile)")
+
     yield
+
+    stop.set()
+    if news_task is not None:
+        try:
+            await asyncio.wait_for(news_task, timeout=8)
+        except (TimeoutError, asyncio.CancelledError):
+            news_task.cancel()
 
 
 app = FastAPI(

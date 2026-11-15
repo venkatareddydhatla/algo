@@ -98,26 +98,37 @@ broker:
 
 news:
   poll_interval_sec: 120
+  timeout_sec: 15
+  ingest_lookback_minutes: 2880  # 48h — market feeds often lag overnight
+  ui_lookback_minutes: 2880
   sources:
+    # moneycontrol latestnews.xml currently looks stale (2024 items) — keep disabled
     - id: moneycontrol
       type: rss
+      enabled: false
       url: "https://www.moneycontrol.com/rss/latestnews.xml"
     - id: economic_times
       type: rss
+      enabled: true
       url: "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms"
     - id: livemint
       type: rss
+      enabled: true
       url: "https://www.livemint.com/rss/markets"
+    # Official exchange/regulator feeds — disabled until real URLs are confirmed.
     - id: nse_notices
       type: rss
+      enabled: false
       url: "REPLACE_WITH_OFFICIAL_NSE_NOTICES_FEED"
     - id: bse_notices
       type: rss
+      enabled: false
       url: "REPLACE_WITH_OFFICIAL_BSE_NOTICES_FEED"
     - id: sebi
       type: rss
+      enabled: false
       url: "REPLACE_WITH_OFFICIAL_SEBI_FEED"
-  # Confirm each URL/ToS before production use.
+  # Confirm each URL/ToS before production use. Live rows persist to SQLite (local profile).
 
 sentiment:
   vader:
