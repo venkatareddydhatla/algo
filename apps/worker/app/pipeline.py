@@ -20,7 +20,7 @@ from options_portal_domain.session_gates import (
 from options_portal_domain.tz import now_ist
 from options_portal_domain.types import SignalAction
 from options_portal_hybrid.scorer import WeightedHybridScorer
-from options_portal_notify.factory import build_notifier, gmail_from_notifier
+from options_portal_notify.factory import build_gmail_notifier, build_notifier
 from options_portal_risk.order_router import SafeOrderRouter
 from options_portal_sentiment.vader_scorer import VaderScorer
 from options_portal_ta.indicators import EMAPlugin, RSIPlugin, SupertrendPlugin, VWAPPlugin
@@ -96,8 +96,9 @@ async def run_symbol_tick(symbol: str, config: dict[str, Any] | None = None) -> 
         news_veto_abs=float(hybrid_cfg.get("news_veto_abs", 0.70)),
     )
     router = SafeOrderRouter(broker=broker, halt=bool(cfg.get("trading", {}).get("halt")))
+    # Console/telegram/webhook only — Gmail is fill + 16:00 IST daily (never HOLD ticks)
     notifier = build_notifier(cfg)
-    gmail = gmail_from_notifier(notifier)
+    gmail = build_gmail_notifier(cfg)
     sentiment = VaderScorer()
 
     end = datetime.now(tz=timezone.utc)

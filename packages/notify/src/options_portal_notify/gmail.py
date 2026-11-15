@@ -196,26 +196,17 @@ class GmailSMTPNotifier:
         self.enabled = self._settings.configured
 
     async def send(self, title: str, body: str, meta: dict[str, Any]) -> None:
-        if not self.enabled:
-            return
-        import asyncio
+        """CompositeNotifier hook — intentionally a no-op.
 
-        subject = title if title.startswith("[") else f"[dry-run] {title}"
-        meta_bits = []
-        if meta:
-            for key in ("symbol", "side", "qty", "price", "ts_ist_display"):
-                if key in meta and meta[key] is not None:
-                    meta_bits.append(f"{key}={meta[key]}")
-        full_body = body
-        if meta_bits:
-            full_body = f"{body}\n\nmeta: {', '.join(meta_bits)}"
-        await asyncio.to_thread(
-            send_gmail_message,
-            subject=subject,
-            body=full_body,
-            settings=self._settings,
-            smtp_factory=self._smtp_factory,
-        )
+        Gmail is **fill + daily summary only**. HOLD / neutral / scan ticks must
+        never email. Use ``send_fill`` or ``send_daily_summary`` instead.
+        """
+        _ = (title, body, meta)
+        if self.enabled:
+            logger.debug(
+                "GmailSMTPNotifier.send ignored (fill/daily only): %s", title
+            )
+        return
 
     def send_fill(self, fill: dict[str, Any], *, mode: str = "dry_run") -> bool:
         """Synchronous fill email (used from pipeline after paper persist)."""

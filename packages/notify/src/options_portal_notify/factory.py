@@ -1,4 +1,9 @@
-"""Build CompositeNotifier from YAML ``notify`` config + env credentials."""
+"""Build notifiers from YAML ``notify`` config + env credentials.
+
+Gmail is **not** attached to the general CompositeNotifier used for scan/HOLD
+console alerts. Email goes only via ``GmailSMTPNotifier.send_fill`` (paper
+fills) and ``maybe_send_daily_summary`` (16:00 IST).
+"""
 
 from __future__ import annotations
 
@@ -17,10 +22,10 @@ logger = logging.getLogger(__name__)
 
 
 def build_notifier(config: dict[str, Any] | None = None) -> CompositeNotifier:
-    """Assemble alert channels from config.
+    """Assemble non-email alert channels (console / telegram / webhook).
 
-    Gmail enables when channel ``enabled`` (default true for type=gmail) **and**
-    ``GMAIL_APP_PASSWORD`` is present in the environment.
+    Gmail is excluded on purpose so HOLD and other tick chatter stay out of
+    the inbox. Call ``build_gmail_notifier`` for fill/daily emails.
     """
     cfg = config or {}
     notify = cfg.get("notify") or {}
@@ -28,10 +33,6 @@ def build_notifier(config: dict[str, Any] | None = None) -> CompositeNotifier:
     channels: list[Any] = [ConsoleNotifier()]
 
     if not isinstance(channels_cfg, list) or not channels_cfg:
-        # Default: console + Gmail when password present
-        gmail = GmailSMTPNotifier(enabled=None)
-        if gmail.enabled:
-            channels.append(gmail)
         return CompositeNotifier(channels)
 
     for ch in channels_cfg:
@@ -39,35 +40,40 @@ def build_notifier(config: dict[str, Any] | None = None) -> CompositeNotifier:
             continue
         ctype = str(ch.get("type") or "").lower()
         enabled = bool(ch.get("enabled", False))
-        if ctype == "console":
-            if enabled or ch.get("enabled") is None:
-                # Already have a ConsoleNotifier; skip duplicates
-                continue
-        elif ctype == "gmail":
-            # Default enabled=true for gmail channel so password alone turns it on
-            gmail_enabled = bool(ch.get("enabled", True))
-            gmail = GmailSMTPNotifier(enabled=gmail_enabled if gmail_enabled else False)
-            if gmail.enabled:
-                channels.append(gmail)
-            elif gmail_enabled:
-                logger.info(
-                    "Gmail channel enabled in config but GMAIL_APP_PASSWORD missing — skipped"
-                )
-        elif ctype == "telegram":
+        if ctype in {"console", "gmail"}:
+            # console already present; gmail is fill/daily-only (see build_gmail_notifier)
+            continue
+        if ctype == "telegram":
             channels.append(TelegramNotifier(enabled=enabled))
         elif ctype == "webhook":
             channels.append(WebhookNotifier(enabled=enabled))
         else:
             logger.debug("Unknown notify channel type=%s", ctype)
 
-    # If config listed no gmail but password exists, still attach Gmail for dry-run week
-    has_gmail = any(isinstance(c, GmailSMTPNotifier) for c in channels)
-    if not has_gmail:
-        auto = GmailSMTPNotifier(enabled=None)
-        if auto.enabled:
-            channels.append(auto)
-
     return CompositeNotifier(channels)
+
+
+def build_gmail_notifier(config: dict[str, Any] | None = None) -> GmailSMTPNotifier | None:
+    """Return a configured GmailSMTPNotifier when enabled + password present."""
+    cfg = config or {}
+    notify = cfg.get("notify") or {}
+    channels_cfg = notify.get("channels")
+    gmail_enabled = True
+    if isinstance(channels_cfg, list):
+        for ch in channels_cfg:
+            if isinstance(ch, dict) and str(ch.get("type") or "").lower() == "gmail":
+                gmail_enabled = bool(ch.get("enabled", True))
+                break
+
+    if not gmail_enabled:
+        return None
+    gmail = GmailSMTPNotifier(enabled=True)
+    if not gmail.enabled:
+        logger.info(
+            "Gmail notify enabled in config but GMAIL_APP_PASSWORD missing — skipped"
+        )
+        return None
+    return gmail
 
 
 def gmail_from_notifier(notifier: Any) -> GmailSMTPNotifier | None:

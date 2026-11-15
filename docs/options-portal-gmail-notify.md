@@ -4,8 +4,10 @@ Email alerts for equity **dry-run** paper fills and a once-daily summary.
 
 | Event | When | Content |
 |-------|------|---------|
-| Fill | Each simulated paper fill persisted by the worker | Symbol, side, qty, price, reason, IST time |
+| Fill | Each simulated paper fill persisted by the worker (entry/exit only) | Symbol, side, qty, price, reason, IST time |
 | Daily summary | **16:00 IST** (once per calendar day) | Open positions, today's fills, day realized P&L |
+
+**Not emailed:** HOLD / neutral / overnight-hold scan ticks (console only).
 
 **Recipient default:** `venkatareddy.dhatla@gmail.com`  
 **Secrets:** never commit. Cloud agents cannot send without your local app password.

@@ -16,7 +16,11 @@ from options_portal_notify.daily_summary import (
     save_last_sent_day,
     should_send_daily_summary,
 )
-from options_portal_notify.factory import build_notifier, gmail_from_notifier
+from options_portal_notify.factory import (
+    build_gmail_notifier,
+    build_notifier,
+    gmail_from_notifier,
+)
 from options_portal_notify.gmail import (
     DEFAULT_NOTIFY_EMAIL_TO,
     GmailSMTPNotifier,
@@ -117,7 +121,10 @@ def test_send_gmail_skipped_without_password(clear_gmail_env):
 
 
 @pytest.mark.asyncio
-async def test_gmail_notifier_async_send(clear_gmail_env, monkeypatch: pytest.MonkeyPatch):
+async def test_gmail_notifier_send_noop_for_hold(
+    clear_gmail_env, monkeypatch: pytest.MonkeyPatch
+):
+    """HOLD / scan ticks must never email — CompositeNotifier.send is a no-op."""
     monkeypatch.setenv("GMAIL_APP_PASSWORD", "pw")
     smtp_instance = MagicMock()
     smtp_factory = MagicMock(return_value=smtp_instance)
@@ -126,23 +133,24 @@ async def test_gmail_notifier_async_send(clear_gmail_env, monkeypatch: pytest.Mo
 
     n = GmailSMTPNotifier(enabled=True, smtp_factory=smtp_factory)
     assert n.enabled
-    await n.send("RELIANCE fill", "BUY 1", {"symbol": "RELIANCE"})
-    smtp_instance.send_message.assert_called_once()
+    await n.send("RELIANCE HOLD", "hybrid=0.1 (neutral)", {"symbol": "RELIANCE"})
+    smtp_factory.assert_not_called()
+    smtp_instance.send_message.assert_not_called()
 
 
-def test_build_notifier_includes_gmail(clear_gmail_env, monkeypatch: pytest.MonkeyPatch):
+def test_build_notifier_excludes_gmail(clear_gmail_env, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("GMAIL_APP_PASSWORD", "pw")
-    composite = build_notifier(
-        {
-            "notify": {
-                "channels": [
-                    {"type": "console", "enabled": True},
-                    {"type": "gmail", "enabled": True},
-                ]
-            }
+    cfg = {
+        "notify": {
+            "channels": [
+                {"type": "console", "enabled": True},
+                {"type": "gmail", "enabled": True},
+            ]
         }
-    )
-    gmail = gmail_from_notifier(composite)
+    }
+    composite = build_notifier(cfg)
+    assert gmail_from_notifier(composite) is None
+    gmail = build_gmail_notifier(cfg)
     assert gmail is not None
     assert gmail.enabled
 
