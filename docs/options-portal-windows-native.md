@@ -149,3 +149,29 @@ Do not run Docker and native stacks on the same ports at once (both use 8000 / 5
 - Do not commit `.env`.
 - Upstox keys are optional for dry-run (synthetic market data).
 - These scripts do **not** claim the portal is running on your PC until **you** run them locally.
+
+---
+
+## Live Upstox market data (candles) — still dry_run orders
+
+To score TA on **live candles** while keeping **orders dry_run**, add env var **names** below to `C:\algo\.env` (gitignored). Put values only there — never in git, chat logs, or PR text.
+
+| Variable | Purpose |
+|----------|---------|
+| `UPSTOX_API_KEY` | App key from Upstox developer console |
+| `UPSTOX_API_SECRET` | App secret |
+| `UPSTOX_ACCESS_TOKEN` | Bearer token for Historical Candle V3 / quotes |
+| `UPSTOX_REDIRECT_URI` | OAuth redirect (default `http://127.0.0.1:8000/auth/upstox/callback`) — used if you later refresh via `UPSTOX_REFRESH_TOKEN` |
+| `UPSTOX_REFRESH_TOKEN` | Optional; non-interactive refresh when access token expires |
+| `UPSTOX_INSTRUMENT_MAP` | Optional JSON `{"SYMBOL":"NSE_EQ\|ISIN"}` overrides |
+
+```powershell
+cd C:\algo
+# Edit C:\algo\.env — set the UPSTOX_* names above (values never committed)
+.\deploy\windows\native\stop-native.ps1
+.\deploy\windows\native\start-native.ps1 -WithWorker
+```
+
+Check Health: http://127.0.0.1:5173/health or http://127.0.0.1:8000/api/v1/health — `market_data_source` should be `upstox` when the token is present (or `synthetic` without it / on fetch failure).
+
+News stays RSS. Orders stay `dry_run` (live placement blocked). If credentials were ever pasted into chat, **rotate** them in the Upstox developer console after wiring.
