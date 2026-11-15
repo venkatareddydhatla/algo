@@ -53,9 +53,19 @@ Set-ExecutionPolicy -Scope Process Bypass
 git fetch origin
 git checkout cursor/top-hybrid-backtest-2198
 git pull origin cursor/top-hybrid-backtest-2198
-# Re-run setup so packages\backtest is installed editable
+# Re-run setup so packages\backtest + tzdata are installed
 .\deploy\windows\native\setup-native.ps1
-.\deploy\windows\native\start-native.ps1
+.\deploy\windows\native\start-native.ps1 -WithWorker
+```
+
+If the API fails with `ZoneInfoNotFoundError: 'No time zone found with key Asia/Kolkata'`, install tzdata and restart:
+
+```powershell
+cd C:\algo
+.\.venv\Scripts\python.exe -m pip install "tzdata>=2024.1"
+# or re-run setup-native.ps1 (installs tzdata)
+.\deploy\windows\native\setup-native.ps1
+.\deploy\windows\native\start-native.ps1 -WithWorker
 ```
 
 Signals page: Top CE / Top PE strip above the table. Nav **Backtest** runs `/api/v1/backtest/run` (always `dry_run`).

@@ -12,7 +12,11 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.routes import admin, backtest, health, news, signals, trades, watchlist
 from options_portal_domain.config import load_config, trading_mode
+from options_portal_domain.tz import ensure_tzdata
 from options_portal_persistence.db import is_local_profile
+
+# Windows ships without system IANA zones — load tzdata before any ZoneInfo use.
+ensure_tzdata()
 
 logger = logging.getLogger("api")
 

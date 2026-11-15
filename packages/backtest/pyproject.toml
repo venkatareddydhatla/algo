@@ -7,6 +7,7 @@ dependencies = [
   "options-portal-domain",
   "options-portal-ta",
   "options-portal-hybrid",
+  "tzdata>=2024.1",
 ]
 
 [project.scripts]

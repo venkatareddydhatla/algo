@@ -7,11 +7,11 @@ import hashlib
 import math
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
+from options_portal_domain.tz import ist
 from options_portal_domain.types import Candle, Timeframe
 
-IST = ZoneInfo("Asia/Kolkata")
+IST = ist()
 
 
 def fixture_dir() -> Path:

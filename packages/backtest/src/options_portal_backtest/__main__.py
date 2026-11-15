@@ -7,7 +7,11 @@ import json
 from datetime import date
 from pathlib import Path
 
-from options_portal_backtest.engine import run_backtest
+from options_portal_domain.tz import ensure_tzdata
+
+ensure_tzdata()
+
+from options_portal_backtest.engine import run_backtest  # noqa: E402
 
 
 def _parse_date(value: str | None) -> date | None:

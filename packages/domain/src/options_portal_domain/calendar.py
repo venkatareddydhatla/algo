@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta
-from zoneinfo import ZoneInfo
 
-IST = ZoneInfo("Asia/Kolkata")
+from options_portal_domain.tz import ist
+
+# Lazy-safe IST (tzdata on Windows; fixed +05:30 fallback)
+IST = ist()
 
 # Minimal holiday stub — replace with full NSE circular calendar.
 # TODO: load holidays from config/symbols.india.yaml or an exchange feed.
@@ -91,7 +93,7 @@ class IndiaMarketCalendar:
         return d
 
     def pick_expiry(self, symbol: str, as_of: date | None = None) -> date:
-        as_of = as_of or datetime.now(tz=IST).date()
+        as_of = as_of or datetime.now(tz=ist()).date()
         if symbol.upper() in INDEX_WEEKLY_SYMBOLS:
             return self.next_weekly_expiry(symbol, as_of)
         return self.next_monthly_expiry(symbol, as_of)

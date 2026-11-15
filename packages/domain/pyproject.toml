@@ -3,7 +3,10 @@ name = "options-portal-domain"
 version = "0.1.0"
 description = "Shared domain types and protocols for options-portal"
 requires-python = ">=3.12"
-dependencies = ["pyyaml>=6.0"]
+dependencies = [
+  "pyyaml>=6.0",
+  "tzdata>=2024.1",
+]
 
 [build-system]
 requires = ["setuptools>=68"]
