@@ -135,6 +135,26 @@ Verify: http://127.0.0.1:5173/trades shows fill pager + history note; `config\lo
 
 Still `dry_run` only — no live orders.
 
+### Pull Gmail SMTP notify (stacked)
+
+Email on each dry-run paper fill + daily summary at **16:00 IST** to `venkatareddy.dhatla@gmail.com`. Needs a Google **App Password** in local `.env` (`GMAIL_APP_PASSWORD`). Optional: `GMAIL_USER`, `NOTIFY_EMAIL_TO`. Never commit secrets. Cloud agents cannot send without your password — test on Windows after pull. Policy: [`docs/options-portal-gmail-notify.md`](./options-portal-gmail-notify.md).
+
+```powershell
+cd C:\algo
+Set-ExecutionPolicy -Scope Process Bypass
+.\deploy\windows\native\stop-native.ps1
+git fetch origin
+git checkout cursor/gmail-dry-run-notify-fc50
+git pull origin cursor/gmail-dry-run-notify-fc50
+.\deploy\windows\native\setup-native.ps1
+# Edit C:\algo\.env — set GMAIL_APP_PASSWORD (never commit / paste in chat)
+.\.venv\Scripts\python.exe scripts\send_test_email.py
+# Confirm inbox for [dry-run] Test email, then:
+.\deploy\windows\native\start-native.ps1 -WithWorker
+```
+
+Still `dry_run` only — no live orders.
+
 If the API fails with `ZoneInfoNotFoundError: 'No time zone found with key Asia/Kolkata'`, install tzdata and restart:
 
 ```powershell

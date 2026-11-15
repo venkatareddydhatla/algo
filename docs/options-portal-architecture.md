@@ -128,7 +128,7 @@ options-portal/
 │   ├── sentiment/           # VADER + optional FinBERT client
 │   ├── hybrid-engine/       # HybridScorer + OptionsRecommender
 │   ├── risk/                # Gates, position limits, kill switch
-│   ├── notify/              # Notifier implementations
+│   ├── notify/              # Notifier implementations (console / Gmail SMTP / webhook / telegram)
 │   └── persistence/         # Repositories (Postgres/Redis)
 ├── db/
 │   ├── migrations/          # SQL / Alembic / Prisma

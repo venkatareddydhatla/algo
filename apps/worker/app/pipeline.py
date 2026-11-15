@@ -20,7 +20,7 @@ from options_portal_domain.session_gates import (
 from options_portal_domain.tz import now_ist
 from options_portal_domain.types import SignalAction
 from options_portal_hybrid.scorer import WeightedHybridScorer
-from options_portal_notify.notifiers import ConsoleNotifier
+from options_portal_notify.factory import build_gmail_notifier, build_notifier
 from options_portal_risk.order_router import SafeOrderRouter
 from options_portal_sentiment.vader_scorer import VaderScorer
 from options_portal_ta.indicators import EMAPlugin, RSIPlugin, SupertrendPlugin, VWAPPlugin
@@ -96,7 +96,9 @@ async def run_symbol_tick(symbol: str, config: dict[str, Any] | None = None) -> 
         news_veto_abs=float(hybrid_cfg.get("news_veto_abs", 0.70)),
     )
     router = SafeOrderRouter(broker=broker, halt=bool(cfg.get("trading", {}).get("halt")))
-    notifier = ConsoleNotifier()
+    # Console/telegram/webhook only — Gmail is fill + 16:00 IST daily (never HOLD ticks)
+    notifier = build_notifier(cfg)
+    gmail = build_gmail_notifier(cfg)
     sentiment = VaderScorer()
 
     end = datetime.now(tz=timezone.utc)
@@ -330,6 +332,23 @@ async def run_symbol_tick(symbol: str, config: dict[str, Any] | None = None) -> 
             persist_meta = paper.record_simulated_fill(
                 intent, order, mode=safe_mode  # type: ignore[arg-type]
             )
+            # Email on each paper/dry-run fill (Gmail when GMAIL_APP_PASSWORD set)
+            if persist_meta.get("persisted") and gmail is not None and gmail.enabled:
+                try:
+                    gmail.send_fill(
+                        {
+                            "symbol": intent.symbol,
+                            "side": intent.side,
+                            "qty": intent.qty,
+                            "price": intent.limit_price,
+                            "reason": intent.reason,
+                            "action_kind": intent.action_kind,
+                            "ts_ist_display": persist_meta.get("ts_ist_display"),
+                        },
+                        mode=str(safe_mode),
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception("Gmail fill notify failed for %s", intent.symbol)
 
         order_rows.append(
             {
