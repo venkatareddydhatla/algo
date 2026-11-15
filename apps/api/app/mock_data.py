@@ -200,35 +200,57 @@ def synthetic_signal_for_symbol(
     reasons: list[str] = []
     if tech_score >= 0.15:
         reasons.append("EMA9 > EMA21 on 15m")
-        reasons.append(f"RSI(14) {50 + int(tech_score * 20)} — rising")
+        reasons.append(f"RSI(14) {50 + int(tech_score * 20)} - rising")
         if tech_score >= 0.35:
             reasons.append("Supertrend bullish")
     elif tech_score <= -0.15:
         reasons.append("EMA9 < EMA21")
-        reasons.append(f"RSI(14) {50 + int(tech_score * 20)} — falling")
+        reasons.append(f"RSI(14) {50 + int(tech_score * 20)} - falling")
         if tech_score <= -0.35:
             reasons.append("Close below VWAP")
     else:
-        reasons.append(f"RSI(14) {50 + int(tech_score * 10)} — neutral")
+        reasons.append(f"RSI(14) {50 + int(tech_score * 10)} - neutral")
 
-    if abs(news_score) >= 0.35:
-        tone = "bullish" if news_score > 0 else "bearish"
-        reasons.append(f"News: {tone} cluster last 3h")
-        reasons.append(
-            f"Headline: Dry-run {tone} flow for {sym} "
-            f"(score {news_score:+.2f})"
-        )
-    elif abs(news_score) >= 0.15:
-        reasons.append(f"News: mild {'positive' if news_score > 0 else 'negative'} last 3h")
-
+    weight_tech = 0.65
+    weight_news = 0.35
+    tech_alone = weight_tech * tech_score
+    news_alone = weight_news * news_score
+    # Only attach news bullets when news alone clears or tips the decision;
+    # mild filler must not force a HYBRID label.
+    news_tips = False
     if hybrid >= enter_long:
         action = "BUY_CE_BIAS"
-        reasons.append(f"Hybrid {hybrid:.2f} >= enter_long {enter_long}")
+        news_tips = tech_alone < enter_long
     elif hybrid <= enter_short:
         action = "BUY_PE_BIAS"
-        reasons.append(f"Hybrid {hybrid:.2f} <= enter_short {enter_short}")
+        news_tips = tech_alone > enter_short
     else:
         action = "HOLD"
+
+    news_alone_clears = (
+        (action == "BUY_CE_BIAS" and news_alone >= enter_long)
+        or (action == "BUY_PE_BIAS" and news_alone <= enter_short)
+    )
+    include_news = action != "HOLD" and (news_tips or news_alone_clears)
+
+    if include_news and abs(news_score) >= 0.15:
+        tone = "bullish" if news_score > 0 else "bearish"
+        if abs(news_score) >= 0.35:
+            reasons.append(f"News: {tone} cluster last 3h")
+            reasons.append(
+                f"Headline: Dry-run {tone} flow for {sym} "
+                f"(score {news_score:+.2f})"
+            )
+        else:
+            reasons.append(
+                f"News: mild {'positive' if news_score > 0 else 'negative'} last 3h"
+            )
+
+    if action == "BUY_CE_BIAS":
+        reasons.append(f"Hybrid {hybrid:.2f} >= enter_long {enter_long}")
+    elif action == "BUY_PE_BIAS":
+        reasons.append(f"Hybrid {hybrid:.2f} <= enter_short {enter_short}")
+    else:
         reasons.append(f"Hybrid {hybrid:.2f} in neutral band")
 
     explain = build_reason_fields(
@@ -237,6 +259,12 @@ def synthetic_signal_for_symbol(
         news_score=news_score,
         hybrid_score=hybrid,
         reasons=reasons,
+        weight_tech=weight_tech,
+        weight_news=weight_news,
+        enter_long=enter_long,
+        enter_short=enter_short,
+        tech_confidence=1.0,
+        news_confidence=1.0 if abs(news_score) > 0 else 0.0,
     )
     expiry = "weekly" if sym in INDEX_SYMBOLS else "monthly"
     return {

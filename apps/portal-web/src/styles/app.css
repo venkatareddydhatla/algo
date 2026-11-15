@@ -333,12 +333,33 @@ button:disabled {
   text-transform: uppercase;
 }
 
+.reason-popup-section {
+  display: block;
+}
+
+.reason-popup-section + .reason-popup-section {
+  margin-top: 0.55rem;
+  padding-top: 0.45rem;
+  border-top: 1px solid var(--line);
+}
+
+.reason-popup-section-title {
+  display: block;
+  margin-bottom: 0.25rem;
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
 .reason-popup-body {
   display: block;
   font-family: var(--font);
   font-size: 0.82rem;
   line-height: 1.35;
   color: var(--text);
+  white-space: pre-wrap;
 }
 
 .reason-chip[data-kind="news"] .reason-popup-kind,

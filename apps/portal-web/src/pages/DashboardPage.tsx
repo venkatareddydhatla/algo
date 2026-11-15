@@ -127,22 +127,53 @@ function ReasonCell({ row }: { row: SignalRow }) {
   const detail =
     row.reason_detail ||
     (row.reasons && row.reasons.length ? row.reasons.join("; ") : "No rationale available");
-  const kind = row.reason_kind || "hybrid";
+  const kind = (row.reason_kind || "neutral").toLowerCase();
+  const sections = parseReasonSections(detail, kind);
   return (
     <button
       type="button"
       className="reason-chip"
       data-kind={kind}
       title={detail}
-      aria-label={`Reason: ${summary}. ${detail}`}
+      aria-label={`Reason: ${kind}. ${summary}. ${detail}`}
     >
       <span className="reason-summary">{summary}</span>
       <span className="reason-popup" role="tooltip">
-        <span className="reason-popup-kind mono">{kind}</span>
-        <span className="reason-popup-body">{detail}</span>
+        <span className="reason-popup-kind mono">{kind.toUpperCase()}</span>
+        {sections.map((sec) => (
+          <span key={sec.title} className="reason-popup-section">
+            {sec.title ? <span className="reason-popup-section-title">{sec.title}</span> : null}
+            <span className="reason-popup-body">{sec.body}</span>
+          </span>
+        ))}
       </span>
     </button>
   );
+}
+
+/** Split API reason_detail into section blocks; drop News when kind is technical. */
+function parseReasonSections(
+  detail: string,
+  kind: string,
+): { title: string; body: string }[] {
+  const blocks = detail
+    .split(/\n\n+/)
+    .map((b) => b.trim())
+    .filter(Boolean);
+  const parsed = blocks.map((block) => {
+    const match = /^(Technical|News|Decision|Veto|Neutral):\s*([\s\S]*)$/i.exec(block);
+    if (!match) {
+      return { title: "", body: block };
+    }
+    return { title: match[1], body: match[2].trim() };
+  });
+  if (kind === "technical") {
+    return parsed.filter((s) => !/^news$/i.test(s.title));
+  }
+  if (kind === "news") {
+    return parsed.filter((s) => !/^technical$/i.test(s.title));
+  }
+  return parsed;
 }
 
 function sortLocal(items: SignalRow[]): SignalRow[] {

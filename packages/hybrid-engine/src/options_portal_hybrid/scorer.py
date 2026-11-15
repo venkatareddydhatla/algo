@@ -87,6 +87,13 @@ class WeightedHybridScorer:
             hybrid_score=hybrid_rounded,
             reasons=reasons,
             tech_reasons=tech.reasons,
+            weight_tech=self.weight_tech,
+            weight_news=self.weight_news,
+            enter_long=self.enter_long,
+            enter_short=self.enter_short,
+            tech_confidence=tech.confidence,
+            news_confidence=news_conf if sentiments else 0.0,
+            vetoed=veto,
         )
         return HybridDecision(
             symbol=tech.symbol,

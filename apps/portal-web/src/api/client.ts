@@ -106,11 +106,11 @@ export const MOCK = {
         confidence: 0.74,
         expiry_hint: "weekly",
         updated_at: new Date().toISOString(),
-        reason_kind: "hybrid",
-        reason_summary: "EMA+RSI+news",
+        reason_kind: "technical",
+        reason_summary: "EMA+RSI+ST",
         reason_detail:
-          "EMA9 > EMA21 on 15m; RSI(14) 58 — rising; Supertrend bullish; News: mild positive last 3h",
-        reasons: ["EMA9 > EMA21 on 15m", "RSI(14) 58 — rising", "Supertrend bullish"],
+          "Technical:\n- EMA9 > EMA21 on 15m\n- RSI(14) 58 - rising\n- Supertrend bullish",
+        reasons: ["EMA9 > EMA21 on 15m", "RSI(14) 58 - rising", "Supertrend bullish"],
       },
       {
         id: "local-bn",
@@ -141,7 +141,8 @@ export const MOCK = {
         updated_at: new Date().toISOString(),
         reason_kind: "hybrid",
         reason_summary: "EMA+VWAP+news",
-        reason_detail: "EMA9 < EMA21; Close below VWAP; Bearish news cluster",
+        reason_detail:
+          "Technical:\n- EMA9 < EMA21\n- Close below VWAP\n\nNews:\n- Bearish news cluster",
         reasons: ["EMA9 < EMA21", "Close below VWAP", "Bearish news cluster"],
       },
       {
@@ -157,8 +158,8 @@ export const MOCK = {
         updated_at: new Date().toISOString(),
         reason_kind: "veto",
         reason_summary: "news veto",
-        reason_detail: "News/TA conflict — hold",
-        reasons: ["News/TA conflict — hold"],
+        reason_detail: "Veto:\n- News/TA conflict - hold",
+        reasons: ["News/TA conflict - hold"],
       },
     ],
     total: 4,
