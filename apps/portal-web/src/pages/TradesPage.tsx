@@ -127,9 +127,9 @@ export default function TradesPage() {
               <th>Side</th>
               <th>Entry (IST)</th>
               <th>Exit (IST)</th>
-              <th>Entry px</th>
-              <th>Exit px</th>
-              <th>PnL</th>
+              <th className="num-cell">Entry px</th>
+              <th className="num-cell">Exit px</th>
+              <th className="num-cell">PnL</th>
               <th>Reason</th>
               <th>dry_run</th>
             </tr>
@@ -163,18 +163,18 @@ export default function TradesPage() {
                     <td className="mono">
                       {String(t.exit_ts_ist_display || t.exit_at_ist || "—")}
                     </td>
-                    <td className="mono">
+                    <td className="mono num-cell">
                       {t.entry_price != null
                         ? `₹ ${Number(t.entry_price).toFixed(2)}`
                         : "—"}
                     </td>
-                    <td className="mono">
+                    <td className="mono num-cell">
                       {t.exit_price != null
                         ? `₹ ${Number(t.exit_price).toFixed(2)}`
                         : "—"}
                     </td>
                     <td
-                      className={`mono ${
+                      className={`mono num-cell ${
                         pnl == null
                           ? ""
                           : pnl >= 0
