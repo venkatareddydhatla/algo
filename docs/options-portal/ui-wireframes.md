@@ -93,9 +93,9 @@ Optional later: sparkline of last 40×15m bars (not required for v1 wireframe).
 │  NIFTY 21-Nov 24500 CE   +25 qty   avg ₹138.00   uPnL ₹ +1,125          │
 │  RELIANCE 28-Nov 2920 PE +250 qty  avg ₹64.50    uPnL ₹ −2,400          │
 │                                                                          │
-│  Today’s fills                                                           │
-│  15:16  SIM  BUY  NIFTY 24500 CE  25 @ 142.50   signal #a1b2             │
-│  11:02  SIM  BUY  RELIANCE 2920 PE 250 @ 64.50  signal #c3d4             │
+│  Closed trades (round-trip)                                              │
+│  RELIANCE  LONG  11:02→15:16  2500.00→2512.50  +12.50  signal_exit      │
+│  TCS       SHORT 10:05→14:40  3900.00→3888.00  +12.00  cover short      │
 │                                                                          │
 │  Day realized ₹ +3,100   Day unrealized ₹ −1,275   Fees est ₹ 180        │
 │                                                                          │

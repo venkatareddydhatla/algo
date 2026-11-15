@@ -3,7 +3,11 @@ name = "options-portal-persistence"
 version = "0.1.0"
 description = "Postgres/Redis persistence helpers + local SQLite dry-run profile"
 requires-python = ">=3.12"
-dependencies = ["asyncpg>=0.29", "redis>=5.0"]
+dependencies = [
+  "asyncpg>=0.29",
+  "redis>=5.0",
+  "options-portal-domain",
+]
 
 [build-system]
 requires = ["setuptools>=68"]

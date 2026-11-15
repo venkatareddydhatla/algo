@@ -3,6 +3,8 @@ import { api } from "../api/client";
 
 const PAGE_SIZE = 50;
 
+type ClosedTrade = Record<string, unknown>;
+
 export default function TradesPage() {
   const [data, setData] = useState<Record<string, unknown> | null>(null);
   const [offset, setOffset] = useState(0);
@@ -19,9 +21,12 @@ export default function TradesPage() {
           dry_run: true,
           positions: [],
           fills: [],
+          fills_kind: "round_trip",
           fills_total: 0,
           fills_offset: offset,
           fills_limit: PAGE_SIZE,
+          closed_trades: [],
+          closed_trades_total: 0,
           day_realized: 0,
           day_unrealized: 0,
           source: "local-empty",
@@ -31,12 +36,20 @@ export default function TradesPage() {
   }, [offset]);
 
   const positions = (data?.positions as Array<Record<string, unknown>>) || [];
-  const fills = (data?.fills as Array<Record<string, unknown>>) || [];
+  const trades =
+    (data?.closed_trades as ClosedTrade[] | undefined) ||
+    (data?.fills as ClosedTrade[]) ||
+    [];
   const instrument = String(data?.instrument ?? "equity");
   const execution = String(data?.execution ?? data?.mode ?? "dry_run");
-  const total = Number(data?.fills_total ?? fills.length);
+  const total = Number(
+    data?.closed_trades_total ?? data?.fills_total ?? trades.length,
+  );
   const page = Math.floor(offset / PAGE_SIZE) + 1;
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const isRoundTrip =
+    String(data?.fills_kind ?? "round_trip") === "round_trip" ||
+    Boolean(data?.closed_trades);
 
   return (
     <section>
@@ -83,7 +96,7 @@ export default function TradesPage() {
         </table>
       </div>
       <div className="section-head" style={{ marginTop: "1.5rem" }}>
-        <h2>Fills</h2>
+        <h2>Closed trades</h2>
         <div className="pager">
           <button type="button" disabled={offset <= 0} onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}>
             Prev
@@ -100,42 +113,86 @@ export default function TradesPage() {
           </button>
         </div>
       </div>
+      <p className="muted" style={{ fontSize: "0.85rem", marginTop: 0 }}>
+        One row per completed round-trip (entry + exit) · Asia/Kolkata (IST)
+        {data?.raw_fills_total != null
+          ? ` · ${Number(data.raw_fills_total)} raw fill legs in ledger`
+          : ""}
+      </p>
       <div className="table-wrap">
         <table>
           <thead>
             <tr>
-              <th>Time (IST)</th>
-              <th>Status</th>
-              <th>Side</th>
               <th>Symbol</th>
-              <th>Qty</th>
-              <th>Price</th>
+              <th>Side</th>
+              <th>Entry (IST)</th>
+              <th>Exit (IST)</th>
+              <th>Entry px</th>
+              <th>Exit px</th>
+              <th>PnL</th>
               <th>Reason</th>
               <th>dry_run</th>
             </tr>
           </thead>
           <tbody>
-            {fills.length === 0 ? (
+            {trades.length === 0 ? (
               <tr>
-                <td colSpan={8} className="muted">
-                  No paper fills yet — worker equity dry-run will appear here
+                <td colSpan={9} className="muted">
+                  {isRoundTrip
+                    ? "No closed paper trades yet — open legs stay above; worker equity dry-run round-trips appear here"
+                    : "No paper fills yet — worker equity dry-run will appear here"}
                 </td>
               </tr>
             ) : (
-              fills.map((f, i) => (
-                <tr key={String(f.id ?? i)}>
-                  <td className="mono">
-                    {String(f.ts_ist_display || f.ts_ist || f.ts || "—")}
-                  </td>
-                  <td>{String(f.status)}</td>
-                  <td className="mono">{String(f.side)}</td>
-                  <td>{String(f.symbol)}</td>
-                  <td className="mono">{String(f.qty)}</td>
-                  <td className="mono">₹ {Number(f.price).toFixed(2)}</td>
-                  <td className="muted">{String(f.reason || f.signal_action || "")}</td>
-                  <td className="mono">{f.dry_run === false ? "no" : "yes"}</td>
-                </tr>
-              ))
+              trades.map((t, i) => {
+                const pnl = t.pnl != null ? Number(t.pnl) : null;
+                const side = String(t.side ?? "—");
+                const sideClass =
+                  side === "LONG" || side === "CE"
+                    ? "action-BUY_CE_BIAS"
+                    : side === "SHORT" || side === "PE"
+                      ? "action-BUY_PE_BIAS"
+                      : "";
+                return (
+                  <tr key={String(t.exit_fill_id ?? t.id ?? `${t.symbol}-${i}`)}>
+                    <td>{String(t.symbol ?? "—")}</td>
+                    <td className={`mono ${sideClass}`}>{side}</td>
+                    <td className="mono">
+                      {String(t.entry_ts_ist_display || t.entry_at_ist || "—")}
+                    </td>
+                    <td className="mono">
+                      {String(t.exit_ts_ist_display || t.exit_at_ist || "—")}
+                    </td>
+                    <td className="mono">
+                      {t.entry_price != null
+                        ? `₹ ${Number(t.entry_price).toFixed(2)}`
+                        : "—"}
+                    </td>
+                    <td className="mono">
+                      {t.exit_price != null
+                        ? `₹ ${Number(t.exit_price).toFixed(2)}`
+                        : "—"}
+                    </td>
+                    <td
+                      className={`mono ${
+                        pnl == null
+                          ? ""
+                          : pnl >= 0
+                            ? "action-BUY_CE_BIAS"
+                            : "action-BUY_PE_BIAS"
+                      }`}
+                    >
+                      {pnl == null
+                        ? "—"
+                        : `${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}`}
+                    </td>
+                    <td className="muted" title={String(t.reason || "")}>
+                      {String(t.reason || t.exit_reason || "")}
+                    </td>
+                    <td className="mono">{t.dry_run === false ? "no" : "yes"}</td>
+                  </tr>
+                );
+              })
             )}
           </tbody>
         </table>
