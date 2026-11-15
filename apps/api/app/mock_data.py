@@ -173,6 +173,26 @@ def _stable_unit(symbol: str, salt: str = "") -> float:
     return int(digest[:8], 16) / 0xFFFFFFFF
 
 
+def _aggregate_live_news(live_rows: list[dict[str, Any]]) -> tuple[float, float, list[str]]:
+    """Return (news_score, news_confidence, headline snippets) from live rows."""
+    if not live_rows:
+        return 0.0, 0.0, []
+    weighted = 0.0
+    conf_sum = 0.0
+    headlines: list[str] = []
+    for row in live_rows:
+        score = float(row.get("score") or 0.0)
+        conf = float(row.get("confidence") or (min(1.0, abs(score) + 0.3)))
+        weighted += score * conf
+        conf_sum += conf
+        title = (row.get("title") or "").strip()
+        if title:
+            headlines.append(title[:120])
+    news_score = weighted / max(conf_sum, 1e-9)
+    news_conf = conf_sum / len(live_rows)
+    return max(-1.0, min(1.0, round(news_score, 4))), round(news_conf, 4), headlines[:3]
+
+
 def synthetic_signal_for_symbol(
     symbol: str,
     *,
@@ -180,14 +200,29 @@ def synthetic_signal_for_symbol(
     updated_at: str | None = None,
     enter_long: float = 0.45,
     enter_short: float = -0.45,
+    live_news: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Build a non-placeholder dry-run hybrid score for one underlying."""
+    """Build a non-placeholder dry-run hybrid score for one underlying.
+
+    When ``live_news`` is present for the symbol, use real VADER scores and
+    headlines instead of synthetic dry-run news filler.
+    """
     sym = symbol.upper()
     # Map hash into [-0.85, 0.85] tech / news so a share of names clear entry bands.
     tech_raw = (_stable_unit(sym, "tech") - 0.5) * 1.7
-    news_raw = (_stable_unit(sym, "news") - 0.5) * 1.5
     tech_score = max(-1.0, min(1.0, round(tech_raw, 4)))
-    news_score = max(-1.0, min(1.0, round(news_raw, 4)))
+
+    live = list(live_news or [])
+    if live:
+        news_score, news_conf, headlines = _aggregate_live_news(live)
+        used_live_news = True
+    else:
+        news_raw = (_stable_unit(sym, "news") - 0.5) * 1.5
+        news_score = max(-1.0, min(1.0, round(news_raw, 4)))
+        news_conf = 1.0 if abs(news_score) > 0 else 0.0
+        headlines = []
+        used_live_news = False
+
     hybrid = max(
         -1.0,
         min(1.0, round(0.65 * tech_score + 0.35 * news_score, 4)),
@@ -233,7 +268,14 @@ def synthetic_signal_for_symbol(
     )
     include_news = action != "HOLD" and (news_tips or news_alone_clears)
 
-    if include_news and abs(news_score) >= 0.15:
+    if used_live_news and (include_news or abs(news_score) >= 0.15):
+        tone = "bullish" if news_score > 0 else "bearish" if news_score < 0 else "neutral"
+        reasons.append(
+            f"News: {tone} live RSS cluster ({len(live)} item(s), score {news_score:+.2f})"
+        )
+        for title in headlines[:2]:
+            reasons.append(f"Headline: {title}")
+    elif include_news and abs(news_score) >= 0.15:
         tone = "bullish" if news_score > 0 else "bearish"
         if abs(news_score) >= 0.35:
             reasons.append(f"News: {tone} cluster last 3h")
@@ -264,7 +306,7 @@ def synthetic_signal_for_symbol(
         enter_long=enter_long,
         enter_short=enter_short,
         tech_confidence=1.0,
-        news_confidence=1.0 if abs(news_score) > 0 else 0.0,
+        news_confidence=news_conf if (used_live_news or abs(news_score) > 0) else 0.0,
     )
     expiry = "weekly" if sym in INDEX_SYMBOLS else "monthly"
     return {
@@ -281,6 +323,7 @@ def synthetic_signal_for_symbol(
         "reasons": reasons,
         "stub": False,
         "dry_run_synthetic": True,
+        "live_news": used_live_news,
         **explain,
     }
 
@@ -290,9 +333,11 @@ def build_universe_signals(
     *,
     timeframe: str = "15m",
     seed_rows: list[dict[str, Any]] | None = None,
+    live_news_by_symbol: dict[str, list[dict[str, Any]]] | None = None,
 ) -> list[dict[str, Any]]:
     """Scores for the full watchlist: seed overrides + synthetic dry-run rows."""
     seeds = {r["symbol"].upper(): attach_reason_fields(dict(r)) for r in (seed_rows or MOCK_SIGNALS)}
+    live_map = live_news_by_symbol or {}
     now = datetime.now(tz=timezone.utc).isoformat()
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -301,13 +346,20 @@ def build_universe_signals(
         if key in seen:
             continue
         seen.add(key)
-        if key in seeds:
+        live = live_map.get(key) or []
+        if key in seeds and not live:
             row = dict(seeds[key])
             row["updated_at"] = now
             rows.append(attach_reason_fields(row))
         else:
+            # Prefer live-news-aware synthetic row when RSS data exists for the symbol
             rows.append(
-                synthetic_signal_for_symbol(key, timeframe=timeframe, updated_at=now)
+                synthetic_signal_for_symbol(
+                    key,
+                    timeframe=timeframe,
+                    updated_at=now,
+                    live_news=live or None,
+                )
             )
     # Include any seed symbols not in the watchlist (demo leftovers)
     for key, row in seeds.items():

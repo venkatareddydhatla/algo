@@ -1,4 +1,4 @@
-"""Worker process — polls pipeline on an interval (skeleton)."""
+"""Worker process — pipeline ticks + RSS news ingest loop."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import time
 
 from options_portal_domain.config import load_config, scan_symbols, watchlist_symbols
 from options_portal_domain.universe import scan_batch_size
+from app.news_ingest import news_poll_loop
 from app.pipeline import run_symbol_tick
 
 logging.basicConfig(
@@ -42,7 +43,7 @@ async def _run_batch(symbols: list[str], cfg: dict) -> None:
     await asyncio.gather(*[_one(s) for s in symbols])
 
 
-async def loop() -> None:
+async def pipeline_loop() -> None:
     cfg = load_config()
     watchlist = watchlist_symbols(cfg)
     active = scan_symbols(cfg)
@@ -66,7 +67,6 @@ async def loop() -> None:
         ",".join(active[:40]) + ("..." if len(active) > 40 else ""),
     )
     while not _stop.is_set():
-        # Re-read caps each cycle so config edits apply without restart (when CONFIG_PATH shared)
         cfg = load_config()
         active = scan_symbols(cfg)
         cycle_started = time.monotonic()
@@ -80,9 +80,22 @@ async def loop() -> None:
         )
         try:
             await asyncio.wait_for(_stop.wait(), timeout=interval)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             continue
-    logger.info("Worker stopped")
+    logger.info("Pipeline loop stopped")
+
+
+async def loop() -> None:
+    """Run pipeline + news poller concurrently until stop."""
+    news_task = asyncio.create_task(news_poll_loop(_stop), name="news-poll")
+    try:
+        await pipeline_loop()
+    finally:
+        _stop.set()
+        try:
+            await asyncio.wait_for(news_task, timeout=5)
+        except (TimeoutError, asyncio.CancelledError):
+            news_task.cancel()
 
 
 def main() -> None:

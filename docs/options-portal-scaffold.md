@@ -95,7 +95,7 @@ pytest -q
 ## Still stubbed / needs credentials
 
 - Upstox OAuth, live market data, and live orders (synthetic candles/chain used locally)
-- Full DB persistence for signals/news (API serves mock reads for UI)
+- Full DB persistence for signals (API still synthesizes dry-run scores); news RSS → VADER → SQLite is live on local profile
 - FinBERT sidecar (optional later)
 - Backtest CLI (placeholder)
 

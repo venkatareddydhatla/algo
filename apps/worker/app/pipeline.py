@@ -60,9 +60,25 @@ async def run_symbol_tick(symbol: str, config: dict[str, Any] | None = None) -> 
     features = registry.compute_all(candles)
     tech = signal_gen.evaluate(symbol, candles, features)
 
-    # News: empty list in skeleton tick (RSS poller runs on its own loop)
-    sentiments = await sentiment.score_batch([])
-    decision = scorer.combine(tech, sentiments, [], {"session": "regular"})
+    # Live news from SQLite when available (RSS poller persists on its loop)
+    lookback = int(hybrid_cfg.get("news_lookback_minutes", 180))
+    news_items: list = []
+    sentiments = []
+    try:
+        from options_portal_persistence.news_store import NewsStore
+
+        store = NewsStore()
+        if store.available:
+            news_items, sentiments = store.recent_for_symbol(
+                symbol, lookback_minutes=lookback, limit=20
+            )
+    except Exception:  # noqa: BLE001
+        logger.exception("news load failed for %s — continuing with empty news", symbol)
+        news_items, sentiments = [], []
+
+    if not sentiments and news_items:
+        sentiments = list(await sentiment.score_batch(news_items))
+    decision = scorer.combine(tech, sentiments, news_items, {"session": "regular"})
 
     result: dict[str, Any] = {
         "symbol": symbol,

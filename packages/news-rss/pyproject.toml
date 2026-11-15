@@ -3,7 +3,12 @@ name = "options-portal-news"
 version = "0.1.0"
 description = "RSS news ingest for India markets"
 requires-python = ">=3.12"
-dependencies = ["options-portal-domain", "httpx>=0.27"]
+dependencies = [
+  "options-portal-domain",
+  "options-portal-persistence",
+  "options-portal-sentiment",
+  "httpx>=0.27",
+]
 
 [build-system]
 requires = ["setuptools>=68"]

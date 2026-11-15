@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Query
 from app.mock_data import MOCK_SIGNALS, build_universe_signals
 from options_portal_domain.config import load_config, watchlist_symbols
 from options_portal_hybrid.explain import attach_reason_fields, sort_signal_rows
+from options_portal_persistence.news_store import NewsStore
 
 router = APIRouter(prefix="/api/v1", tags=["signals"])
 
@@ -25,15 +26,29 @@ async def list_signals(
 
     Dry-run / mock path returns non-placeholder hybrid scores for every symbol
     in the configured NSE F&O universe (not HOLD/0.00 inactive stubs).
+    When live RSS news exists for a symbol, reason/news_score use real headlines.
     """
     cfg = load_config()
     trading = cfg.get("trading", {})
     timeframe = str(trading.get("timeframe", "15m"))
+    lookback = int(cfg.get("hybrid", {}).get("news_lookback_minutes", 180))
+
+    live_by_symbol: dict = {}
+    try:
+        store = NewsStore()
+        if store.available and store.count() > 0:
+            live_by_symbol = store.recent_by_symbol(lookback_minutes=lookback)
+    except Exception:  # noqa: BLE001
+        live_by_symbol = {}
 
     if expand_watchlist:
         watchlist = watchlist_symbols(cfg)
-        rows = build_universe_signals(watchlist, timeframe=timeframe)
-        source = "mock+universe"
+        rows = build_universe_signals(
+            watchlist,
+            timeframe=timeframe,
+            live_news_by_symbol=live_by_symbol,
+        )
+        source = "mock+universe+live-news" if live_by_symbol else "mock+universe"
     else:
         rows = [attach_reason_fields(dict(s)) for s in MOCK_SIGNALS]
         source = "mock"
