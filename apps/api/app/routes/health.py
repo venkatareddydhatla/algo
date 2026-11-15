@@ -52,6 +52,8 @@ async def ready() -> dict:
         "local_profile": is_local_profile(),
         "market_data_source": data_source,
         "data_source": data_source,
+        "instrument": "equity",
+        "execution": "dry_run",
     }
 
 
@@ -69,6 +71,8 @@ async def health_dashboard() -> dict:
         "persistence_profile": payload["components"].get("persistence_profile"),
         "market_data_source": data_source,
         "data_source": data_source,
+        "instrument": "equity",
+        "execution": "dry_run",
         "components": [
             {"name": db_name, **payload["components"]["postgres"]},
             {"name": "redis", **payload["components"]["redis"]},
@@ -76,8 +80,9 @@ async def health_dashboard() -> dict:
                 "name": "upstox",
                 **broker,
                 "detail": (
-                    f"market_data={data_source}; {broker.get('detail', '')}"
-                    if "market_data=" not in str(broker.get("detail", ""))
+                    f"market_data={data_source}; instrument=equity dry_run; "
+                    f"{broker.get('detail', '')}"
+                    if "instrument=equity" not in str(broker.get("detail", ""))
                     else broker.get("detail", "")
                 ),
             },
@@ -87,6 +92,13 @@ async def health_dashboard() -> dict:
                 "status": "ok" if data_source == "upstox" else "mock",
                 "detail": f"source={data_source}",
                 "data_source": data_source,
+            },
+            {
+                "name": "execution",
+                "status": "ok",
+                "detail": "instrument=equity; mode=dry_run; live gated",
+                "instrument": "equity",
+                "execution": "dry_run",
             },
         ],
     }

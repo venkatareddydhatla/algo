@@ -26,7 +26,8 @@ export default function HealthPage() {
         <h1>Health</h1>
         <p className="muted">
           Overall: <strong>{String(data?.status ?? "…")}</strong> · mode{" "}
-          {String(data?.mode ?? "dry_run")} · market data{" "}
+          {String(data?.mode ?? "dry_run")} · instrument{" "}
+          <strong>{String(data?.instrument ?? "equity")}</strong> dry_run · market data{" "}
           <strong>{String(data?.market_data_source ?? data?.data_source ?? "…")}</strong>
         </p>
       </div>
