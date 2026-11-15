@@ -162,7 +162,8 @@ Entities (full DDL in [database-schema.md](./options-portal/database-schema.md))
 - **users / roles** — `admin`, `analyst`, `guest`
 - **instruments / underlyings** — NSE symbols, F&O flags, lot sizes
 - **candles** — OHLCV by symbol/timeframe
-- **news_items** + **news_sentiment** — article text hash, source, scores
+- **news_items** + **news_sentiment** — live portal feed (today IST); see [news retention](./options-portal-news-retention.md)
+- **news_items_history** + **news_sentiment_history** — daily archive until quarter-end (not shown on News UI)
 - **signals** — technical + hybrid decisions
 - **option_recommendations** — proposed legs
 - **orders / fills** — dry-run and live

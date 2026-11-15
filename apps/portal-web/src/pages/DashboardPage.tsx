@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { MOCK, SignalRow, api } from "../api/client";
 import { HybridStrip } from "../components/HybridStrip";
+import { fmtIstDateTime } from "../lib/ist";
 
 const PAGE_SIZE = 50;
 
@@ -217,7 +218,7 @@ export default function DashboardPage() {
                 <td className="mono">{fmt(r.tech_score)}</td>
                 <td className="mono">{fmt(r.news_score)}</td>
                 <td>{r.expiry_hint ?? "-"}</td>
-                <td className="muted">{new Date(r.updated_at).toLocaleTimeString()}</td>
+                <td className="muted mono">{fmtIstDateTime(r.updated_at)}</td>
               </tr>
             ))}
           </tbody>

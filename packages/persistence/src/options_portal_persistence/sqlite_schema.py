@@ -30,6 +30,37 @@ CREATE TABLE IF NOT EXISTS news_sentiment (
   confidence    REAL NOT NULL,
   scored_at     TEXT NOT NULL
 );
+
+-- Archived live rows (daily clear). Not shown on portal News page.
+-- Retained until calendar quarter-end (IST), then purged.
+CREATE TABLE IF NOT EXISTS news_items_history (
+  id            TEXT PRIMARY KEY,
+  source        TEXT NOT NULL,
+  url           TEXT,
+  title         TEXT NOT NULL,
+  body          TEXT,
+  published_at  TEXT NOT NULL,
+  ingested_at   TEXT NOT NULL,
+  content_hash  TEXT NOT NULL,
+  symbols_json  TEXT NOT NULL DEFAULT '[]',
+  archived_at   TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS news_items_history_published_idx
+  ON news_items_history (published_at DESC);
+
+CREATE INDEX IF NOT EXISTS news_items_history_archived_idx
+  ON news_items_history (archived_at);
+
+CREATE TABLE IF NOT EXISTS news_sentiment_history (
+  news_id       TEXT PRIMARY KEY,
+  model         TEXT NOT NULL,
+  score         REAL NOT NULL,
+  label         TEXT NOT NULL,
+  confidence    REAL NOT NULL,
+  scored_at     TEXT NOT NULL,
+  archived_at   TEXT NOT NULL
+);
 """
 
 # Equity dry-run paper ledger (share buy/sell fills + open positions).

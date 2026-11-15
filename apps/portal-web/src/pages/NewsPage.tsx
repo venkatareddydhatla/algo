@@ -1,20 +1,6 @@
 import { useEffect, useState } from "react";
 import { NewsRow, api } from "../api/client";
-
-function fmtTime(iso: string): string {
-  try {
-    const d = new Date(iso);
-    return d.toLocaleString("en-IN", {
-      timeZone: "Asia/Kolkata",
-      hour: "2-digit",
-      minute: "2-digit",
-      day: "2-digit",
-      month: "short",
-    });
-  } catch {
-    return iso;
-  }
-}
+import { fmtIstDateTime } from "../lib/ist";
 
 export default function NewsPage() {
   const [rows, setRows] = useState<NewsRow[]>([]);
@@ -49,12 +35,12 @@ export default function NewsPage() {
   }, []);
 
   return (
-    <section>
+    <section className="news-page">
       <div className="section-head">
         <h1>News · sentiment</h1>
         <p className="muted">{error || note || "Loading…"}</p>
       </div>
-      <div className="table-wrap">
+      <div className="table-wrap table-wrap-scroll">
         <table>
           <thead>
             <tr>
@@ -71,7 +57,7 @@ export default function NewsPage() {
                 <td colSpan={5} className="muted">
                   {error
                     ? "—"
-                    : "No live headlines yet. The API polls RSS on startup (local profile); or start the worker with -WithWorker."}
+                    : "No live headlines yet for today (IST). The API polls RSS on startup (local profile); or start the worker with -WithWorker. Older items are archived off this page."}
                 </td>
               </tr>
             ) : (
@@ -81,7 +67,7 @@ export default function NewsPage() {
                   <td>{n.symbols.join(", ") || "—"}</td>
                   <td>{n.title}</td>
                   <td className="muted">{n.source}</td>
-                  <td className="muted mono">{fmtTime(n.published_at)}</td>
+                  <td className="muted mono">{fmtIstDateTime(n.published_at)}</td>
                 </tr>
               ))
             )}

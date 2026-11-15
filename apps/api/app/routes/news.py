@@ -1,4 +1,8 @@
-"""News feed read API — live SQLite rows when ingest has run; else gated mock."""
+"""News feed read API — live SQLite rows when ingest has run; else gated mock.
+
+Portal News shows **today's live feed only** (IST). Archived history is not exposed
+here (optional admin/internal API later). See docs/options-portal-news-retention.md.
+"""
 
 from __future__ import annotations
 
@@ -21,16 +25,15 @@ async def list_news(
     ),
 ) -> dict:
     cfg = load_config()
-    lookback = int(cfg.get("hybrid", {}).get("news_lookback_minutes", 180))
-    # Show a wider window on the News page than the hybrid lookback
-    page_lookback = max(lookback, int(cfg.get("news", {}).get("ui_lookback_minutes", 720)))
-
+    # Retention: portal UI = today's IST live feed only (history never returned).
     store = NewsStore()
     live: list = []
     if store.available:
+        # Opportunistic retention so Windows-native API-only mode still archives.
+        store.run_retention()
         live = store.list_recent(
             symbol=symbol,
-            lookback_minutes=page_lookback,
+            live_today_only=True,
             limit=limit,
         )
 
@@ -39,7 +42,8 @@ async def list_news(
             "items": live,
             "source": "live",
             "count": len(live),
-            "lookback_minutes": page_lookback,
+            "scope": "today_ist",
+            "note": "Live feed for today (IST). Prior days are archived off this page.",
         }
 
     if allow_mock:
@@ -53,8 +57,9 @@ async def list_news(
         "items": [],
         "source": "live",
         "count": 0,
+        "scope": "today_ist",
         "note": (
-            "No live headlines yet. Start the worker (or wait for the API news poller) "
-            "so RSS feeds can populate SQLite."
+            "No live headlines yet for today (IST). Start the worker (or wait for the "
+            "API news poller) so RSS feeds can populate SQLite. Older items are archived."
         ),
     }

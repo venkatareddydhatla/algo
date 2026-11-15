@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from options_portal_domain.tz import ensure_tzdata, ist, now_ist
+from options_portal_domain.tz import (
+    calendar_quarter_bounds,
+    current_quarter_start,
+    ensure_tzdata,
+    format_ist_display,
+    ist,
+    ist_day_start,
+    now_ist,
+)
 
 
 def test_ensure_tzdata_and_ist_resolves():
@@ -21,6 +29,25 @@ def test_now_ist_aware():
     dt = now_ist()
     assert dt.tzinfo is not None
     assert dt.utcoffset() == timedelta(hours=5, minutes=30)
+
+
+def test_format_ist_display_includes_date_and_time():
+    """Signals Updated (and similar) must show date + time, not time-only."""
+    utc = datetime(2026, 11, 15, 4, 5, tzinfo=timezone.utc)  # 09:35 IST
+    display = format_ist_display(utc)
+    assert display == "2026-11-15 09:35 IST"
+    assert "2026-11-15" in display
+    assert display.endswith("IST")
+
+
+def test_ist_day_start_and_quarter_bounds():
+    start = ist_day_start(date(2026, 11, 15))
+    assert start.hour == 0 and start.minute == 0
+    assert start.utcoffset() == timedelta(hours=5, minutes=30)
+    q_start, q_end = calendar_quarter_bounds(date(2026, 11, 15))
+    assert q_start == date(2026, 10, 1)
+    assert q_end == date(2026, 12, 31)
+    assert current_quarter_start(date(2026, 4, 2)) == date(2026, 4, 1)
 
 
 def test_asia_kolkata_zoneinfo_after_tzdata():
