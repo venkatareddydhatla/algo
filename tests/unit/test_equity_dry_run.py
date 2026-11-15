@@ -129,8 +129,8 @@ def test_risk_gate_blocks_max_open_on_equity_entry():
     )[0]
     ok, reason = DefaultRiskGate().validate_equity(
         intent,
-        {"open_symbols": ["A", "B", "C", "D"], "day_realized_pnl": 0},
-        {"max_open_symbols": 4, "max_equity_qty_per_symbol": 1},
+        {"open_symbols": ["A", "B", "C", "D", "E"], "day_realized_pnl": 0},
+        {"max_open_symbols": 5, "max_equity_qty_per_symbol": 1},
     )
     assert ok is False
     assert "Max open symbols" in reason
@@ -147,8 +147,8 @@ def test_risk_gate_allows_exit_when_open_full():
     )[0]
     ok, _ = DefaultRiskGate().validate_equity(
         intent,
-        {"open_symbols": ["A", "B", "C", "D"], "day_realized_pnl": 0},
-        {"max_open_symbols": 4, "max_equity_qty_per_symbol": 1},
+        {"open_symbols": ["A", "B", "C", "D", "E"], "day_realized_pnl": 0},
+        {"max_open_symbols": 5, "max_equity_qty_per_symbol": 1},
     )
     assert ok is True
 
@@ -184,7 +184,7 @@ async def test_equity_router_dry_run_simulates():
     result = await SafeOrderRouter().execute_equity(
         intent,
         "dry_run",
-        limits={"max_equity_qty_per_symbol": 1, "max_open_symbols": 4},
+        limits={"max_equity_qty_per_symbol": 1, "max_open_symbols": 5},
     )
     assert result.status == "simulated"
     assert result.mode == "dry_run"

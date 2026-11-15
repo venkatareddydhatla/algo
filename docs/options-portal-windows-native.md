@@ -94,6 +94,23 @@ git pull origin cursor/news-scroll-archive-updated-d7a5
 
 Verify: Signals Updated column has a date (not time-only); News table scrolls vertically; `/api/v1/news` returns `scope: today_ist`. Still `dry_run` only.
 
+### Pull max open symbols = 5 (stacked)
+
+Equity dry-run risk default **`max_open_symbols: 5`** (was 4). Caps concurrent open equity symbols; exits remain allowed when the book is full. Still `dry_run` only — no live orders.
+
+```powershell
+cd C:\algo
+Set-ExecutionPolicy -Scope Process Bypass
+.\deploy\windows\native\stop-native.ps1
+git fetch origin
+git checkout cursor/max-open-symbols-five-beac
+git pull origin cursor/max-open-symbols-five-beac
+.\deploy\windows\native\setup-native.ps1
+.\deploy\windows\native\start-native.ps1 -WithWorker
+```
+
+Verify: `config\local.yaml` (and `default.yaml`) show `risk.max_open_symbols: 5`. Still `dry_run` only.
+
 If the API fails with `ZoneInfoNotFoundError: 'No time zone found with key Asia/Kolkata'`, install tzdata and restart:
 
 ```powershell
