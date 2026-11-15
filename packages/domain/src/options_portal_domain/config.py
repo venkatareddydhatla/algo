@@ -58,6 +58,18 @@ def is_halted(config: dict[str, Any] | None = None) -> bool:
     return bool(cfg.get("trading", {}).get("halt", False))
 
 
+def paper_retention_config(config: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Equity paper-ledger retention knobs (dry-run keep-all; purge before live)."""
+    cfg = config or load_config()
+    equity = (cfg.get("trading") or {}).get("equity") or {}
+    raw = equity.get("paper_retention") or {}
+    return {
+        "auto_purge": bool(raw.get("auto_purge", False)),
+        "allow_purge_before_live": bool(raw.get("allow_purge_before_live", True)),
+        "live_min_retain_days": max(90, int(raw.get("live_min_retain_days", 90))),
+    }
+
+
 def watchlist_symbols(config: dict[str, Any] | None = None) -> list[str]:
     """Full portal watchlist (may be the entire NSE F&O universe)."""
     cfg = config or load_config()

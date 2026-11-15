@@ -20,6 +20,11 @@ trading:
     share_qty: 1           # fixed shares per dry-run entry (config key)
     max_qty_per_symbol: 1  # risk cap for new entries (exits may close full open qty)
     # overnight_hold_min_hybrid_abs may also live under trading.session (session wins)
+    # Paper ledger retention — see docs/options-portal-paper-retention.md
+    paper_retention:
+      auto_purge: false            # never auto-delete fills/positions during dry_run
+      allow_purge_before_live: true  # explicit API/script purge when starting live
+      live_min_retain_days: 90     # after live: keep fills ≥ this many days
   # Full NSE F&O watchlist (indices + equities). Worker scores the full universe by default.
   universe: nse_fno       # alias -> config/universe/nse_fno_underlyings.csv
   # symbols: nse_fno      # alternate: string alias instead of universe key

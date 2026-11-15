@@ -102,6 +102,32 @@ CREATE INDEX IF NOT EXISTS paper_fills_ts_idx
 
 CREATE INDEX IF NOT EXISTS paper_fills_symbol_idx
   ON paper_fills (symbol, ts_utc DESC);
+
+-- Archive copy for explicit purge-before-live (never auto-written in dry_run week).
+CREATE TABLE IF NOT EXISTS paper_fills_archive (
+  id                TEXT PRIMARY KEY,
+  client_order_id   TEXT NOT NULL,
+  broker_order_id   TEXT,
+  mode              TEXT NOT NULL,
+  symbol            TEXT NOT NULL,
+  side              TEXT NOT NULL,
+  qty               INTEGER NOT NULL,
+  price             REAL NOT NULL,
+  status            TEXT NOT NULL,
+  reason            TEXT NOT NULL DEFAULT '',
+  signal_action     TEXT,
+  action_kind       TEXT,
+  position_side     TEXT,
+  dry_run           INTEGER NOT NULL DEFAULT 1,
+  realized_pnl      REAL,
+  ts_utc            TEXT NOT NULL,
+  ts_ist            TEXT NOT NULL,
+  ts_ist_display    TEXT NOT NULL,
+  archived_at       TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS paper_fills_archive_ts_idx
+  ON paper_fills_archive (ts_utc DESC);
 """
 
 

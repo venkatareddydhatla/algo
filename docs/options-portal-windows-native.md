@@ -111,6 +111,30 @@ git pull origin cursor/max-open-symbols-five-beac
 
 Verify: `config\local.yaml` (and `default.yaml`) show `risk.max_open_symbols: 5`. Still `dry_run` only.
 
+### Pull paper / dry-run trade retention (stacked)
+
+Keep **all** dry-run paper fills through the review week (no auto-delete). Trades UI paginates full history (not today-only). Before real orders, purge/archive explicitly via admin API or `scripts\purge_paper_ledger.py`. After live, prefer ≥90 days fill retention. Policy: [`docs/options-portal-paper-retention.md`](./options-portal-paper-retention.md).
+
+```powershell
+cd C:\algo
+Set-ExecutionPolicy -Scope Process Bypass
+.\deploy\windows\native\stop-native.ps1
+git fetch origin
+git checkout cursor/dry-run-trade-retention-e83e
+git pull origin cursor/dry-run-trade-retention-e83e
+.\deploy\windows\native\setup-native.ps1
+.\deploy\windows\native\start-native.ps1 -WithWorker
+```
+
+Verify: http://127.0.0.1:5173/trades shows fill pager + history note; `config\local.yaml` has `trading.equity.paper_retention.auto_purge: false`. **Do not** run purge during dry-run week. When starting live later:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\purge_paper_ledger.py
+.\.venv\Scripts\python.exe scripts\purge_paper_ledger.py --yes
+```
+
+Still `dry_run` only — no live orders.
+
 If the API fails with `ZoneInfoNotFoundError: 'No time zone found with key Asia/Kolkata'`, install tzdata and restart:
 
 ```powershell

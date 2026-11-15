@@ -167,6 +167,7 @@ Entities (full DDL in [database-schema.md](./options-portal/database-schema.md))
 - **signals** — technical + hybrid decisions
 - **option_recommendations** — proposed legs
 - **orders / fills** — dry-run and live
+- **paper_fills / paper_positions** — equity dry-run ledger; keep all fills during dry-run week; explicit purge/archive before live; ≥90d after live — see [paper retention](./options-portal-paper-retention.md)
 - **trades / positions / pnl_snapshots**
 - **audit_events** — immutable JSON payloads
 - **app_config** — non-secret runtime knobs (versioned)
