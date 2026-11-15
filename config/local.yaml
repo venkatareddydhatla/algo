@@ -168,12 +168,22 @@ sentiment:
 
 notify:
   channels:
+    - type: console
+      enabled: true
+    - type: gmail
+      enabled: true
+      # GMAIL_APP_PASSWORD required (local .env only — never commit)
+      # optional: GMAIL_USER, NOTIFY_EMAIL_TO (default venkatareddy.dhatla@gmail.com)
     - type: telegram
       enabled: false
       # TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID from env
     - type: webhook
       enabled: false
       url_env: ALERT_WEBHOOK_URL
+  daily_summary:
+    enabled: true
+    hour_ist: 16
+    minute_ist: 0
 
 persistence:
   postgres_url_env: DATABASE_URL
