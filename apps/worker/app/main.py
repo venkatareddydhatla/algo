@@ -82,13 +82,19 @@ async def pipeline_loop() -> None:
             elapsed,
             scan_batch_size(cfg.get("trading", {})),
         )
-        # Daily dry-run email summary at 16:00 IST (once per day; needs GMAIL_APP_PASSWORD)
+        # Daily dry-run email summary at 16:00 IST (trading days only; needs GMAIL_APP_PASSWORD)
         try:
             summary_status = maybe_send_daily_summary(config=cfg)
             if summary_status.get("sent"):
                 logger.info("Daily Gmail summary sent: %s", summary_status)
-            elif summary_status.get("reason") not in {"not_due", "disabled"}:
+            elif summary_status.get("reason") not in {
+                "not_due",
+                "disabled",
+                "non_trading_day",
+            }:
                 logger.info("Daily Gmail summary skipped: %s", summary_status)
+            elif summary_status.get("reason") == "non_trading_day":
+                logger.debug("Daily Gmail summary skipped: %s", summary_status)
         except Exception:  # noqa: BLE001
             logger.exception("Daily Gmail summary failed")
         try:

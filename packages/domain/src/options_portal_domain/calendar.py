@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta
 
-from options_portal_domain.tz import ist
+from options_portal_domain.tz import ist, now_ist
 
 # Lazy-safe IST (tzdata on Windows; fixed +05:30 fallback)
 IST = ist()
 
 # Minimal holiday stub — replace with full NSE circular calendar.
 # TODO: load holidays from config/symbols.india.yaml or an exchange feed.
+# Incomplete list: weekday Mon–Fri is always required; expand holidays as follow-up.
 NSE_HOLIDAYS_2026: set[date] = {
     date(2026, 1, 26),  # Republic Day
     date(2026, 3, 3),  # Holi (approx — verify)
@@ -97,6 +98,23 @@ class IndiaMarketCalendar:
         if symbol.upper() in INDEX_WEEKLY_SYMBOLS:
             return self.next_weekly_expiry(symbol, as_of)
         return self.next_monthly_expiry(symbol, as_of)
+
+
+def is_nse_trading_day(
+    d: date | None = None,
+    *,
+    holidays: set[date] | None = None,
+) -> bool:
+    """True for Mon–Fri IST days that are not in the NSE holiday stub.
+
+    ``d`` defaults to today's IST calendar date. Pass ``holidays`` to override
+    the stub (empty set = weekends only). Full NSE circular coverage is a
+    follow-up — expand ``NSE_HOLIDAYS_2026`` or load from config/feed.
+    """
+    day = d if d is not None else now_ist().date()
+    if holidays is not None:
+        return IndiaMarketCalendar(holidays=holidays).is_trading_day(day)
+    return IndiaMarketCalendar().is_trading_day(day)
 
 
 def _parse_hhmm(value: str) -> time:

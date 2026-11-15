@@ -82,7 +82,7 @@ def main() -> int:
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Bypass 16:00 IST / once-per-day gate and send now",
+        help="Bypass 16:00 IST / once-per-day / non-trading-day gates and send now",
     )
     parser.add_argument(
         "--mark-sent",
