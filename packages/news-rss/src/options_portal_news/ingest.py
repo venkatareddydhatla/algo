@@ -115,6 +115,8 @@ async def news_poll_loop(
         interval,
         "ok" if store.available else "unavailable",
     )
+    if store.available:
+        store.run_retention()
     await run_news_ingest_once(cfg, store=store)
     while not stop_event.is_set():
         try:
@@ -122,5 +124,7 @@ async def news_poll_loop(
             break
         except TimeoutError:
             cfg = load_config()
+            if store.available:
+                store.run_retention()
             await run_news_ingest_once(cfg, store=store)
     logger.info("News poller stopped")

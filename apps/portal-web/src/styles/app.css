@@ -135,6 +135,26 @@ body {
   background: color-mix(in srgb, var(--bg-elev) 70%, transparent);
 }
 
+/* News (and other long lists): vertical scrollbar under sticky topbar */
+.table-wrap-scroll {
+  overflow: auto;
+  max-height: calc(100vh - 9.5rem);
+  overscroll-behavior: contain;
+}
+
+.table-wrap-scroll thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-elev);
+}
+
+.news-page {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;

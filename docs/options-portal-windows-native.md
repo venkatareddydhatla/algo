@@ -77,6 +77,23 @@ git pull origin cursor/soft-eod-market-sentiment-bc84
 
 Config knobs (non-secret): `trading.session.soft_flatten_ist`, `overnight_hold_min_hybrid_abs`, `trading.market_sentiment.enabled`. Worker logs flatten / overnight-hold / index-block reasons. Still `dry_run` only.
 
+### Pull News scroll + UPDATED date/time + retention (stacked)
+
+Signals **Updated** shows **date + time IST** (`YYYY-MM-DD HH:MM IST`). News page has a vertical scrollbar for long lists. Live News UI = **today IST only**; prior days archive into SQLite history until **quarter-end** (not shown on the News page). Policy: [`docs/options-portal-news-retention.md`](./options-portal-news-retention.md).
+
+```powershell
+cd C:\algo
+Set-ExecutionPolicy -Scope Process Bypass
+.\deploy\windows\native\stop-native.ps1
+git fetch origin
+git checkout cursor/news-scroll-archive-updated-d7a5
+git pull origin cursor/news-scroll-archive-updated-d7a5
+.\deploy\windows\native\setup-native.ps1
+.\deploy\windows\native\start-native.ps1 -WithWorker
+```
+
+Verify: Signals Updated column has a date (not time-only); News table scrolls vertically; `/api/v1/news` returns `scope: today_ist`. Still `dry_run` only.
+
 If the API fails with `ZoneInfoNotFoundError: 'No time zone found with key Asia/Kolkata'`, install tzdata and restart:
 
 ```powershell

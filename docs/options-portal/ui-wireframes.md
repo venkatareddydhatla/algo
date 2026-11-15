@@ -70,12 +70,13 @@ Optional later: sparkline of last 40×15m bars (not required for v1 wireframe).
 │  Sources: [x] Moneycontrol [x] ET [x] LiveMint [x] NSE [x] BSE [x] SEBI │
 │  Symbols: [NIFTY] [BANKNIFTY] [RELIANCE] [TCS] [All]                     │
 │                                                                          │
-│  IST     Sent   Syms              Title                        Source    │
-│  15:01   −0.72  RELIANCE          Broker cuts target on…       LiveMint  │
-│  14:52   +0.41  NIFTY,BANKNIFTY   Foreign inflows lift…        ET        │
-│  14:20    0.05  TCS               Quiet session ahead of…      MC        │
-│  12:05   −0.30  —                 SEBI circular: margin…       SEBI      │
+│  Sent   Syms              Title                        Source   Time IST │
+│  −0.72  RELIANCE          Broker cuts target on…       LiveMint 15 Nov…  │
+│  +0.41  NIFTY,BANKNIFTY   Foreign inflows lift…        ET       15 Nov…  │
+│   0.05  TCS               Quiet session ahead of…      MC       15 Nov…  │
+│  −0.30  —                 SEBI circular: margin…       SEBI     15 Nov…  │
 │                                                                          │
+│  ↕ vertical scroll for long live lists (today IST only; history off-UI)  │
 │  Click row → article detail + linked signals                             │
 └──────────────────────────────────────────────────────────────────────────┘
 ```

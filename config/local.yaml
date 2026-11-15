@@ -119,7 +119,10 @@ news:
   poll_interval_sec: 120
   timeout_sec: 15
   ingest_lookback_minutes: 2880  # 48h — market feeds often lag overnight
-  ui_lookback_minutes: 2880
+  # Portal News page shows today's IST live feed only (history not displayed).
+  retention:
+    live: today_ist
+    history: until_quarter_end
   sources:
     # moneycontrol latestnews.xml currently looks stale (2024 items) — keep disabled
     - id: moneycontrol
