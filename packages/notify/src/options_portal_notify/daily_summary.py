@@ -166,7 +166,7 @@ def maybe_send_daily_summary(
             mode = "dry_run"
 
     positions: list[dict[str, Any]] = []
-    fills_today: list[dict[str, Any]] = []
+    recent_fills: list[dict[str, Any]] = []
     day_realized = 0.0
     store = paper_store
     if store is None:
@@ -182,23 +182,25 @@ def maybe_send_daily_summary(
         snap = store.portfolio_snapshot(mode=mode)  # type: ignore[arg-type]
         positions = list(snap.get("positions") or [])
         day_realized = float(snap.get("day_realized_pnl") or 0.0)
-        # Pull enough recent fills then filter to today IST
-        recent = store.list_fills(mode=mode, limit=200, offset=0)  # type: ignore[arg-type]
-        fills_today = fills_for_ist_day(recent, today)
+        # Recent history (not day-filtered) so overnight entries pair with today's exits
+        recent_fills = list(
+            store.list_fills(mode=mode, limit=200, offset=0)  # type: ignore[arg-type]
+        )
 
     ok = notifier.send_daily_summary(
         day_ist=today.isoformat(),
         day_realized=day_realized,
         positions=positions,
-        fills_today=fills_today,
+        fills=recent_fills,
         mode=mode,
     )
+    fills_today_count = len(fills_for_ist_day(recent_fills, today))
     if ok and should_mark:
         save_last_sent_day(today, path)
     return {
         "sent": ok,
         "day_ist": today.isoformat(),
-        "fills_today": len(fills_today),
+        "fills_today": fills_today_count,
         "open_positions": len(positions),
         "day_realized": day_realized,
         "marked_sent": bool(ok and should_mark),

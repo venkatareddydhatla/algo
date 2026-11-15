@@ -24,9 +24,11 @@ from options_portal_notify.factory import (
 from options_portal_notify.gmail import (
     DEFAULT_NOTIFY_EMAIL_TO,
     GmailSMTPNotifier,
+    closed_trades_for_ist_day,
     format_daily_summary_email,
     format_fill_email,
     gmail_settings,
+    pair_round_trip_trades,
     send_gmail_message,
     soften_reason,
 )
@@ -82,6 +84,94 @@ def test_format_fill_email():
     assert "RELIANCE" in html_body
 
 
+def test_pair_round_trip_trades_entry_exit():
+    fills = [
+        {
+            "id": "1",
+            "symbol": "TCS",
+            "side": "BUY",
+            "qty": 1,
+            "price": 3900,
+            "action_kind": "entry",
+            "position_side": "long",
+            "ts_ist": "2026-11-15T11:00:00+05:30",
+            "ts_ist_display": "2026-11-15 11:00 IST",
+            "reason": "entry hybrid",
+            "realized_pnl": None,
+        },
+        {
+            "id": "2",
+            "symbol": "TCS",
+            "side": "SELL",
+            "qty": 1,
+            "price": 3912.5,
+            "action_kind": "exit",
+            "position_side": None,
+            "ts_ist": "2026-11-15T14:00:00+05:30",
+            "ts_ist_display": "2026-11-15 14:00 IST",
+            "reason": "signal_exit · close long",
+            "realized_pnl": 12.5,
+        },
+        {
+            "id": "3",
+            "symbol": "INFY",
+            "side": "SELL",
+            "qty": 2,
+            "price": 1500,
+            "action_kind": "entry",
+            "position_side": "short",
+            "ts_ist": "2026-11-15T12:00:00+05:30",
+            "ts_ist_display": "2026-11-15 12:00 IST",
+            "reason": "short entry",
+            "realized_pnl": None,
+        },
+    ]
+    trades = pair_round_trip_trades(fills)
+    assert len(trades) == 1
+    assert trades[0]["symbol"] == "TCS"
+    assert trades[0]["side"] == "LONG"
+    assert trades[0]["entry_price"] == 3900
+    assert trades[0]["exit_price"] == 3912.5
+    assert trades[0]["pnl"] == 12.5
+    # Still-open INFY short is omitted (Open positions covers it)
+    day = closed_trades_for_ist_day(trades, "2026-11-15")
+    assert len(day) == 1
+
+
+def test_pair_round_trip_overnight_exit_on_day():
+    fills = [
+        {
+            "id": "1",
+            "symbol": "SBIN",
+            "side": "SELL",
+            "qty": 1,
+            "price": 800,
+            "action_kind": "entry",
+            "position_side": "short",
+            "ts_ist": "2026-11-14T15:00:00+05:30",
+            "ts_ist_display": "2026-11-14 15:00 IST",
+            "realized_pnl": None,
+        },
+        {
+            "id": "2",
+            "symbol": "SBIN",
+            "side": "BUY",
+            "qty": 1,
+            "price": 790,
+            "action_kind": "exit",
+            "ts_ist": "2026-11-15T10:30:00+05:30",
+            "ts_ist_display": "2026-11-15 10:30 IST",
+            "reason": "cover short",
+            "realized_pnl": 10.0,
+        },
+    ]
+    trades = closed_trades_for_ist_day(pair_round_trip_trades(fills), "2026-11-15")
+    assert len(trades) == 1
+    assert trades[0]["side"] == "SHORT"
+    assert trades[0]["entry_ts_ist_display"].startswith("2026-11-14")
+    assert trades[0]["exit_ts_ist_display"].startswith("2026-11-15")
+
+
 def test_format_daily_summary_email():
     long_reason = (
         "hybrid bullish: RSI recovery + positive news cluster on earnings "
@@ -90,30 +180,67 @@ def test_format_daily_summary_email():
     subject, body, html_body = format_daily_summary_email(
         day_ist="2026-11-15",
         day_realized=12.5,
-        positions=[{"symbol": "TCS", "side": "long", "qty": 1, "avg_price": 3900}],
-        fills_today=[
+        positions=[{"symbol": "INFY", "side": "short", "qty": 2, "avg_price": 1500}],
+        fills=[
             {
+                "id": "1",
                 "symbol": "TCS",
                 "side": "BUY",
                 "qty": 1,
                 "price": 3900,
+                "action_kind": "entry",
+                "position_side": "long",
+                "ts_ist": "2026-11-15T11:00:00+05:30",
                 "ts_ist_display": "2026-11-15 11:00 IST",
-                "reason": long_reason,
+                "reason": "entry",
                 "realized_pnl": None,
-            }
+            },
+            {
+                "id": "2",
+                "symbol": "TCS",
+                "side": "SELL",
+                "qty": 1,
+                "price": 3912.5,
+                "action_kind": "exit",
+                "ts_ist": "2026-11-15T14:00:00+05:30",
+                "ts_ist_display": "2026-11-15 14:00 IST",
+                "reason": long_reason,
+                "realized_pnl": 12.5,
+            },
+            {
+                "id": "3",
+                "symbol": "INFY",
+                "side": "SELL",
+                "qty": 2,
+                "price": 1500,
+                "action_kind": "entry",
+                "position_side": "short",
+                "ts_ist": "2026-11-15T12:00:00+05:30",
+                "ts_ist_display": "2026-11-15 12:00 IST",
+                "reason": "still open",
+                "realized_pnl": None,
+            },
         ],
     )
     assert "2026-11-15" in subject
+    assert "1 trades" in subject
     assert "TCS" in body
+    assert "LONG" in body
     assert "12.50" in body
-    assert "Time (IST)" in body
+    assert "Entry (IST)" in body
+    assert "Exit (IST)" in body
+    assert "Entry px" in body
+    assert "Exit px" in body
     assert "Reason" in body
     assert "…" in body  # truncated reason in plain table
     assert long_reason in body  # full reason appendix
     assert "<table" in html_body
-    assert "Today's fills" in html_body or "Today&#x27;s fills" in html_body
+    assert "Today's trades" in html_body or "Today&#x27;s trades" in html_body
     assert "Open positions" in html_body
+    assert "INFY" in body  # open position still listed
     assert "title=" in html_body  # hover full reason
+    # Bars column intentionally omitted for paper ledger
+    assert "Bars" not in body
 
 
 def test_send_gmail_message_mocked(clear_gmail_env, monkeypatch: pytest.MonkeyPatch):

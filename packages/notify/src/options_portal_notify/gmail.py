@@ -25,6 +25,9 @@ GMAIL_SMTP_PORT = 587
 # Soften long reason strings in table cells; full text kept via HTML title + plain appendix.
 REASON_DISPLAY_MAX = 72
 
+_ENTRY_ACTION_KINDS = frozenset({"entry", "flip_open"})
+_EXIT_ACTION_KINDS = frozenset({"exit", "flip_close"})
+
 
 @dataclass(frozen=True)
 class GmailSettings:
@@ -115,6 +118,102 @@ def soften_reason(reason: str | None, *, max_len: int = REASON_DISPLAY_MAX) -> s
     if max_len <= 1:
         return "…"
     return text[: max_len - 1].rstrip() + "…"
+
+
+def _fill_sort_key(fill: dict[str, Any]) -> tuple[str, str]:
+    return (
+        str(fill.get("ts_ist") or fill.get("ts") or fill.get("ts_ist_display") or ""),
+        str(fill.get("id") or ""),
+    )
+
+
+def _is_entry_fill(fill: dict[str, Any]) -> bool:
+    """True for opens (entry / flip_open); False for closes.
+
+    Falls back to realized_pnl when ``action_kind`` is missing (legacy rows).
+    """
+    kind = str(fill.get("action_kind") or "").strip().lower()
+    if kind in _ENTRY_ACTION_KINDS:
+        return True
+    if kind in _EXIT_ACTION_KINDS:
+        return False
+    return fill.get("realized_pnl") is None
+
+
+def _held_side_label(entry: dict[str, Any] | None, exit_fill: dict[str, Any]) -> str:
+    """Map equity position to LONG/SHORT (Backtest CE≈long, PE≈short)."""
+    if entry is not None:
+        ps = str(entry.get("position_side") or "").strip().lower()
+        if ps in {"long", "short"}:
+            return ps.upper()
+        order = str(entry.get("side") or "").strip().upper()
+        if order == "BUY":
+            return "LONG"
+        if order == "SELL":
+            return "SHORT"
+    # Infer from closing order: SELL closes long, BUY covers short
+    exit_side = str(exit_fill.get("side") or "").strip().upper()
+    if exit_side == "SELL":
+        return "LONG"
+    if exit_side == "BUY":
+        return "SHORT"
+    ps = str(exit_fill.get("position_side") or "").strip().lower()
+    if ps in {"long", "short"}:
+        return ps.upper()
+    return "—"
+
+
+def pair_round_trip_trades(fills: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Pair paper ledger fills into closed round-trips (Backtest Fills layout).
+
+    Chronological per-symbol: ``entry`` / ``flip_open`` opens a leg;
+    ``exit`` / ``flip_close`` closes it into one row. Still-open legs are omitted
+    (use the Open positions section — do not invent exits).
+    """
+    ordered = sorted(fills, key=_fill_sort_key)
+    open_by_symbol: dict[str, dict[str, Any]] = {}
+    closed: list[dict[str, Any]] = []
+    for fill in ordered:
+        symbol = str(fill.get("symbol") or "").strip().upper()
+        if not symbol:
+            continue
+        if _is_entry_fill(fill):
+            open_by_symbol[symbol] = fill
+            continue
+        entry = open_by_symbol.pop(symbol, None)
+        closed.append(
+            {
+                "symbol": symbol,
+                "side": _held_side_label(entry, fill),
+                "entry_ts_ist_display": (
+                    str(entry.get("ts_ist_display") or "—") if entry else "—"
+                ),
+                "exit_ts_ist_display": str(fill.get("ts_ist_display") or "—"),
+                "entry_price": entry.get("price") if entry else None,
+                "exit_price": fill.get("price"),
+                "pnl": fill.get("realized_pnl"),
+                "reason": str(fill.get("reason") or "").strip(),
+                "qty": fill.get("qty") if fill.get("qty") is not None else (
+                    entry.get("qty") if entry else None
+                ),
+            }
+        )
+    return closed
+
+
+def closed_trades_for_ist_day(
+    trades: list[dict[str, Any]],
+    day_ist: str,
+) -> list[dict[str, Any]]:
+    """Keep round-trips whose exit timestamp falls on ``YYYY-MM-DD`` (IST)."""
+    prefix = (day_ist or "").strip()
+    if not prefix:
+        return list(trades)
+    return [
+        t
+        for t in trades
+        if str(t.get("exit_ts_ist_display") or "").startswith(prefix)
+    ]
 
 
 def _esc(value: Any) -> str:
@@ -283,11 +382,22 @@ def format_daily_summary_email(
     day_ist: str,
     day_realized: float,
     positions: list[dict[str, Any]],
-    fills_today: list[dict[str, Any]],
+    fills_today: list[dict[str, Any]] | None = None,
+    fills: list[dict[str, Any]] | None = None,
     mode: str = "dry_run",
 ) -> tuple[str, str, str]:
-    """Return (subject, plain_body, html_body) for the 16:00 IST daily dry-run summary."""
-    subject = f"[dry-run] Daily summary {day_ist} ({len(fills_today)} fills)"
+    """Return (subject, plain_body, html_body) for the 16:00 IST daily dry-run summary.
+
+    ``fills`` should be recent paper fills (not day-filtered) so overnight entries
+    can pair with today's exits. ``fills_today`` is accepted for older callers and
+    is used only when ``fills`` is omitted (day-scoped pairing only).
+    """
+    source_fills = list(fills if fills is not None else (fills_today or []))
+    trades_today = closed_trades_for_ist_day(
+        pair_round_trip_trades(source_fills),
+        day_ist,
+    )
+    subject = f"[dry-run] Daily summary {day_ist} ({len(trades_today)} trades)"
 
     summary_kv = [
         ("Date (IST)", day_ist),
@@ -295,7 +405,7 @@ def format_daily_summary_email(
         ("Mode", mode),
         ("Day realized", f"{day_realized:.2f}"),
         ("Open symbols", str(len(positions))),
-        ("Fills today", str(len(fills_today))),
+        ("Trades today", str(len(trades_today))),
     ]
 
     pos_headers = ["Symbol", "Side", "Qty", "Avg price"]
@@ -311,34 +421,49 @@ def format_daily_summary_email(
             [(symbol, None), (side, None), (qty, None), (avg, None)]
         )
 
-    fill_headers = ["Time (IST)", "Side", "Qty", "Symbol", "Price", "PnL", "Reason"]
-    fill_plain_rows: list[list[str]] = []
-    fill_html_rows: list[list[tuple[str, str | None]]] = []
+    # Backtest Fills layout: Side, Entry (IST), Exit (IST), Entry px, Exit px, PnL, Reason.
+    # Symbol added (multi-name equity book). Bars omitted (paper ledger is event-based).
+    trade_headers = [
+        "Symbol",
+        "Side",
+        "Entry (IST)",
+        "Exit (IST)",
+        "Entry px",
+        "Exit px",
+        "PnL",
+        "Reason",
+    ]
+    trade_plain_rows: list[list[str]] = []
+    trade_html_rows: list[list[tuple[str, str | None]]] = []
     full_reasons: list[tuple[str, str]] = []
-    for f in fills_today:
-        ts = str(f.get("ts_ist_display") or "—")
-        side = str(f.get("side") or "—")
-        qty = str(f.get("qty") if f.get("qty") is not None else "—")
-        symbol = str(f.get("symbol") or "—")
-        price = _fmt_price(f.get("price"))
-        pnl = _fmt_pnl(f.get("realized_pnl"))
-        reason_full = str(f.get("reason") or "").strip() or "—"
+    for t in trades_today:
+        symbol = str(t.get("symbol") or "—")
+        side = str(t.get("side") or "—")
+        entry_ts = str(t.get("entry_ts_ist_display") or "—")
+        exit_ts = str(t.get("exit_ts_ist_display") or "—")
+        entry_px = _fmt_price(t.get("entry_price")) if t.get("entry_price") is not None else "—"
+        exit_px = _fmt_price(t.get("exit_price")) if t.get("exit_price") is not None else "—"
+        pnl = _fmt_pnl(t.get("pnl"))
+        reason_full = str(t.get("reason") or "").strip() or "—"
         reason_short = soften_reason(reason_full)
-        fill_plain_rows.append([ts, side, qty, symbol, price, pnl, reason_short])
+        trade_plain_rows.append(
+            [symbol, side, entry_ts, exit_ts, entry_px, exit_px, pnl, reason_short]
+        )
         title = reason_full if reason_short != reason_full else None
-        fill_html_rows.append(
+        trade_html_rows.append(
             [
-                (ts, None),
-                (side, None),
-                (qty, None),
                 (symbol, None),
-                (price, None),
+                (side, None),
+                (entry_ts, None),
+                (exit_ts, None),
+                (entry_px, None),
+                (exit_px, None),
                 (pnl, None),
                 (reason_short, title),
             ]
         )
         if title:
-            full_reasons.append((f"{ts} {side} {symbol}", reason_full))
+            full_reasons.append((f"{symbol} {side} {exit_ts}", reason_full))
 
     plain_lines = [
         "Options Portal — equity dry-run daily summary",
@@ -348,8 +473,8 @@ def format_daily_summary_email(
         "Open positions:",
         *_plain_table(pos_headers, pos_plain_rows),
         "",
-        "Today's fills:",
-        *_plain_table(fill_headers, fill_plain_rows),
+        "Today's trades:",
+        *_plain_table(trade_headers, trade_plain_rows),
         "",
     ]
     if full_reasons:
@@ -365,8 +490,12 @@ def format_daily_summary_email(
         + _html_kv_table(summary_kv)
         + "<h3 style=\"margin:0 0 8px;font-size:15px;\">Open positions</h3>"
         + _html_data_table(pos_headers, pos_html_rows)
-        + "<h3 style=\"margin:0 0 8px;font-size:15px;\">Today's fills</h3>"
-        + _html_data_table(fill_headers, fill_html_rows)
+        + "<h3 style=\"margin:0 0 8px;font-size:15px;\">Today's trades</h3>"
+        + "<p style=\"margin:0 0 8px;color:#555;font-size:13px;\">"
+        "One row per closed round-trip (entry + exit). "
+        "Side is LONG/SHORT (equity; Backtest CE≈long, PE≈short). "
+        "Still-open legs stay under Open positions.</p>"
+        + _html_data_table(trade_headers, trade_html_rows)
         + "<p style=\"margin:0;color:#555;font-size:13px;\">"
         "Execution remains dry_run — no live Upstox orders. "
         "Hover a truncated Reason cell for the full text.</p>"
@@ -429,7 +558,8 @@ class GmailSMTPNotifier:
         day_ist: str,
         day_realized: float,
         positions: list[dict[str, Any]],
-        fills_today: list[dict[str, Any]],
+        fills_today: list[dict[str, Any]] | None = None,
+        fills: list[dict[str, Any]] | None = None,
         mode: str = "dry_run",
     ) -> bool:
         if not self.enabled:
@@ -439,6 +569,7 @@ class GmailSMTPNotifier:
             day_realized=day_realized,
             positions=positions,
             fills_today=fills_today,
+            fills=fills,
             mode=mode,
         )
         return send_gmail_message(
