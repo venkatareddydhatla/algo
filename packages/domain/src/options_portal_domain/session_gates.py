@@ -1,0 +1,266 @@
+"""Soft EOD flatten + light index market-sentiment gates (IST).
+
+Product rules (equity dry-run):
+- Soft flatten at soft_flatten_ist (default 15:20 IST): close open paper equity
+  unless |hybrid| meets overnight conviction on the same side.
+- No hard force square-off at 15:40.
+- Optional light NIFTY/BANKNIFTY gate: block new opposite entries only when
+  index hybrid strongly conflicts; skip when noisy/weak.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, time
+from typing import Any, Literal, Sequence
+
+from options_portal_domain.equity import EquityActionKind, PositionSide
+from options_portal_domain.tz import ist, now_ist
+from options_portal_domain.types import SignalAction
+
+IndexBias = Literal["bullish", "bearish", "neutral", "noisy", "unavailable"]
+
+
+def parse_hhmm(value: str) -> time:
+    hour, minute = str(value).strip().split(":")[:2]
+    return time(int(hour), int(minute))
+
+
+def _ist_clock(now: datetime | None = None) -> datetime:
+    dt = now or now_ist()
+    if dt.tzinfo is None:
+        # Treat naive as already-IST wall clock for tests
+        return dt
+    return dt.astimezone(ist())
+
+
+def at_or_after_ist(hhmm: str, now: datetime | None = None) -> bool:
+    clock = _ist_clock(now)
+    return clock.time() >= parse_hhmm(hhmm)
+
+
+@dataclass(frozen=True)
+class SoftEodPolicy:
+    """Session soft-EOD knobs from trading.session (+ equity overnight threshold)."""
+
+    open_ist: str = "09:15"
+    close_ist: str = "15:30"
+    no_new_entries_after: str = "15:20"
+    soft_flatten_ist: str = "15:20"
+    overnight_hold_min_hybrid_abs: float = 0.70
+    # Documented user monitoring window (no hard flatten at end)
+    user_hours_note: str = "09:15–15:40 IST (soft flatten 15:20; no hard 15:40 square-off)"
+
+    @classmethod
+    def from_config(cls, config: dict[str, Any]) -> SoftEodPolicy:
+        trading = config.get("trading") or {}
+        session = dict(trading.get("session") or {})
+        equity = dict(trading.get("equity") or {})
+        # Prefer session key; allow equity.* override for overnight threshold
+        overnight = session.get(
+            "overnight_hold_min_hybrid_abs",
+            equity.get(
+                "overnight_hold_min_hybrid_abs",
+                equity.get("overnight_hold_min_abs_hybrid", 0.70),
+            ),
+        )
+        return cls(
+            open_ist=str(session.get("open", "09:15")),
+            close_ist=str(session.get("close", "15:30")),
+            no_new_entries_after=str(session.get("no_new_entries_after", "15:20")),
+            soft_flatten_ist=str(
+                session.get("soft_flatten_ist", session.get("no_new_entries_after", "15:20"))
+            ),
+            overnight_hold_min_hybrid_abs=float(overnight),
+            user_hours_note=str(
+                session.get(
+                    "user_hours_note",
+                    "09:15–15:40 IST (soft flatten 15:20; no hard 15:40 square-off)",
+                )
+            ),
+        )
+
+    def past_no_new_entries(self, now: datetime | None = None) -> bool:
+        return at_or_after_ist(self.no_new_entries_after, now)
+
+    def past_soft_flatten(self, now: datetime | None = None) -> bool:
+        return at_or_after_ist(self.soft_flatten_ist, now)
+
+
+def overnight_hold_allowed(
+    open_side: PositionSide | None,
+    hybrid_score: float,
+    *,
+    min_abs: float,
+) -> bool:
+    """True when same-side |hybrid| meets strong overnight conviction."""
+    if open_side is None:
+        return False
+    threshold = abs(float(min_abs))
+    score = float(hybrid_score)
+    if open_side == "long":
+        return score >= threshold
+    if open_side == "short":
+        return score <= -threshold
+    return False
+
+
+def soft_flatten_decision(
+    *,
+    open_side: PositionSide | None,
+    open_qty: int,
+    hybrid_score: float,
+    policy: SoftEodPolicy,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Evaluate soft EOD for an open paper position.
+
+    Returns keys: active, action ('flatten'|'overnight_hold'|'none'), reason.
+    """
+    if open_side is None or int(open_qty) <= 0:
+        return {"active": False, "action": "none", "reason": "no open position"}
+    if not policy.past_soft_flatten(now):
+        return {
+            "active": False,
+            "action": "none",
+            "reason": f"before soft_flatten_ist={policy.soft_flatten_ist}",
+        }
+    if overnight_hold_allowed(
+        open_side, hybrid_score, min_abs=policy.overnight_hold_min_hybrid_abs
+    ):
+        return {
+            "active": True,
+            "action": "overnight_hold",
+            "reason": (
+                f"soft_flatten skipped: same-side conviction "
+                f"|hybrid|={abs(hybrid_score):.3f} ≥ "
+                f"{policy.overnight_hold_min_hybrid_abs} ({open_side})"
+            ),
+        }
+    return {
+        "active": True,
+        "action": "flatten",
+        "reason": (
+            f"soft_flatten_ist={policy.soft_flatten_ist}: close {open_side} "
+            f"(hybrid={hybrid_score:.3f} below overnight "
+            f"min_abs={policy.overnight_hold_min_hybrid_abs})"
+        ),
+    }
+
+
+@dataclass(frozen=True)
+class MarketSentimentPolicy:
+    enabled: bool = False
+    symbols: tuple[str, ...] = ("NIFTY", "BANKNIFTY")
+    conflict_abs: float = 0.55
+    # If two indices disagree in sign with meaningful magnitude → noisy, skip
+    disagree_min_abs: float = 0.25
+
+    @classmethod
+    def from_config(cls, config: dict[str, Any]) -> MarketSentimentPolicy:
+        trading = config.get("trading") or {}
+        raw = dict(
+            trading.get("market_sentiment")
+            or config.get("market_sentiment")
+            or {}
+        )
+        symbols = raw.get("symbols") or ["NIFTY", "BANKNIFTY"]
+        return cls(
+            enabled=bool(raw.get("enabled", False)),
+            symbols=tuple(str(s).upper() for s in symbols),
+            conflict_abs=float(raw.get("conflict_abs", 0.55)),
+            disagree_min_abs=float(raw.get("disagree_min_abs", 0.25)),
+        )
+
+
+def compute_index_bias(
+    scores: dict[str, float],
+    *,
+    symbols: Sequence[str] = ("NIFTY", "BANKNIFTY"),
+    disagree_min_abs: float = 0.25,
+) -> dict[str, Any]:
+    """Average index hybrid scores; skip when missing or noisy disagreement."""
+    vals: list[float] = []
+    used: list[str] = []
+    for sym in symbols:
+        key = str(sym).upper()
+        if key in scores and scores[key] is not None:
+            vals.append(float(scores[key]))
+            used.append(key)
+    if not vals:
+        return {
+            "bias": None,
+            "label": "unavailable",
+            "reason": "no index hybrid scores yet — skip market_sentiment gate",
+            "symbols_used": [],
+        }
+    if len(vals) >= 2:
+        a, b = vals[0], vals[1]
+        if (
+            abs(a) >= disagree_min_abs
+            and abs(b) >= disagree_min_abs
+            and (a > 0) != (b > 0)
+        ):
+            return {
+                "bias": None,
+                "label": "noisy",
+                "reason": (
+                    f"index disagreement {used[0]}={a:.3f} vs {used[1]}={b:.3f} — skip gate"
+                ),
+                "symbols_used": used,
+            }
+    bias = sum(vals) / len(vals)
+    if bias > 0:
+        label: IndexBias = "bullish"
+    elif bias < 0:
+        label = "bearish"
+    else:
+        label = "neutral"
+    return {
+        "bias": bias,
+        "label": label,
+        "reason": f"index_bias={bias:.3f} from {','.join(used)}",
+        "symbols_used": used,
+    }
+
+
+def entry_conflicts_with_index(
+    action: SignalAction | str,
+    index_bias: float | None,
+    *,
+    conflict_abs: float,
+) -> tuple[bool, str]:
+    """Block new opposite entries when index hybrid strongly conflicts."""
+    if index_bias is None:
+        return False, "index bias unavailable/noisy"
+    if abs(float(index_bias)) < abs(float(conflict_abs)):
+        return False, f"|index_bias|={abs(index_bias):.3f} < conflict_abs={conflict_abs}"
+
+    act = action.value if isinstance(action, SignalAction) else str(action)
+    # Strongly bullish index → block PE/short entries
+    if index_bias >= conflict_abs and act == SignalAction.BUY_PE_BIAS.value:
+        return True, (
+            f"market_sentiment blocks PE entry: index_bias={index_bias:.3f} "
+            f"≥ conflict_abs={conflict_abs}"
+        )
+    # Strongly bearish index → block CE/long entries
+    if index_bias <= -conflict_abs and act == SignalAction.BUY_CE_BIAS.value:
+        return True, (
+            f"market_sentiment blocks CE entry: index_bias={index_bias:.3f} "
+            f"≤ -conflict_abs={conflict_abs}"
+        )
+    return False, "no strong opposite conflict"
+
+
+_ENTRY_KINDS: set[EquityActionKind] = {"entry", "flip_open"}
+
+
+def filter_entry_intents(
+    intents: list[Any],
+    *,
+    allow_entries: bool,
+) -> list[Any]:
+    """Drop entry/flip_open intents when no_new_entries window is active."""
+    if allow_entries:
+        return list(intents)
+    return [i for i in intents if getattr(i, "action_kind", None) not in _ENTRY_KINDS]

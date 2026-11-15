@@ -1,0 +1,183 @@
+"""Soft EOD flatten + light index market-sentiment gates."""
+
+from __future__ import annotations
+
+from datetime import datetime
+
+import pytest
+
+from options_portal_domain.equity import plan_equity_intents
+from options_portal_domain.session_gates import (
+    MarketSentimentPolicy,
+    SoftEodPolicy,
+    at_or_after_ist,
+    compute_index_bias,
+    entry_conflicts_with_index,
+    filter_entry_intents,
+    overnight_hold_allowed,
+    soft_flatten_decision,
+)
+from options_portal_domain.types import SignalAction
+
+
+def test_at_or_after_ist_boundary():
+    noon = datetime(2026, 11, 15, 12, 0, 0)
+    assert at_or_after_ist("15:20", noon) is False
+    assert at_or_after_ist("15:20", datetime(2026, 11, 15, 15, 20, 0)) is True
+    assert at_or_after_ist("15:20", datetime(2026, 11, 15, 15, 40, 0)) is True
+
+
+def test_soft_eod_policy_from_config():
+    policy = SoftEodPolicy.from_config(
+        {
+            "trading": {
+                "session": {
+                    "open": "09:15",
+                    "close": "15:30",
+                    "no_new_entries_after": "15:20",
+                    "soft_flatten_ist": "15:20",
+                    "overnight_hold_min_hybrid_abs": 0.70,
+                }
+            }
+        }
+    )
+    assert policy.close_ist == "15:30"
+    assert policy.soft_flatten_ist == "15:20"
+    assert policy.overnight_hold_min_hybrid_abs == 0.70
+    assert "15:40" in policy.user_hours_note
+    assert policy.past_soft_flatten(datetime(2026, 11, 15, 15, 19, 0)) is False
+    assert policy.past_soft_flatten(datetime(2026, 11, 15, 15, 20, 0)) is True
+
+
+def test_overnight_hold_same_side_conviction():
+    assert overnight_hold_allowed("long", 0.75, min_abs=0.70) is True
+    assert overnight_hold_allowed("long", 0.50, min_abs=0.70) is False
+    assert overnight_hold_allowed("long", -0.90, min_abs=0.70) is False
+    assert overnight_hold_allowed("short", -0.80, min_abs=0.70) is True
+    assert overnight_hold_allowed("short", 0.80, min_abs=0.70) is False
+    assert overnight_hold_allowed(None, 0.99, min_abs=0.70) is False
+
+
+def test_soft_flatten_closes_without_conviction():
+    policy = SoftEodPolicy(soft_flatten_ist="15:20", overnight_hold_min_hybrid_abs=0.70)
+    now = datetime(2026, 11, 15, 15, 25, 0)
+    decision = soft_flatten_decision(
+        open_side="long",
+        open_qty=1,
+        hybrid_score=0.40,
+        policy=policy,
+        now=now,
+    )
+    assert decision["action"] == "flatten"
+    assert "soft_flatten" in decision["reason"]
+
+
+def test_soft_flatten_allows_overnight_on_strong_same_side():
+    policy = SoftEodPolicy(soft_flatten_ist="15:20", overnight_hold_min_hybrid_abs=0.70)
+    now = datetime(2026, 11, 15, 15, 25, 0)
+    decision = soft_flatten_decision(
+        open_side="short",
+        open_qty=1,
+        hybrid_score=-0.85,
+        policy=policy,
+        now=now,
+    )
+    assert decision["action"] == "overnight_hold"
+    assert "conviction" in decision["reason"]
+
+
+def test_no_hard_force_at_1540_still_uses_soft_rules():
+    """15:40 is past soft flatten — still conviction-based, not a separate hard square-off."""
+    policy = SoftEodPolicy(soft_flatten_ist="15:20", overnight_hold_min_hybrid_abs=0.70)
+    late = datetime(2026, 11, 15, 15, 40, 0)
+    hold = soft_flatten_decision(
+        open_side="long",
+        open_qty=1,
+        hybrid_score=0.90,
+        policy=policy,
+        now=late,
+    )
+    flatten = soft_flatten_decision(
+        open_side="long",
+        open_qty=1,
+        hybrid_score=0.10,
+        policy=policy,
+        now=late,
+    )
+    assert hold["action"] == "overnight_hold"
+    assert flatten["action"] == "flatten"
+
+
+def test_filter_entry_intents_keeps_exits():
+    entry = plan_equity_intents(
+        "RELIANCE",
+        SignalAction.BUY_CE_BIAS,
+        open_side=None,
+        open_qty=0,
+        qty=1,
+        price=100.0,
+    )
+    exit_i = plan_equity_intents(
+        "RELIANCE",
+        SignalAction.HOLD,
+        open_side="long",
+        open_qty=1,
+        qty=1,
+        price=100.0,
+    )
+    kept = filter_entry_intents(entry + exit_i, allow_entries=False)
+    assert len(kept) == 1
+    assert kept[0].action_kind == "exit"
+
+
+def test_compute_index_bias_average_and_noisy():
+    ok = compute_index_bias({"NIFTY": 0.60, "BANKNIFTY": 0.50})
+    assert ok["bias"] == pytest.approx(0.55)
+    assert ok["label"] == "bullish"
+
+    noisy = compute_index_bias(
+        {"NIFTY": 0.60, "BANKNIFTY": -0.55},
+        disagree_min_abs=0.25,
+    )
+    assert noisy["bias"] is None
+    assert noisy["label"] == "noisy"
+
+    missing = compute_index_bias({})
+    assert missing["label"] == "unavailable"
+
+
+def test_entry_conflicts_with_strong_index():
+    blocked, reason = entry_conflicts_with_index(
+        SignalAction.BUY_PE_BIAS, 0.70, conflict_abs=0.55
+    )
+    assert blocked is True
+    assert "blocks PE" in reason
+
+    blocked2, _ = entry_conflicts_with_index(
+        SignalAction.BUY_CE_BIAS, -0.70, conflict_abs=0.55
+    )
+    assert blocked2 is True
+
+    # Same-side / weak — do not over-block
+    ok, _ = entry_conflicts_with_index(SignalAction.BUY_CE_BIAS, 0.70, conflict_abs=0.55)
+    assert ok is False
+    weak, _ = entry_conflicts_with_index(SignalAction.BUY_PE_BIAS, 0.30, conflict_abs=0.55)
+    assert weak is False
+    skip, _ = entry_conflicts_with_index(SignalAction.BUY_PE_BIAS, None, conflict_abs=0.55)
+    assert skip is False
+
+
+def test_market_sentiment_policy_from_config():
+    policy = MarketSentimentPolicy.from_config(
+        {
+            "trading": {
+                "market_sentiment": {
+                    "enabled": True,
+                    "symbols": ["NIFTY", "BANKNIFTY"],
+                    "conflict_abs": 0.55,
+                }
+            }
+        }
+    )
+    assert policy.enabled is True
+    assert policy.symbols == ("NIFTY", "BANKNIFTY")

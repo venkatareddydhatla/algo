@@ -34,10 +34,21 @@ trading:
   # Expected cycle: ~2-5 min full dry-run pass on one Windows machine (synthetic MD);
   # longer with live broker ratelimit_rpm. Keep batch size modest to avoid hangs.
   session:
-    # NSE equity/F&O regular session (IST); calendar holidays applied in code
+    # NSE equity/F&O regular session (IST); calendar holidays applied in code.
+    # User monitoring note: 09:15–15:40 IST — soft flatten at 15:20; no hard 15:40 square-off.
     open: "09:15"
     close: "15:30"
     no_new_entries_after: "15:20"
+    soft_flatten_ist: "15:20"
+    overnight_hold_min_hybrid_abs: 0.70
+    user_hours_note: "09:15–15:40 IST (soft flatten 15:20; no hard 15:40 square-off)"
+  market_sentiment:
+    enabled: true
+    symbols:
+      - NIFTY
+      - BANKNIFTY
+    conflict_abs: 0.55
+    disagree_min_abs: 0.25
   expiry:
     index_default: weekly      # NIFTY, BANKNIFTY
     stock_default: monthly     # RELIANCE, TCS, …
