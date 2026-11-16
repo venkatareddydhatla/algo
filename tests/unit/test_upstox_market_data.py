@@ -117,6 +117,9 @@ async def test_unresolved_symbol_synthetic_with_token():
 async def test_get_ltp_mocked():
     def handler(request: httpx.Request) -> httpx.Response:
         assert "market-quote/ltp" in str(request.url)
+        # V2 OpenAPI query param is ``symbol`` (instrument_key value)
+        assert "symbol=" in str(request.url)
+        assert "instrument_key=" not in str(request.url)
         return httpx.Response(200, json=_ltp_payload())
 
     transport = httpx.MockTransport(handler)
@@ -127,6 +130,100 @@ async def test_get_ltp_mocked():
     assert quote is not None
     assert quote["last_price"] == 24555.5
     assert quote["source"] == "upstox"
+    assert quote["symbol"] == "NIFTY"
+
+
+@pytest.mark.asyncio
+async def test_get_ltp_ignores_other_symbol_first_quote():
+    """Multi-quote payload must not price BPCL with 360ONE's LTP (first key)."""
+    from options_portal_broker.adapter import select_ltp_from_quote_data
+    from options_portal_broker.instruments import resolve_instrument_key
+
+    payload = {
+        "NSE_EQ:360ONE": {
+            "last_price": 996.96,
+            "instrument_token": "NSE_EQ|INE726L01019",
+        },
+        "NSE_EQ:BPCL": {
+            "last_price": 340.55,
+            "instrument_token": "NSE_EQ|INE029A01011",
+        },
+    }
+    bpcl_key = resolve_instrument_key("BPCL")
+    assert bpcl_key is not None
+    assert select_ltp_from_quote_data(
+        payload, symbol="BPCL", instrument_key=bpcl_key
+    ) == pytest.approx(340.55)
+    # First-wins would have returned 996.96 — that bug caused shared Exit px
+    assert select_ltp_from_quote_data(
+        payload, symbol="BPCL", instrument_key=bpcl_key
+    ) != pytest.approx(996.96)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "symbol=" in str(request.url)
+        return httpx.Response(200, json={"status": "success", "data": payload})
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        adapter = UpstoxAdapter(access_token="test-token-not-real", http_client=client)
+        quote = await adapter.get_ltp("BPCL")
+
+    assert quote is not None
+    assert quote["last_price"] == pytest.approx(340.55)
+    assert quote["symbol"] == "BPCL"
+
+
+@pytest.mark.asyncio
+async def test_get_ltp_map_per_symbol_prices():
+    from urllib.parse import unquote, urlparse, parse_qs
+
+    prices = {
+        "BPCL": 340.55,
+        "AXISBANK": 1120.0,
+        "ASIANPAINT": 2910.25,
+    }
+    by_key = {resolve_instrument_key(s): (s, px) for s, px in prices.items()}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        qs = parse_qs(urlparse(str(request.url)).query)
+        raw = unquote((qs.get("symbol") or [""])[0])
+        assert raw in by_key
+        sym, px = by_key[raw]
+        return httpx.Response(
+            200,
+            json={
+                "status": "success",
+                "data": {
+                    f"NSE_EQ:{sym}": {
+                        "last_price": px,
+                        "instrument_token": raw,
+                    }
+                },
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        adapter = UpstoxAdapter(access_token="test-token-not-real", http_client=client)
+        marks = await adapter.get_ltp_map(list(prices))
+
+    assert marks == prices
+    assert len(set(marks.values())) == len(prices)
+
+
+def test_synthetic_bases_differ_across_symbols():
+    from options_portal_broker.adapter import _synthetic_base_price
+
+    bases = {
+        s: _synthetic_base_price(s)
+        for s in ("360ONE", "BPCL", "AXISBANK", "ASIANPAINT", "APOLLOHOSP", "ADANIPORTS")
+    }
+    assert len(set(bases.values())) == len(bases)
+    assert bases["360ONE"] != 1000.0 or bases["BPCL"] != bases["360ONE"]
+
+
+def test_360one_has_instrument_key():
+    assert resolve_instrument_key("360ONE", overrides=None) == "NSE_EQ|INE726L01019"
 
 
 @pytest.mark.asyncio

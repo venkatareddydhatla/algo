@@ -20,37 +20,32 @@ router = APIRouter(prefix="/api/v1", tags=["trades"])
 
 
 async def _live_marks_for_symbols(symbols: list[str]) -> dict[str, float]:
-    """Best-effort Upstox LTP map for open-position uPnL (never raises)."""
+    """Best-effort per-symbol Upstox LTP map for open-position uPnL (never raises).
+
+    Keys are uppercased tradingsymbols. ``get_ltp`` / ``get_ltp_map`` match each
+    instrument_key in the response — never reuse one quote across symbols.
+    """
     uniq = sorted({str(s).upper() for s in symbols if s})
     if not uniq:
         return {}
-    marks: dict[str, float] = {}
     try:
         from options_portal_broker.adapter import UpstoxAdapter
 
         broker = UpstoxAdapter()
         try:
-            for sym in uniq:
-                try:
-                    quote = await broker.get_ltp(sym)
-                except Exception:  # noqa: BLE001
-                    logger.exception("trades uPnL LTP failed for %s", sym)
-                    continue
-                if not quote or quote.get("last_price") is None:
-                    logger.warning(
-                        "trades uPnL: no LTP for %s (source=%s) — leaving uPnL 0",
-                        sym,
-                        getattr(broker, "last_quote_source", "unknown"),
-                    )
-                    continue
-                px = float(quote["last_price"])
-                if px > 0:
-                    marks[sym] = px
+            marks = await broker.get_ltp_map(uniq)
         finally:
             await broker.aclose()
+        missing = [s for s in uniq if s not in marks]
+        for sym in missing:
+            logger.warning(
+                "trades uPnL: no LTP for %s — leaving uPnL 0",
+                sym,
+            )
+        return marks
     except Exception:  # noqa: BLE001
         logger.exception("trades uPnL mark enrichment unavailable")
-    return marks
+        return {}
 
 
 @router.get("/trades")

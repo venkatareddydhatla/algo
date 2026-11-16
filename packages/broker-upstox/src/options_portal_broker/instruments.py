@@ -69,6 +69,8 @@ EQUITY_INSTRUMENT_KEYS: dict[str, str] = {
     "HDFCLIFE": "NSE_EQ|INE795G01014",
     "BAJAJ-AUTO": "NSE_EQ|INE917I01010",
     "SYRMA": "NSE_EQ|INE0DYJ01015",
+    # 360 ONE WAM (formerly IIFL Wealth) — missing key forced synthetic ~1000 prints
+    "360ONE": "NSE_EQ|INE726L01019",
 }
 
 

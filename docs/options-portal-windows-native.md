@@ -128,6 +128,23 @@ git pull origin cursor/max-open-symbols-ten-e41e
 
 Verify: `config\local.yaml` (and `default.yaml`) show `risk.max_open_symbols: 10`. Still `dry_run` only.
 
+### Pull fix shared exit LTP (stacked)
+
+Fixes dry-run exits that all showed the same Exit px (e.g. ₹996.96 from 360ONE) across BPCL/AXISBANK/etc. Each symbol’s paper exit now uses **that** symbol’s Upstox LTP (matched by instrument key / tradingsymbol), with candle close only as a per-symbol fallback. Agents cannot access your Upstox account — correctness is verified via per-instrument key + mocked LTP responses. **Old bad fills stay in the SQLite ledger** until new exits; they are not rewritten.
+
+```powershell
+cd C:\algo
+Set-ExecutionPolicy -Scope Process Bypass
+.\deploy\windows\native\stop-native.ps1
+git fetch origin
+git checkout cursor/fix-shared-exit-ltp-b1b7
+git pull origin cursor/fix-shared-exit-ltp-b1b7
+.\deploy\windows\native\setup-native.ps1
+.\deploy\windows\native\start-native.ps1 -WithWorker
+```
+
+Verify: next soft_flatten / signal exits show **different** Exit px per symbol when LTPs differ. Still `dry_run` only.
+
 ### Pull paper / dry-run trade retention (stacked)
 
 Keep **all** dry-run paper fills through the review week (no auto-delete). Trades UI shows **closed round-trips** (paginated; not today-only) — same entry/exit pairing as Backtest Fills and the daily summary email. Before real orders, purge/archive explicitly via admin API or `scripts\purge_paper_ledger.py`. After live, prefer ≥90 days fill retention. Policy: [`docs/options-portal-paper-retention.md`](./options-portal-paper-retention.md).
