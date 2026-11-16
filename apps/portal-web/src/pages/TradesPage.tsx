@@ -69,6 +69,7 @@ export default function TradesPage() {
             <tr>
               <th>Symbol</th>
               <th>Side</th>
+              <th>Date &amp; Time (IST)</th>
               <th>Qty</th>
               <th>Avg</th>
               <th>uPnL</th>
@@ -77,7 +78,7 @@ export default function TradesPage() {
           <tbody>
             {positions.length === 0 ? (
               <tr>
-                <td colSpan={5} className="muted">
+                <td colSpan={6} className="muted">
                   No open paper positions
                 </td>
               </tr>
@@ -86,6 +87,12 @@ export default function TradesPage() {
                 <tr key={i}>
                   <td>{String(p.symbol)}</td>
                   <td className="mono">{String(p.side ?? "—")}</td>
+                  <td className="mono">
+                    {fmtOpenEntryIst(
+                      p.entry_ts_ist_display ?? p.opened_at_ist_display,
+                      p.entry_ts ?? p.opened_at,
+                    )}
+                  </td>
                   <td className="mono">{String(p.qty)}</td>
                   <td className="mono">₹ {Number(p.avg_price).toFixed(2)}</td>
                   <td className="mono">₹ {Number(p.unrealized_pnl ?? 0).toFixed(0)}</td>
@@ -207,4 +214,29 @@ export default function TradesPage() {
       </p>
     </section>
   );
+}
+
+/** Prefer server IST display; fall back to formatting entry/opened ISO in IST. */
+function fmtOpenEntryIst(
+  display: unknown,
+  iso: unknown,
+): string {
+  const disp = display != null ? String(display).trim() : "";
+  if (disp && disp !== "—") return disp;
+  const raw = iso != null ? String(iso).trim() : "";
+  if (!raw) return "—";
+  if (raw.endsWith(" IST")) return raw;
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return "—";
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(d);
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
+  return `${get("year")}-${get("month")}-${get("day")} ${get("hour")}:${get("minute")} IST`;
 }
