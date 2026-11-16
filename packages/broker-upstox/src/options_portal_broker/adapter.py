@@ -34,6 +34,7 @@ UPSTOX_API_BASE = "https://api.upstox.com"
 # Historical Candle Data V3 — custom minute intervals (15m for TA).
 HISTORICAL_V3_PATH = "/v3/historical-candle/{instrument_key}/{unit}/{interval}/{to_date}/{from_date}"
 QUOTE_LTP_PATH = "/v2/market-quote/ltp"
+QUOTE_FULL_PATH = "/v2/market-quote/quotes"
 TOKEN_URL = "https://api.upstox.com/v2/login/authorization/token"
 
 _TIMEFRAME_TO_V3: dict[Timeframe, tuple[str, int]] = {
@@ -361,6 +362,63 @@ class UpstoxAdapter:
                     out[sym] = px
         return out
 
+    async def get_quote_snapshots(
+        self, symbols: Sequence[str]
+    ) -> dict[str, dict[str, Any]]:
+        """One Upstox full-quote call for ``symbols`` (last + change when present).
+
+        Returns ``{SYMBOL: {last_price, change?, change_pct?, instrument_key, source}}``.
+        Missing token / unresolved keys / HTTP failure → empty dict (never invents).
+        """
+        planned: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for raw in symbols:
+            sym = str(raw or "").strip().upper()
+            if not sym or sym in seen:
+                continue
+            seen.add(sym)
+            ikey = resolve_instrument_key(sym, overrides=self.instrument_overrides)
+            if ikey:
+                planned.append((sym, ikey))
+        if not planned:
+            return {}
+        if not self.access_token:
+            self.last_quote_source = "synthetic"
+            return {}
+
+        instrument_keys = [ikey for _, ikey in planned]
+        client = await self._get_client()
+        try:
+            resp = await client.get(
+                f"{self.base_url}{QUOTE_FULL_PATH}",
+                params={"symbol": ",".join(instrument_keys)},
+                headers=self._auth_headers(),
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+            data = payload.get("data")
+            out: dict[str, dict[str, Any]] = {}
+            for sym, ikey in planned:
+                snap = select_quote_snapshot_from_data(
+                    data, symbol=sym, instrument_key=ikey
+                )
+                if snap is None:
+                    continue
+                snap["symbol"] = sym
+                snap["instrument_key"] = ikey
+                snap["source"] = "upstox"
+                out[sym] = snap
+            if out:
+                self.last_quote_source = "upstox"
+            return out
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "full quote snapshot failed for %s",
+                ",".join(s for s, _ in planned),
+            )
+            self.last_quote_source = "synthetic"
+            return {}
+
     async def get_option_chain(self, symbol: str, expiry: date) -> dict[str, Any]:
         """Synthetic ATM-centered chain for dry-run / local demos.
 
@@ -475,6 +533,97 @@ class UpstoxAdapter:
             "execution": "dry_run",
             "detail": detail,
         }
+
+
+def select_quote_snapshot_from_data(
+    data: Any,
+    *,
+    symbol: str,
+    instrument_key: str,
+) -> dict[str, Any] | None:
+    """Pick one full-quote row and extract last_price + optional day change."""
+    last_price = select_ltp_from_quote_data(
+        data, symbol=symbol, instrument_key=instrument_key
+    )
+    if last_price is None:
+        return None
+    quote = _find_matching_quote_dict(
+        data, symbol=symbol, instrument_key=instrument_key
+    )
+    out: dict[str, Any] = {"last_price": last_price}
+    if not isinstance(quote, dict):
+        return out
+    change = _optional_float(quote.get("net_change"))
+    if change is None:
+        ohlc = quote.get("ohlc") if isinstance(quote.get("ohlc"), dict) else {}
+        prev_close = _optional_float(ohlc.get("close")) if ohlc else None
+        if prev_close is not None and prev_close > 0:
+            change = last_price - prev_close
+    if change is not None:
+        out["change"] = change
+        base = last_price - change
+        if abs(base) > 1e-9:
+            out["change_pct"] = (change / base) * 100.0
+    return out
+
+
+def _optional_float(raw: Any) -> float | None:
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _find_matching_quote_dict(
+    data: Any,
+    *,
+    symbol: str,
+    instrument_key: str,
+) -> dict[str, Any] | None:
+    """Locate the quote object that matches ``instrument_key`` / ``symbol``."""
+    sym = symbol.strip().upper()
+    ikey = instrument_key.strip()
+    entries: list[tuple[str, dict[str, Any]]] = []
+    if isinstance(data, dict):
+        for key, quote in data.items():
+            if isinstance(quote, dict):
+                entries.append((str(key), quote))
+    elif isinstance(data, list):
+        for item in data:
+            if isinstance(item, dict):
+                key = str(
+                    item.get("instrument_key")
+                    or item.get("instrument_token")
+                    or item.get("symbol")
+                    or ""
+                )
+                entries.append((key, item))
+    else:
+        return None
+
+    def _token(quote: dict[str, Any]) -> str:
+        return str(
+            quote.get("instrument_token") or quote.get("instrument_key") or ""
+        ).strip()
+
+    for _key, quote in entries:
+        if _token(quote) == ikey:
+            return quote
+    for key, quote in entries:
+        key_u = key.upper().replace("|", ":")
+        if key_u.endswith(f":{sym}") or key_u == sym or key_u.endswith(f"|{sym}"):
+            return quote
+        token = _token(quote)
+        if token == ikey or token.replace("|", ":") == ikey.replace("|", ":"):
+            return quote
+    if len(entries) == 1:
+        key, quote = entries[0]
+        token = _token(quote)
+        if not token or token == ikey or sym in key.upper():
+            return quote
+    return None
 
 
 def select_ltp_from_quote_data(

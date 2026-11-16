@@ -14,6 +14,7 @@ from options_portal_domain.session_gates import (
     compute_index_bias,
     entry_conflicts_with_index,
     filter_entry_intents,
+    is_cash_market_open,
     is_trading_session,
     overnight_hold_allowed,
     soft_flatten_decision,
@@ -55,6 +56,19 @@ def test_allow_new_entries_blocks_night_and_preopen():
 
     # Weekend / holiday: clock in window still blocked when trading_day=False
     assert is_trading_session(mid, policy=policy, trading_day=False) is False
+
+
+def test_cash_market_open_until_close_ist():
+    policy = SoftEodPolicy(open_ist="09:15", close_ist="15:30", no_new_entries_after="15:20")
+    # Still OPEN for UI after entry cutoff
+    assert is_cash_market_open(
+        datetime(2026, 11, 16, 15, 25, 0), policy=policy, trading_day=True
+    )
+    assert not is_cash_market_open(
+        datetime(2026, 11, 16, 15, 30, 0), policy=policy, trading_day=True
+    )
+    assert policy.in_cash_session(datetime(2026, 11, 16, 15, 29, 0))
+    assert policy.past_session_close(datetime(2026, 11, 16, 15, 30, 0))
 
 
 def test_soft_eod_policy_from_config():

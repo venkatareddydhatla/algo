@@ -4,6 +4,7 @@ from options_portal_broker.adapter import (
     LiveTradingBlockedError,
     UpstoxAdapter,
     select_ltp_from_quote_data,
+    select_quote_snapshot_from_data,
 )
 from options_portal_broker.instruments import (
     clear_instrument_key_cache,
@@ -16,4 +17,5 @@ __all__ = [
     "clear_instrument_key_cache",
     "resolve_instrument_key",
     "select_ltp_from_quote_data",
+    "select_quote_snapshot_from_data",
 ]

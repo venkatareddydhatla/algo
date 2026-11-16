@@ -339,6 +339,7 @@ async def test_refresh_token_design_mocked():
 def test_resolve_instrument_keys():
     assert resolve_instrument_key("NIFTY") == "NSE_INDEX|Nifty 50"
     assert resolve_instrument_key("BANKNIFTY") == "NSE_INDEX|Nifty Bank"
+    assert resolve_instrument_key("SENSEX") == "BSE_INDEX|SENSEX"
     assert resolve_instrument_key("RELIANCE", overrides=None).startswith("NSE_EQ|")
     assert resolve_instrument_key("nope") is None
     assert (

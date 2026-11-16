@@ -19,7 +19,7 @@ from typing import Mapping
 
 logger = logging.getLogger(__name__)
 
-# NSE index underlyings (weekly F&O). Keys match Upstox instrument master.
+# NSE/BSE index underlyings. Keys match Upstox instrument master.
 INDEX_INSTRUMENT_KEYS: dict[str, str] = {
     "NIFTY": "NSE_INDEX|Nifty 50",
     "BANKNIFTY": "NSE_INDEX|Nifty Bank",
@@ -28,6 +28,7 @@ INDEX_INSTRUMENT_KEYS: dict[str, str] = {
     "NIFTYNXT50": "NSE_INDEX|Nifty Next 50",
     "NIFTYFPI": "NSE_INDEX|Nifty FPI 150",
     "INDIAVIX": "NSE_INDEX|India VIX",
+    "SENSEX": "BSE_INDEX|SENSEX",
 }
 
 # Renames / legacy tradingsymbols → current NSE cash symbol in the CSV map.
