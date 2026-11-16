@@ -40,7 +40,7 @@ notify:
 
 Dedup marker for the daily email: `data/notify_daily_summary_state.json` (gitignored under `data/`).
 
-The worker runs a **dedicated schedule loop** (default every 30s, override with `DAILY_SUMMARY_POLL_SEC`) so the 16:00 IST send does **not** wait for a full-universe scan to finish. Soft-flatten fill emails can still fire mid-scan at 15:20 while the summary fires on the clock.
+The worker runs a **dedicated schedule loop** (default every 30s, override with `DAILY_SUMMARY_POLL_SEC`) so the 16:00 IST send does **not** wait for a full-universe scan to finish. Soft flatten has its own **open-book poll** (default every 15s, `SOFT_FLATTEN_POLL_SEC` / `trading.session.soft_flatten_poll_interval_sec`) inside the **15:20–15:40 IST** window so exits are not blocked behind a full F&O scan; fill emails send immediately when the paper fill persists (same timestamp). After **15:40 IST** new soft_flatten fills are refused.
 
 ## Windows: pull + test emails
 

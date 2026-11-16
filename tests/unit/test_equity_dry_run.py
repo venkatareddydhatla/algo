@@ -321,6 +321,20 @@ def test_paper_ledger_long_then_exit(paper_env: Path):
     assert meta2["realized_pnl"] == pytest.approx(10.0)
     assert store.get_position("RELIANCE") is None
 
+    # Concurrent soft-flatten / scan must not invent a second exit fill/email.
+    dup = store.record_simulated_fill(
+        exit_i,
+        OrderResult(
+            client_order_id="eq-dry-2b",
+            status="simulated",
+            mode="dry_run",
+            broker_order_id="SIM-eq-dry-2b",
+            message="ok",
+        ),
+    )
+    assert dup["persisted"] is False
+    assert "no open position" in str(dup.get("reason") or "")
+
     summary = store.summary()
     assert summary["instrument"] == "equity"
     assert summary["dry_run"] is True
