@@ -72,8 +72,18 @@ def _equity_enabled(cfg: dict[str, Any]) -> bool:
     return bool(equity_cfg.get("enabled", True))
 
 
-async def run_symbol_tick(symbol: str, config: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Run one dry-run pipeline tick with equity paper auto-orders."""
+async def run_symbol_tick(
+    symbol: str,
+    config: dict[str, Any] | None = None,
+    *,
+    entry_admission: Any | None = None,
+) -> dict[str, Any]:
+    """Run one dry-run pipeline tick with equity paper auto-orders.
+
+    When ``entry_admission`` is set (full-universe worker batch), new ``entry``
+    intents are staged and ranked by |hybrid| at cycle end instead of
+    CSV/scan first-fill. Exits, soft flatten, and flips still execute immediately.
+    """
     cfg = config or load_config()
     hybrid_cfg = cfg.get("hybrid", {})
     risk_cfg = dict(cfg.get("trading", {}).get("risk", {}) or {})
@@ -447,6 +457,51 @@ async def run_symbol_tick(symbol: str, config: dict[str, Any] | None = None) -> 
     # Force dry_run path for safety even if config says otherwise in worker
     safe_mode = "dry_run" if mode == "live" else mode
     limits = {**risk_cfg, "halt": cfg.get("trading", {}).get("halt")}
+
+    # Cycle admission: defer flat→new entries for |hybrid| ranking into free slots.
+    # Keep exits / flip_close / flip_open immediate (risk + signal continuity).
+    if entry_admission is not None:
+        deferred: list[Any] = []
+        immediate: list[Any] = []
+        for intent in intents:
+            is_new_flat_entry = (
+                intent.action_kind == "entry"
+                and (open_side is None or open_qty <= 0)
+            )
+            if is_new_flat_entry:
+                deferred.append(intent)
+            else:
+                immediate.append(intent)
+        if deferred:
+            from app.entry_admission import PendingEntry
+
+            await entry_admission.stage(
+                PendingEntry(
+                    symbol=symbol.upper(),
+                    hybrid_score=float(decision.hybrid_score),
+                    confidence=float(decision.confidence),
+                    intents=list(deferred),
+                    safe_mode=str(safe_mode),
+                    limits=dict(limits),
+                    recommendation=(
+                        f"{decision.action.value} |hybrid|="
+                        f"{abs(decision.hybrid_score):.3f}"
+                    ),
+                )
+            )
+            result["entry_deferred"] = True
+            result["deferred_entry_intents"] = len(deferred)
+            logger.info(
+                "%s entry deferred for |hybrid| ranking (|h|=%.3f)",
+                symbol,
+                abs(decision.hybrid_score),
+            )
+        intents = immediate
+        if not intents:
+            result["order"] = None
+            result["note"] = "entry deferred for |hybrid| cycle ranking"
+            return result
+
     order_rows: list[dict[str, Any]] = []
 
     for intent in intents:

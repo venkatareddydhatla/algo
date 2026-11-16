@@ -17,6 +17,7 @@ from options_portal_notify.daily_summary import (
     daily_summary_config,
     maybe_send_daily_summary,
 )
+from app.entry_admission import EntryCycleAdmission
 from app.news_ingest import news_poll_loop
 from app.pipeline import run_symbol_tick
 
@@ -48,20 +49,41 @@ def _log_daily_summary_status(status: dict[str, Any]) -> None:
 
 
 async def _run_batch(symbols: list[str], cfg: dict) -> None:
-    """Scan a batch of symbols with bounded concurrency."""
+    """Scan a batch of symbols with bounded concurrency.
+
+    New equity entries are staged during the scan and admitted afterward by
+    strongest |hybrid| into free ``max_open_symbols`` slots (anti-churn:
+    keep existing opens; do not rotate for tiny score edges).
+    """
     trading = cfg.get("trading", {})
     batch = scan_batch_size(trading)
     sem = asyncio.Semaphore(batch)
+    admission = EntryCycleAdmission.from_config(cfg)
+    if admission is not None:
+        logger.info(
+            "Entry selection enabled anti_churn=%s max_open_symbols=%d "
+            "(rank new entries by |hybrid|; fill empty slots only)",
+            admission.anti_churn,
+            admission.max_open_symbols,
+        )
 
     async def _one(symbol: str) -> None:
         async with sem:
             try:
-                result = await run_symbol_tick(symbol, cfg)
+                result = await run_symbol_tick(
+                    symbol, cfg, entry_admission=admission
+                )
                 logger.info("tick %s -> %s", symbol, result.get("hybrid_action"))
             except Exception:  # noqa: BLE001
                 logger.exception("tick failed for %s", symbol)
 
     await asyncio.gather(*[_one(s) for s in symbols])
+    if admission is not None:
+        try:
+            summary = await admission.flush(cfg)
+            logger.info("Entry selection flush: %s", summary)
+        except Exception:  # noqa: BLE001
+            logger.exception("Entry selection flush failed")
 
 
 async def daily_summary_poll_loop(stop_event: asyncio.Event) -> None:
