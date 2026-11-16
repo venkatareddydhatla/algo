@@ -52,8 +52,9 @@ async def _run_batch(symbols: list[str], cfg: dict) -> None:
     """Scan a batch of symbols with bounded concurrency.
 
     New equity entries are staged during the scan and admitted afterward by
-    strongest |hybrid| into free ``max_open_symbols`` slots (anti-churn:
-    keep existing opens; do not rotate for tiny score edges).
+    strongest |hybrid| into free slots (dynamic floor/ceiling + min |hybrid|
+    when enabled; anti-churn: keep existing opens; do not rotate for tiny
+    score edges). Soft flatten / overnight rules unchanged.
     """
     trading = cfg.get("trading", {})
     batch = scan_batch_size(trading)
@@ -61,9 +62,14 @@ async def _run_batch(symbols: list[str], cfg: dict) -> None:
     admission = EntryCycleAdmission.from_config(cfg)
     if admission is not None:
         logger.info(
-            "Entry selection enabled anti_churn=%s max_open_symbols=%d "
-            "(rank new entries by |hybrid|; fill empty slots only)",
+            "Entry selection enabled anti_churn=%s dynamic=%s floor=%d "
+            "ceiling=%d min_|hybrid|=%.2f hard_cap=%d "
+            "(rank by |hybrid|; empty_slots_only)",
             admission.anti_churn,
+            admission.dynamic_enabled,
+            admission.floor,
+            admission.ceiling,
+            admission.min_hybrid_abs,
             admission.max_open_symbols,
         )
 
