@@ -111,6 +111,23 @@ git pull origin cursor/max-open-symbols-five-beac
 
 Verify: `config\local.yaml` (and `default.yaml`) show `risk.max_open_symbols: 5`. Still `dry_run` only.
 
+### Pull max open symbols = 10 (stacked)
+
+Equity dry-run risk default **`max_open_symbols: 10`** (was 5). Caps concurrent open equity symbols so more names can be assessed during dry-run week; exits remain allowed when the book is full. Override via `risk.max_open_symbols` in `config\local.yaml`. Still `dry_run` only — no live orders.
+
+```powershell
+cd C:\algo
+Set-ExecutionPolicy -Scope Process Bypass
+.\deploy\windows\native\stop-native.ps1
+git fetch origin
+git checkout cursor/max-open-symbols-ten-e41e
+git pull origin cursor/max-open-symbols-ten-e41e
+.\deploy\windows\native\setup-native.ps1
+.\deploy\windows\native\start-native.ps1 -WithWorker
+```
+
+Verify: `config\local.yaml` (and `default.yaml`) show `risk.max_open_symbols: 10`. Still `dry_run` only.
+
 ### Pull paper / dry-run trade retention (stacked)
 
 Keep **all** dry-run paper fills through the review week (no auto-delete). Trades UI shows **closed round-trips** (paginated; not today-only) — same entry/exit pairing as Backtest Fills and the daily summary email. Before real orders, purge/archive explicitly via admin API or `scripts\purge_paper_ledger.py`. After live, prefer ≥90 days fill retention. Policy: [`docs/options-portal-paper-retention.md`](./options-portal-paper-retention.md).
