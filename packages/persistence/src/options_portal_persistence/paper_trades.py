@@ -24,11 +24,14 @@ from options_portal_domain.equity import (
     realized_equity_pnl,
     unrealized_equity_pnl,
 )
+from options_portal_domain.calendar import pnl_ist_day
 from options_portal_domain.round_trips import (
     closed_round_trip_fill_ids,
+    closed_trades_for_ist_day,
     open_book_fill_ids,
     pair_round_trip_trades,
     sort_closed_trades_newest_first,
+    sum_closed_realized_pnl,
 )
 from options_portal_domain.tz import ist
 from options_portal_domain.types import OrderResult, TradingMode
@@ -186,29 +189,37 @@ class PaperTradeStore:
     def open_symbols(self, *, mode: TradingMode = "dry_run") -> list[str]:
         return [str(p["symbol"]) for p in self.list_positions(mode=mode)]
 
-    def day_realized_pnl(self, *, mode: TradingMode = "dry_run") -> float:
+    def day_realized_pnl(
+        self,
+        *,
+        mode: TradingMode = "dry_run",
+        day_ist: str | None = None,
+    ) -> float:
+        """Sum closed round-trip PnL for the NSE session IST day (exit timestamps).
+
+        Defaults to ``pnl_ist_day()`` (session day, not calendar midnight) so
+        overnight review after soft-flatten still matches Closed trades from
+        the session just finished. Pass ``day_ist`` (``YYYY-MM-DD``) to select
+        an explicit IST day.
+        """
         if not self.available:
             return 0.0
-        # IST calendar day
-        now_ist = _utc_now().astimezone(ist())
-        day_prefix = now_ist.strftime("%Y-%m-%d")
-        with self._connect() as conn:
-            apply_paper_ledger_schema(conn)
-            row = conn.execute(
-                """
-                SELECT COALESCE(SUM(realized_pnl), 0) AS pnl
-                FROM paper_fills
-                WHERE mode = ? AND realized_pnl IS NOT NULL
-                  AND ts_ist_display LIKE ?
-                """,
-                (mode, f"{day_prefix}%"),
-            ).fetchone()
-        return float(row["pnl"] if row else 0.0)
+        day = (day_ist or "").strip() or pnl_ist_day(_utc_now()).isoformat()
+        all_fills = self.list_all_fills(mode=mode)
+        closed = pair_round_trip_trades(all_fills)
+        return sum_closed_realized_pnl(closed_trades_for_ist_day(closed, day))
 
-    def portfolio_snapshot(self, *, mode: TradingMode = "dry_run") -> dict[str, Any]:
+    def portfolio_snapshot(
+        self,
+        *,
+        mode: TradingMode = "dry_run",
+        day_ist: str | None = None,
+    ) -> dict[str, Any]:
+        day = (day_ist or "").strip() or pnl_ist_day(_utc_now()).isoformat()
         return {
             "open_symbols": self.open_symbols(mode=mode),
-            "day_realized_pnl": self.day_realized_pnl(mode=mode),
+            "day_realized_pnl": self.day_realized_pnl(mode=mode, day_ist=day),
+            "day_ist": day,
             "positions": self.list_positions(mode=mode),
         }
 
@@ -393,6 +404,7 @@ class PaperTradeStore:
         fills_offset: int = 0,
         marks: dict[str, float] | None = None,
         mark_sources: dict[str, str] | None = None,
+        day_ist: str | None = None,
     ) -> dict[str, Any]:
         """Portfolio snapshot with **closed round-trip** rows as primary ``fills``.
 
@@ -400,6 +412,9 @@ class PaperTradeStore:
         Still-open legs appear only under ``positions``. Raw leg count is
         ``raw_fills_total``. Pairing uses ``pair_round_trip_trades`` (shared with
         the daily summary email).
+
+        ``day_realized`` sums closed round-trip PnL for the NSE session IST day
+        (``day_ist`` / ``pnl_ist_day()``), not open-book marks and not UTC midnight.
 
         Pass ``marks`` (symbol → live LTP / last-known) to compute unrealized PnL.
         Optional ``mark_sources`` labels each mark (``ltp`` / ``last_known``).
@@ -412,7 +427,10 @@ class PaperTradeStore:
         lim = max(1, min(int(fills_limit), 500))
         off = max(0, int(fills_offset))
         page = closed[off : off + lim]
-        day_realized = self.day_realized_pnl(mode=mode)
+        day = (day_ist or "").strip() or pnl_ist_day(_utc_now()).isoformat()
+        day_realized = sum_closed_realized_pnl(
+            closed_trades_for_ist_day(closed, day)
+        )
         mark_map = {
             str(sym).upper(): float(px)
             for sym, px in (marks or {}).items()
@@ -466,6 +484,7 @@ class PaperTradeStore:
             "closed_trades": page,
             "closed_trades_total": len(closed),
             "raw_fills_total": raw_fills_total,
+            "day_ist": day,
             "day_realized": day_realized,
             "day_unrealized": day_unrealized,
             "fees_est": 0.0,
@@ -476,7 +495,9 @@ class PaperTradeStore:
                 "note": (
                     "Dry-run fills are retained until an explicit purge/archive "
                     "before live. Trades UI shows closed round-trips (paginated; "
-                    "not today-only). Open legs stay under Open positions. "
+                    "not today-only). Day realized sums closed round-trip PnL for "
+                    "the NSE cash session IST day (rolls at next 09:15 IST open). "
+                    "Open legs stay under Open positions. "
                     "uPnL uses live LTP marks when market data is available; "
                     "tick gaps keep last-known live marks instead of zeroing."
                 ),

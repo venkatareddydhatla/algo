@@ -115,6 +115,20 @@ def closed_trades_for_ist_day(
     ]
 
 
+def sum_closed_realized_pnl(trades: list[dict[str, Any]]) -> float:
+    """Sum round-trip ``pnl`` values (None treated as 0)."""
+    total = 0.0
+    for trade in trades:
+        raw = trade.get("pnl")
+        if raw is None:
+            continue
+        try:
+            total += float(raw)
+        except (TypeError, ValueError):
+            continue
+    return total
+
+
 def sort_closed_trades_newest_first(
     trades: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
