@@ -17,6 +17,8 @@ trading:
     enabled: true
     share_qty: 1           # fixed shares per dry-run equity entry
     max_qty_per_symbol: 1
+    # Paper fill marks: prefer live Upstox LTP on entry/exit/soft_flatten.
+    # Fallback order (logged loudly): candle close → entry avg (PnL=0) → min price.
     paper_retention:
       auto_purge: false
       allow_purge_before_live: true
