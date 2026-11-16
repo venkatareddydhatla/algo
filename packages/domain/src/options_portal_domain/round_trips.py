@@ -128,3 +128,18 @@ def sort_closed_trades_newest_first(
         ),
         reverse=True,
     )
+
+
+def closed_round_trip_fill_ids(fills: list[dict[str, Any]]) -> set[str]:
+    """Fill ids that belong to completed round-trips (entry + exit legs).
+
+    Still-open unpaired entry fills are omitted so a closed-only ledger purge
+    can drop history without wiping open position legs.
+    """
+    ids: set[str] = set()
+    for trade in pair_round_trip_trades(fills):
+        for key in ("entry_fill_id", "exit_fill_id"):
+            fid = trade.get(key)
+            if fid:
+                ids.add(str(fid))
+    return ids

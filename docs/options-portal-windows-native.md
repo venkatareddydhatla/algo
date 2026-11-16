@@ -145,6 +145,27 @@ git pull origin cursor/fix-shared-exit-ltp-b1b7
 
 Verify: next soft_flatten / signal exits show **different** Exit px per symbol when LTPs differ. Still `dry_run` only.
 
+### Pull purge closed trades (keep opens) (stacked)
+
+Clears **closed** paper round-trip history only (including old bad ₹996.96 exits — desired). **Open positions stay.** Prefer `scripts\purge_closed_trades.py --confirm` after pulling this tip. Policy: [`docs/options-portal-paper-retention.md`](./options-portal-paper-retention.md).
+
+```powershell
+cd C:\algo
+Set-ExecutionPolicy -Scope Process Bypass
+.\deploy\windows\native\stop-native.ps1
+git fetch origin
+git checkout cursor/purge-closed-trades-2133
+git pull origin cursor/purge-closed-trades-2133
+.\deploy\windows\native\setup-native.ps1
+.\deploy\windows\native\start-native.ps1 -WithWorker
+
+# Preview, then purge closed fills only (open book kept)
+.\.venv\Scripts\python.exe scripts\purge_closed_trades.py
+.\.venv\Scripts\python.exe scripts\purge_closed_trades.py --confirm
+```
+
+Verify: http://127.0.0.1:5173/trades — Closed trades empty / cleared; Open positions still listed. Bad shared 996.96 exits are gone. Still `dry_run` only.
+
 ### Pull paper / dry-run trade retention (stacked)
 
 Keep **all** dry-run paper fills through the review week (no auto-delete). Trades UI shows **closed round-trips** (paginated; not today-only) — same entry/exit pairing as Backtest Fills and the daily summary email. Before real orders, purge/archive explicitly via admin API or `scripts\purge_paper_ledger.py`. After live, prefer ≥90 days fill retention. Policy: [`docs/options-portal-paper-retention.md`](./options-portal-paper-retention.md).

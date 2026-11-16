@@ -83,6 +83,52 @@ def test_archive_and_purge_clears_ledger(paper_env: Path):
     assert int(n) == 1
 
 
+def test_purge_closed_trades_keeps_open_positions(paper_env: Path):
+    store = PaperTradeStore()
+    _sim_round_trip(store, "BPCL", "closed-1", 500.0, 996.96)
+    _sim_fill(store, "RELIANCE", "open-1", price=1400.0)
+
+    preview = store.preview_closed_purge(mode="dry_run")
+    assert preview["closed_trades"] == 1
+    assert preview["fills_to_delete"] == 2
+    assert preview["open_positions"] == 1
+    assert preview["open_symbols"] == ["RELIANCE"]
+
+    refused = store.purge_closed_trades(mode="dry_run", confirm=False)
+    assert refused["purged"] is False
+    assert store.count_fills(mode="dry_run") == 3
+    assert store.get_position("RELIANCE") is not None
+
+    result = store.purge_closed_trades(mode="dry_run", confirm=True, archive=True)
+    assert result["purged"] is True
+    assert result["closed_only"] is True
+    assert result["closed_trades_purged"] == 1
+    assert result["fills_deleted"] == 2
+    assert result["positions_deleted"] == 0
+    assert result["open_positions_kept"] == 1
+    assert result["open_symbols_kept"] == ["RELIANCE"]
+    assert store.get_position("RELIANCE") is not None
+    assert store.get_position("BPCL") is None
+    assert store.count_fills(mode="dry_run") == 1
+
+    summary = store.summary(mode="dry_run", fills_limit=50, fills_offset=0)
+    assert summary["fills_total"] == 0
+    assert summary["raw_fills_total"] == 1
+    assert len(summary["positions"]) == 1
+    assert summary["positions"][0]["symbol"] == "RELIANCE"
+
+    via_flag = store.archive_and_purge(
+        mode="dry_run",
+        confirm=True,
+        archive=True,
+        closed_only=True,
+    )
+    assert via_flag["purged"] is True
+    assert via_flag["closed_only"] is True
+    assert via_flag["fills_deleted"] == 0
+    assert store.get_position("RELIANCE") is not None
+
+
 def test_list_fills_paginates_full_history(paper_env: Path):
     store = PaperTradeStore()
     for i in range(5):
@@ -202,8 +248,34 @@ async def test_trades_api_pagination_and_admin_purge(paper_env: Path):
         await purge_paper_ledger(PaperLedgerPurge(confirm=False))
     assert exc.value.status_code == 400
 
+    closed_only = await purge_paper_ledger(
+        PaperLedgerPurge(
+            confirm=True,
+            archive=True,
+            closed_only=True,
+            mode="dry_run",
+        )
+    )
+    assert closed_only["purged"] is True
+    assert closed_only["closed_only"] is True
+    assert closed_only["fills_deleted"] == 6
+    assert closed_only["positions_deleted"] == 0
+    assert store.count_fills(mode="dry_run") == 0
+
+    _sim_fill(store, "RELIANCE", "keep-open", price=1400.0)
+    assert store.get_position("RELIANCE") is not None
+    _sim_round_trip(store, "TCS", "api-closed", 90.0, 95.0)
+
+    purged_closed = await purge_paper_ledger(
+        PaperLedgerPurge(confirm=True, archive=True, closed_only=True, mode="dry_run")
+    )
+    assert purged_closed["open_positions_kept"] == 1
+    assert store.get_position("RELIANCE") is not None
+    assert store.count_fills(mode="dry_run") == 1
+
     purged = await purge_paper_ledger(
         PaperLedgerPurge(confirm=True, archive=True, clear_positions=True, mode="dry_run")
     )
     assert purged["purged"] is True
     assert store.count_fills(mode="dry_run") == 0
+    assert store.get_position("RELIANCE") is None

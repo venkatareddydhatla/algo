@@ -25,6 +25,7 @@ from options_portal_domain.equity import (
     unrealized_equity_pnl,
 )
 from options_portal_domain.round_trips import (
+    closed_round_trip_fill_ids,
     pair_round_trip_trades,
     sort_closed_trades_newest_first,
 )
@@ -426,6 +427,141 @@ class PaperTradeStore:
             },
         }
 
+    def preview_closed_purge(self, *, mode: TradingMode = "dry_run") -> dict[str, Any]:
+        """Counts for a closed-only purge (no writes)."""
+        if not self.available:
+            return {
+                "available": False,
+                "mode": mode,
+                "closed_trades": 0,
+                "fills_to_delete": 0,
+                "fills_kept": 0,
+                "open_positions": 0,
+            }
+        all_fills = self.list_all_fills(mode=mode)
+        closed = pair_round_trip_trades(all_fills)
+        delete_ids = closed_round_trip_fill_ids(all_fills)
+        positions = self.list_positions(mode=mode)
+        return {
+            "available": True,
+            "mode": mode,
+            "closed_trades": len(closed),
+            "fills_to_delete": len(delete_ids),
+            "fills_kept": max(0, len(all_fills) - len(delete_ids)),
+            "raw_fills_total": len(all_fills),
+            "open_positions": len(positions),
+            "open_symbols": [str(p["symbol"]) for p in positions],
+        }
+
+    def purge_closed_trades(
+        self,
+        *,
+        mode: TradingMode = "dry_run",
+        confirm: bool = False,
+        archive: bool = True,
+    ) -> dict[str, Any]:
+        """Delete completed round-trip fill legs only; keep open positions + open entries.
+
+        Uses the same pairing as Trades UI / daily summary. Never deletes
+        ``paper_positions`` rows. Requires ``confirm=True``.
+        """
+        if not confirm:
+            return {
+                "purged": False,
+                "reason": "confirm=false — refusing to purge closed trades",
+                "closed_only": True,
+                "fills_deleted": 0,
+                "positions_deleted": 0,
+                "closed_trades_purged": 0,
+                "archived": 0,
+                "open_positions_kept": 0,
+            }
+        if not self.available:
+            return {
+                "purged": False,
+                "reason": "store unavailable",
+                "closed_only": True,
+                "fills_deleted": 0,
+                "positions_deleted": 0,
+                "closed_trades_purged": 0,
+                "archived": 0,
+                "open_positions_kept": 0,
+            }
+
+        preview = self.preview_closed_purge(mode=mode)
+        all_fills = self.list_all_fills(mode=mode)
+        closed = pair_round_trip_trades(all_fills)
+        delete_ids = sorted(closed_round_trip_fill_ids(all_fills))
+        positions_before = self.list_positions(mode=mode)
+
+        if not delete_ids:
+            return {
+                "purged": True,
+                "mode": mode,
+                "closed_only": True,
+                "archived": 0,
+                "fills_deleted": 0,
+                "positions_deleted": 0,
+                "closed_trades_purged": 0,
+                "open_positions_kept": len(positions_before),
+                "open_symbols_kept": [str(p["symbol"]) for p in positions_before],
+                "fills_kept": preview["fills_kept"],
+                "reason": "no closed round-trips to purge",
+            }
+
+        archived_at = _utc_now().isoformat()
+        archived = 0
+        fills_deleted = 0
+        with self._connect() as conn:
+            apply_paper_ledger_schema(conn)
+            # Chunk IN lists for SQLite parameter limits.
+            chunk = 400
+            for i in range(0, len(delete_ids), chunk):
+                batch = delete_ids[i : i + chunk]
+                placeholders = ",".join("?" * len(batch))
+                if archive:
+                    cur = conn.execute(
+                        f"""
+                        INSERT OR REPLACE INTO paper_fills_archive (
+                          {_FILL_ROW_COLS}, archived_at
+                        )
+                        SELECT {_FILL_ROW_COLS}, ? FROM paper_fills
+                        WHERE mode = ? AND id IN ({placeholders})
+                        """,
+                        (archived_at, mode, *batch),
+                    )
+                    archived += int(cur.rowcount or 0)
+                cur = conn.execute(
+                    f"DELETE FROM paper_fills WHERE mode = ? AND id IN ({placeholders})",
+                    (mode, *batch),
+                )
+                fills_deleted += int(cur.rowcount or 0)
+            conn.commit()
+
+        positions_after = self.list_positions(mode=mode)
+        logger.warning(
+            "paper ledger closed-only purge mode=%s archived=%d fills_deleted=%d "
+            "closed_trades=%d open_positions_kept=%d",
+            mode,
+            archived,
+            fills_deleted,
+            len(closed),
+            len(positions_after),
+        )
+        return {
+            "purged": True,
+            "mode": mode,
+            "closed_only": True,
+            "archived": archived if archive else 0,
+            "fills_deleted": fills_deleted,
+            "positions_deleted": 0,
+            "closed_trades_purged": len(closed),
+            "open_positions_kept": len(positions_after),
+            "open_symbols_kept": [str(p["symbol"]) for p in positions_after],
+            "fills_kept": self.count_fills(mode=mode),
+            "archived_at": archived_at if archive else None,
+        }
+
     def archive_and_purge(
         self,
         *,
@@ -433,17 +569,24 @@ class PaperTradeStore:
         confirm: bool = False,
         archive: bool = True,
         clear_positions: bool = True,
+        closed_only: bool = False,
     ) -> dict[str, Any]:
         """Explicit purge path before starting live — never auto-called in dry_run.
 
         Copies fills into ``paper_fills_archive`` (when ``archive=True``), then
         deletes live ``paper_fills`` (and optionally ``paper_positions``) for
-        ``mode``. Requires ``confirm=True``.
+        ``mode``. With ``closed_only=True``, only completed round-trip fill legs
+        are removed and open positions are always kept. Requires ``confirm=True``.
         """
+        if closed_only:
+            return self.purge_closed_trades(
+                mode=mode, confirm=confirm, archive=archive
+            )
         if not confirm:
             return {
                 "purged": False,
                 "reason": "confirm=false — refusing to purge paper ledger",
+                "closed_only": False,
                 "fills_deleted": 0,
                 "positions_deleted": 0,
                 "archived": 0,
@@ -452,6 +595,7 @@ class PaperTradeStore:
             return {
                 "purged": False,
                 "reason": "store unavailable",
+                "closed_only": False,
                 "fills_deleted": 0,
                 "positions_deleted": 0,
                 "archived": 0,
@@ -496,6 +640,7 @@ class PaperTradeStore:
         return {
             "purged": True,
             "mode": mode,
+            "closed_only": False,
             "archived": archived if archive else 0,
             "fills_deleted": fills_deleted,
             "positions_deleted": positions_deleted,
