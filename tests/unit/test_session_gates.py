@@ -14,6 +14,7 @@ from options_portal_domain.session_gates import (
     compute_index_bias,
     entry_conflicts_with_index,
     filter_entry_intents,
+    is_trading_session,
     overnight_hold_allowed,
     soft_flatten_decision,
 )
@@ -25,6 +26,35 @@ def test_at_or_after_ist_boundary():
     assert at_or_after_ist("15:20", noon) is False
     assert at_or_after_ist("15:20", datetime(2026, 11, 15, 15, 20, 0)) is True
     assert at_or_after_ist("15:20", datetime(2026, 11, 15, 15, 40, 0)) is True
+
+
+def test_allow_new_entries_blocks_night_and_preopen():
+    """Regression: past_no_new_entries alone allowed 00:01 IST entries."""
+    policy = SoftEodPolicy(open_ist="09:15", no_new_entries_after="15:20")
+    # Monday 2026-11-16 — trading day; midnight must NOT allow entries
+    midnight = datetime(2026, 11, 17, 0, 1, 0)  # Tue 00:01 IST (MUTHOOTFIN bug)
+    assert policy.past_no_new_entries(midnight) is False  # old bug path
+    assert policy.before_session_open(midnight) is True
+    assert policy.allow_new_entries(midnight) is False
+    assert is_trading_session(midnight, policy=policy, trading_day=True) is False
+
+    preopen = datetime(2026, 11, 16, 9, 14, 0)
+    assert policy.allow_new_entries(preopen) is False
+    assert is_trading_session(preopen, policy=policy, trading_day=True) is False
+
+    open_exact = datetime(2026, 11, 16, 9, 15, 0)
+    assert policy.allow_new_entries(open_exact) is True
+    assert is_trading_session(open_exact, policy=policy, trading_day=True) is True
+
+    mid = datetime(2026, 11, 16, 12, 0, 0)
+    assert policy.allow_new_entries(mid) is True
+
+    cutoff = datetime(2026, 11, 16, 15, 20, 0)
+    assert policy.allow_new_entries(cutoff) is False
+    assert is_trading_session(cutoff, policy=policy, trading_day=True) is False
+
+    # Weekend / holiday: clock in window still blocked when trading_day=False
+    assert is_trading_session(mid, policy=policy, trading_day=False) is False
 
 
 def test_soft_eod_policy_from_config():
