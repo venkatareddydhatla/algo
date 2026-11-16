@@ -179,6 +179,7 @@ export default function DashboardPage() {
           <thead>
             <tr>
               <th>Symbol</th>
+              <th className="num-cell">Price</th>
               <th>Action</th>
               <th>Reason</th>
               <th>Hybrid</th>
@@ -207,6 +208,9 @@ export default function DashboardPage() {
                   >
                     {r.symbol}
                   </button>
+                </td>
+                <td className="mono num-cell" title={priceTitle(r)}>
+                  {fmtPrice(r)}
                 </td>
                 <td>
                   <span className={`action action-${r.action}`}>{r.action}</span>
@@ -298,4 +302,28 @@ function sortLocal(items: SignalRow[]): SignalRow[] {
 function fmt(n: number) {
   const sign = n > 0 ? "+" : "";
   return `${sign}${n.toFixed(2)}`;
+}
+
+function displayPrice(row: SignalRow): number | null {
+  if (row.price != null && Number.isFinite(Number(row.price))) {
+    return Number(row.price);
+  }
+  if (row.ltp != null && Number.isFinite(Number(row.ltp))) {
+    return Number(row.ltp);
+  }
+  return null;
+}
+
+function fmtPrice(row: SignalRow): string {
+  const px = displayPrice(row);
+  return px != null ? `₹ ${px.toFixed(2)}` : "—";
+}
+
+function priceTitle(row: SignalRow): string | undefined {
+  const src = row.price_source;
+  if (!src) return undefined;
+  if (src === "ltp") return "Live LTP";
+  if (src === "candle_close") return "Last candle close";
+  if (src === "last_known") return "Last known / display mark";
+  return String(src);
 }

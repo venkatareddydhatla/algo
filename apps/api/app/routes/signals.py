@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query
 
+from app.marks import enrich_rows_with_prices
 from app.mock_data import MOCK_SIGNALS, build_universe_signals
 from options_portal_domain.config import load_config, watchlist_symbols
 from options_portal_hybrid.explain import (
@@ -73,6 +74,8 @@ async def list_signals(
     rows = sort_signal_rows(rows)
     total = len(rows)
     page = rows[offset : offset + limit]
+    # Enrich only the current page so LTP/candle lookups stay bounded.
+    mark_meta = await enrich_rows_with_prices(page)
     return {
         "items": page,
         "total": total,
@@ -80,9 +83,12 @@ async def list_signals(
         "limit": limit,
         "source": source,
         "sort": "actionable,|hybrid|desc,confidence,symbol",
+        "marks_applied": mark_meta.get("marks_applied", []),
+        "price_sources": mark_meta.get("price_sources", {}),
         "note": (
             "Actionable symbols (non-HOLD) sort first. "
-            "Hover reason_summary for reason_detail explainability."
+            "Hover reason_summary for reason_detail explainability. "
+            "price = live LTP when available, else candle close / last-known mark."
         ),
     }
 
@@ -95,6 +101,8 @@ async def top_hybrid(
     """Top positive (CE) and negative (PE) hybrid strip candidates."""
     rows, source = _load_signal_rows(expand_watchlist=expand_watchlist)
     sides = pick_top_hybrid_sides(rows, limit=limit)
+    await enrich_rows_with_prices(sides["ce"])
+    await enrich_rows_with_prices(sides["pe"])
     return {
         "ce": sides["ce"],
         "pe": sides["pe"],
@@ -116,8 +124,10 @@ async def get_signal(signal_id: str) -> dict:
     )
     for s in rows:
         if s["id"] == signal_id:
+            row = dict(s)
+            await enrich_rows_with_prices([row])
             return {
-                **s,
+                **row,
                 "recommendation": {
                     "rationale": "BUY single-leg ATM (mock)",
                     "legs": [],
