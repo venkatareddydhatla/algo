@@ -16,6 +16,10 @@ Usage (from repo root, with venv / editable installs):
   python scripts/purge_paper_ledger.py --yes --closed-only
   # Prefer dedicated script: python scripts/purge_closed_trades.py --confirm
 
+  # Open book only (keep closed round-trips)
+  python scripts/purge_paper_ledger.py --yes --open-only
+  # Prefer dedicated script: python scripts/purge_open_positions.py --confirm
+
   # Purge without copying to paper_fills_archive
   python scripts/purge_paper_ledger.py --yes --no-archive
 
@@ -76,6 +80,14 @@ def main() -> int:
             "and unpaired open entry fills (same as scripts/purge_closed_trades.py)"
         ),
     )
+    parser.add_argument(
+        "--open-only",
+        action="store_true",
+        help=(
+            "Delete open positions + unpaired entry fills; keep closed "
+            "round-trips (same as scripts/purge_open_positions.py)"
+        ),
+    )
     args = parser.parse_args()
 
     # Prefer local SQLite profile for native Windows / dry-run
@@ -84,6 +96,10 @@ def main() -> int:
     from options_portal_domain.config import paper_retention_config
     from options_portal_persistence.paper_trades import PaperTradeStore
 
+    if args.closed_only and args.open_only:
+        print("Refusing: --closed-only and --open-only are mutually exclusive", file=sys.stderr)
+        return 2
+
     retention = paper_retention_config()
     store = PaperTradeStore()
     counts: dict = {
@@ -91,11 +107,14 @@ def main() -> int:
         "fills": store.count_fills(mode=args.mode) if store.available else 0,
         "open_positions": len(store.list_positions(mode=args.mode)) if store.available else 0,
         "closed_only": bool(args.closed_only),
+        "open_only": bool(args.open_only),
         "retention": retention,
         "confirm": bool(args.yes),
     }
     if args.closed_only and store.available:
         counts.update(store.preview_closed_purge(mode=args.mode))
+    if args.open_only and store.available:
+        counts.update(store.preview_open_purge(mode=args.mode))
     print(json.dumps({"preview": counts}, indent=2))
 
     if not retention.get("allow_purge_before_live", True):
@@ -111,6 +130,13 @@ def main() -> int:
                 "No changes. Re-run with --yes --closed-only to purge closed "
                 "round-trips only (open positions stay). "
                 "Or use: python scripts/purge_closed_trades.py --confirm",
+                file=sys.stderr,
+            )
+        elif args.open_only:
+            print(
+                "No changes. Re-run with --yes --open-only to clear Open "
+                "positions (closed round-trips stay). "
+                "Or use: python scripts/purge_open_positions.py --confirm",
                 file=sys.stderr,
             )
         else:
@@ -131,6 +157,7 @@ def main() -> int:
         archive=not args.no_archive,
         clear_positions=False if args.closed_only else not args.keep_positions,
         closed_only=bool(args.closed_only),
+        open_only=bool(args.open_only),
     )
     print(json.dumps(result, indent=2))
     return 0 if result.get("purged") else 1

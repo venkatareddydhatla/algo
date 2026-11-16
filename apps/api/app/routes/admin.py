@@ -29,6 +29,7 @@ class PaperLedgerPurge(BaseModel):
     archive: bool = True
     clear_positions: bool = True
     closed_only: bool = False
+    open_only: bool = False
     mode: str = Field(default="dry_run", pattern="^(dry_run|demo)$")
 
 
@@ -98,8 +99,13 @@ async def purge_paper_ledger(body: PaperLedgerPurge) -> dict:
     keeping open positions (and unpaired open entry fills). Prefer
     ``scripts/purge_closed_trades.py --confirm`` on Windows native.
 
-    During the dry-run review week prefer closed-only if clearing bad history;
-    full wipe is for starting live. See docs/options-portal-paper-retention.md.
+    Set ``open_only=true`` to clear Open positions + unpaired entry fills while
+    keeping closed round-trip history. Prefer
+    ``scripts/purge_open_positions.py --confirm`` on Windows native.
+
+    During the dry-run review week prefer closed-only / open-only for targeted
+    cleanups; full wipe is for starting live. See
+    docs/options-portal-paper-retention.md.
     """
     retention = paper_retention_config()
     if not retention.get("allow_purge_before_live", True):
@@ -115,6 +121,11 @@ async def purge_paper_ledger(body: PaperLedgerPurge) -> dict:
             status_code=400,
             detail="confirm=true required to purge paper ledger",
         )
+    if body.closed_only and body.open_only:
+        raise HTTPException(
+            status_code=400,
+            detail="closed_only and open_only are mutually exclusive",
+        )
 
     from options_portal_persistence.paper_trades import PaperTradeStore
 
@@ -129,13 +140,23 @@ async def purge_paper_ledger(body: PaperLedgerPurge) -> dict:
         mode=body.mode,  # type: ignore[arg-type]
         confirm=True,
         archive=body.archive,
-        clear_positions=False if body.closed_only else body.clear_positions,
+        clear_positions=(
+            False
+            if body.closed_only
+            else (True if body.open_only else body.clear_positions)
+        ),
         closed_only=body.closed_only,
+        open_only=body.open_only,
     )
     if body.closed_only:
         message = (
             "Closed round-trip fills purged; open positions kept. "
             "Old bad exits (e.g. shared ₹996.96) are gone from Trades history."
+        )
+    elif body.open_only:
+        message = (
+            "Open positions and unpaired entry fills purged; "
+            "closed round-trip history kept."
         )
     else:
         message = (

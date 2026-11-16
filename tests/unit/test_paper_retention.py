@@ -156,6 +156,52 @@ def test_purge_closed_trades_keeps_open_positions(paper_env: Path):
     assert store.get_position("RELIANCE") is not None
 
 
+def test_purge_open_positions_keeps_closed_round_trips(paper_env: Path):
+    """Venkata goal: empty Open list; keep 16 Nov-style completed rows."""
+    store = PaperTradeStore()
+    _sim_round_trip(store, "BPCL", "closed-16nov", 500.0, 510.0)
+    _sim_fill(store, "MUTHOOTFIN", "bogus-after-hours", price=3200.0)
+
+    preview = store.preview_open_purge(mode="dry_run")
+    assert preview["closed_trades_kept"] == 1
+    assert preview["fills_to_delete"] == 1
+    assert preview["open_positions"] == 1
+    assert preview["open_symbols"] == ["MUTHOOTFIN"]
+
+    refused = store.purge_open_positions(mode="dry_run", confirm=False)
+    assert refused["purged"] is False
+    assert store.count_fills(mode="dry_run") == 3
+    assert store.get_position("MUTHOOTFIN") is not None
+
+    result = store.purge_open_positions(mode="dry_run", confirm=True, archive=True)
+    assert result["purged"] is True
+    assert result["open_only"] is True
+    assert result["closed_trades_kept"] == 1
+    assert result["fills_deleted"] == 1
+    assert result["positions_deleted"] == 1
+    assert result["open_positions_after"] == 0
+    assert store.get_position("MUTHOOTFIN") is None
+    assert store.count_fills(mode="dry_run") == 2
+
+    summary = store.summary(mode="dry_run", fills_limit=50, fills_offset=0)
+    assert summary["fills_total"] == 1
+    assert summary["raw_fills_total"] == 2
+    assert summary["positions"] == []
+    assert summary["fills"][0]["symbol"] == "BPCL"
+
+    via_flag = store.archive_and_purge(
+        mode="dry_run",
+        confirm=True,
+        archive=True,
+        open_only=True,
+    )
+    assert via_flag["purged"] is True
+    assert via_flag["open_only"] is True
+    assert via_flag["fills_deleted"] == 0
+    assert summary["fills_total"] == 1
+    assert store.count_fills(mode="dry_run") == 2
+
+
 def test_list_fills_paginates_full_history(paper_env: Path):
     store = PaperTradeStore()
     for i in range(5):

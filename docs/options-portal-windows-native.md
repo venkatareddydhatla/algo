@@ -297,7 +297,29 @@ git pull origin cursor/after-hours-entry-gate-383b
 .\deploy\windows\native\start-native.ps1 -WithWorker
 ```
 
-**Tonight’s bogus opens** (e.g. MUTHOOTFIN SHORT @ ~00:01 IST): there is **no per-symbol purge** tool. Prefer **leave them** for morning session exits / soft flatten (dry-run review), or wipe the whole paper book with `purge_paper_ledger.py --yes` only if you accept losing *all* open positions + fills. `purge_closed_trades.py` does **not** remove still-open entries. Still `dry_run` only.
+**Tonight’s bogus opens** (e.g. MUTHOOTFIN SHORT @ ~00:01 IST): pull the **purge open positions** tip below to clear the Open list while keeping 16 Nov closed rows. `purge_closed_trades.py` does **not** remove still-open entries; full `purge_paper_ledger.py --yes` wipes closed history too. Still `dry_run` only.
+
+### Pull purge open positions (keep closed history) (stacked)
+
+Clears **Open positions** + unpaired entry fills (after-hours bogus opens) while **keeping closed round-trips** (e.g. 16 Nov completed Trades rows). Opposite of `purge_closed_trades.py`.
+
+```powershell
+cd C:\algo
+Set-ExecutionPolicy -Scope Process Bypass
+.\deploy\windows\native\stop-native.ps1
+git fetch origin
+git checkout cursor/purge-open-positions-383b
+git pull origin cursor/purge-open-positions-383b
+.\deploy\windows\native\setup-native.ps1
+
+# Preview, then clear Open book (closed 16 Nov rows stay)
+.\.venv\Scripts\python.exe scripts\purge_open_positions.py
+.\.venv\Scripts\python.exe scripts\purge_open_positions.py --confirm
+
+.\deploy\windows\native\start-native.ps1 -WithWorker
+```
+
+Verify: http://127.0.0.1:5173/trades — Open positions empty; Closed trades still show 16 Nov rows. Still `dry_run` only.
 
 If the API fails with `ZoneInfoNotFoundError: 'No time zone found with key Asia/Kolkata'`, install tzdata and restart:
 

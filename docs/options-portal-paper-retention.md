@@ -27,6 +27,54 @@ trading:
 `auto_purge: false` is the dry-run default. Do not enable scheduled deletion of
 paper fills while reviewing the dry-run week.
 
+## Which script for which goal?
+
+| Goal | Script | Keeps | Removes |
+|------|--------|-------|---------|
+| Empty **Open** list; keep closed history (e.g. 16 Nov completed rows) | `scripts/purge_open_positions.py --confirm` | Closed round-trips | Open positions + unpaired entry fills |
+| Clear **bad closed** history; keep opens | `scripts/purge_closed_trades.py --confirm` | Open positions + unpaired entries | Completed round-trip fill legs |
+| Wipe **everything** (before live) | `scripts/purge_paper_ledger.py --yes` | Nothing in live ledger | All fills + all positions |
+
+## Purge open positions only (keep closed round-trips)
+
+Use this when you want tomorrow’s Open list empty (including after-hours bogus
+entries such as MUTHOOTFIN) **without** deleting already-completed Trades rows.
+
+### Preferred script
+
+```powershell
+cd C:\algo
+# Preview: open_positions / fills_to_delete / closed_trades_kept
+.\.venv\Scripts\python.exe scripts\purge_open_positions.py
+
+# Archive open legs, then delete them — closed history stays
+.\.venv\Scripts\python.exe scripts\purge_open_positions.py --confirm
+```
+
+```bash
+python scripts/purge_open_positions.py            # preview
+python scripts/purge_open_positions.py --confirm  # purge opens only
+```
+
+After `--confirm`, Open positions is empty; Closed trades (e.g. 16 Nov) remain.
+Open entry fills are archived to `paper_fills_archive` unless `--no-archive`.
+
+### API (open-only)
+
+```http
+POST /api/v1/admin/paper-ledger/purge
+Content-Type: application/json
+
+{
+  "confirm": true,
+  "archive": true,
+  "open_only": true,
+  "mode": "dry_run"
+}
+```
+
+Equivalent flag: `python scripts/purge_paper_ledger.py --yes --open-only`.
+
 ## Purge closed trades only (keep open positions)
 
 Use this when you want to clear **completed round-trip / closed fill history**
