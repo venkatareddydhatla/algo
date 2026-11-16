@@ -385,6 +385,7 @@ class PaperTradeStore:
         fills_limit: int = 50,
         fills_offset: int = 0,
         marks: dict[str, float] | None = None,
+        mark_sources: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Portfolio snapshot with **closed round-trip** rows as primary ``fills``.
 
@@ -393,7 +394,8 @@ class PaperTradeStore:
         ``raw_fills_total``. Pairing uses ``pair_round_trip_trades`` (shared with
         the daily summary email).
 
-        Pass ``marks`` (symbol → live LTP / last) to compute unrealized PnL.
+        Pass ``marks`` (symbol → live LTP / last-known) to compute unrealized PnL.
+        Optional ``mark_sources`` labels each mark (``ltp`` / ``last_known``).
         Without marks, uPnL stays 0 and ``mark_source`` is ``none``.
         """
         positions_raw = self.list_positions(mode=mode)
@@ -409,6 +411,11 @@ class PaperTradeStore:
             for sym, px in (marks or {}).items()
             if px is not None and float(px) > 0
         }
+        source_map = {
+            str(sym).upper(): str(src)
+            for sym, src in (mark_sources or {}).items()
+            if src
+        }
         positions: list[dict[str, Any]] = []
         day_unrealized = 0.0
         for p in positions_raw:
@@ -419,7 +426,7 @@ class PaperTradeStore:
             mark_px = mark_map.get(sym)
             if mark_px is not None:
                 upnl = unrealized_equity_pnl(side, avg, mark_px, qty)
-                mark_source = "ltp"
+                mark_source = source_map.get(sym, "ltp")
             else:
                 upnl = 0.0
                 mark_source = "none"
@@ -463,7 +470,8 @@ class PaperTradeStore:
                     "Dry-run fills are retained until an explicit purge/archive "
                     "before live. Trades UI shows closed round-trips (paginated; "
                     "not today-only). Open legs stay under Open positions. "
-                    "uPnL uses live LTP marks when market data is available."
+                    "uPnL uses live LTP marks when market data is available; "
+                    "tick gaps keep last-known live marks instead of zeroing."
                 ),
             },
         }

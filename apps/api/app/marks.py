@@ -9,9 +9,50 @@ from typing import Any, Sequence
 
 logger = logging.getLogger(__name__)
 
+# Process-level cache of last successful live LTP per symbol.
+# Used so a transient Upstox tick/batch failure does not zero open uPnL.
+_LAST_KNOWN_LTP: dict[str, float] = {}
+
+
+def clear_last_known_ltp_cache() -> None:
+    """Test helper — wipe retained LTP marks."""
+    _LAST_KNOWN_LTP.clear()
+
+
+def remember_ltp_marks(marks: dict[str, float]) -> None:
+    """Retain positive per-symbol LTP marks for later tick gaps."""
+    for raw, px in marks.items():
+        sym = str(raw or "").strip().upper()
+        if not sym:
+            continue
+        try:
+            price = float(px)
+        except (TypeError, ValueError):
+            continue
+        if price > 0:
+            _LAST_KNOWN_LTP[sym] = price
+
+
+def last_known_ltp_map(symbols: Sequence[str]) -> dict[str, float]:
+    """Return previously retained live LTP marks for ``symbols`` (no synthetic)."""
+    out: dict[str, float] = {}
+    for raw in symbols:
+        sym = str(raw or "").strip().upper()
+        if not sym or sym in out:
+            continue
+        px = _LAST_KNOWN_LTP.get(sym)
+        if px is not None and px > 0:
+            out[sym] = px
+    return out
+
 
 async def live_ltp_map(symbols: Sequence[str]) -> dict[str, float]:
-    """Best-effort Upstox LTP map keyed by uppercased symbol (never raises)."""
+    """Best-effort Upstox LTP map keyed by uppercased symbol (never raises).
+
+    Successful prices are retained in ``_LAST_KNOWN_LTP``. A broker ``aclose``
+    failure after a successful fetch must not discard the map (that previously
+    zeroed the whole Trades uPnL table).
+    """
     uniq = sorted({str(s).upper() for s in symbols if s})
     if not uniq:
         return {}
@@ -19,13 +60,66 @@ async def live_ltp_map(symbols: Sequence[str]) -> dict[str, float]:
         from options_portal_broker.adapter import UpstoxAdapter
 
         broker = UpstoxAdapter()
+        marks: dict[str, float] = {}
         try:
-            return await broker.get_ltp_map(uniq)
+            marks = await broker.get_ltp_map(uniq)
         finally:
-            await broker.aclose()
+            try:
+                await broker.aclose()
+            except Exception:  # noqa: BLE001
+                logger.warning("broker aclose failed after LTP map", exc_info=True)
+        remember_ltp_marks(marks)
+        return marks
     except Exception:  # noqa: BLE001
         logger.exception("live LTP map unavailable")
         return {}
+
+
+async def open_position_marks_for_symbols(
+    symbols: Sequence[str],
+) -> tuple[dict[str, float], dict[str, str]]:
+    """Resolve open-position uPnL marks: live LTP, else last-known live LTP.
+
+    Partial quote failures keep successful symbols and fill gaps from the
+    process cache — never wipe the whole table because one tick failed.
+    Synthetic display prices are intentionally not used for uPnL.
+    """
+    uniq = sorted({str(s).upper() for s in symbols if s})
+    prices: dict[str, float] = {}
+    sources: dict[str, str] = {}
+    if not uniq:
+        return prices, sources
+
+    live = await live_ltp_map(uniq)
+    for sym, px in live.items():
+        prices[sym] = px
+        sources[sym] = "ltp"
+
+    missing = [s for s in uniq if s not in prices]
+    if missing:
+        cached = last_known_ltp_map(missing)
+        for sym, px in cached.items():
+            prices[sym] = px
+            sources[sym] = "last_known"
+            logger.warning(
+                "trades uPnL: live tick gap for %s — keeping last-known mark=%.4f",
+                sym,
+                px,
+            )
+        still = sorted(s for s in missing if s not in cached)
+        for sym in still:
+            logger.warning(
+                "trades uPnL: no LTP or last-known for %s — leaving uPnL 0",
+                sym,
+            )
+        if still:
+            logger.warning(
+                "trades uPnL mark gaps (%d/%d): %s",
+                len(still),
+                len(uniq),
+                ",".join(still),
+            )
+    return prices, sources
 
 
 async def candle_close_map(symbols: Sequence[str]) -> dict[str, float]:

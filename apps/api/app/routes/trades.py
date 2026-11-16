@@ -19,22 +19,18 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1", tags=["trades"])
 
 
-async def _live_marks_for_symbols(symbols: list[str]) -> dict[str, float]:
-    """Best-effort per-symbol Upstox LTP map for open-position uPnL (never raises).
+async def _open_position_marks(
+    symbols: list[str],
+) -> tuple[dict[str, float], dict[str, str]]:
+    """Per-symbol live LTP for open uPnL, retaining last-known on tick gaps.
 
-    Keys are uppercased tradingsymbols. ``get_ltp`` / ``get_ltp_map`` match each
-    instrument_key in the response — never reuse one quote across symbols.
+    Keys are uppercased tradingsymbols. Never reuses one quote across symbols.
+    A partial Upstox failure must not zero marks for symbols that already have
+    a retained live LTP.
     """
-    from app.marks import live_ltp_map
+    from app.marks import open_position_marks_for_symbols
 
-    marks = await live_ltp_map(symbols)
-    missing = sorted({str(s).upper() for s in symbols if s} - set(marks))
-    for sym in missing:
-        logger.warning(
-            "trades uPnL: no LTP for %s — leaving uPnL 0",
-            sym,
-        )
-    return marks
+    return await open_position_marks_for_symbols(symbols)
 
 
 @router.get("/trades")
@@ -50,7 +46,8 @@ async def trades_summary(
 
     ``fills`` / ``closed_trades`` are paired entry+exit rows (LONG/SHORT), matching
     Backtest Fills and the daily summary email. Open legs stay under ``positions``.
-    Open-position uPnL uses live LTP marks when market data is available.
+    Open-position uPnL uses live LTP when the Upstox token is present; tick gaps
+    keep the last-known live mark instead of zeroing the whole table.
     """
     mode = trading_mode()
     safe_mode = "dry_run" if mode == "live" else mode
@@ -61,22 +58,35 @@ async def trades_summary(
         store = PaperTradeStore()
         if store.available:
             open_syms = store.open_symbols(mode=safe_mode)  # type: ignore[arg-type]
-            marks = await _live_marks_for_symbols(list(open_syms))
+            marks, mark_sources = await _open_position_marks(list(open_syms))
             payload: dict[str, Any] = store.summary(
                 mode=safe_mode,  # type: ignore[arg-type]
                 fills_limit=limit,
                 fills_offset=offset,
-                marks=marks or None,
+                marks=marks,
+                mark_sources=mark_sources,
             )
             payload["requested_mode"] = mode
-            payload["marks_applied"] = sorted(marks.keys())
+            payload["marks_applied"] = sorted(
+                s for s, src in mark_sources.items() if src == "ltp"
+            )
+            payload["marks_last_known"] = sorted(
+                s for s, src in mark_sources.items() if src == "last_known"
+            )
+            payload["mark_gaps"] = sorted(
+                {
+                    str(s).upper()
+                    for s in open_syms
+                    if s and str(s).upper() not in marks
+                }
+            )
             payload["retention"] = {
                 **payload.get("retention", {}),
                 **retention,
             }
             return payload
     except Exception:  # noqa: BLE001
-        pass
+        logger.exception("trades summary paper-ledger path failed")
 
     # Fallback mock when SQLite ledger unavailable (Compose without local profile)
     raw = list(MOCK_TRADES.get("fills") or [])
