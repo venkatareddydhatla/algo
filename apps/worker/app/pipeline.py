@@ -13,20 +13,29 @@ from options_portal_domain.config import load_config, trading_mode
 from options_portal_domain.equity import plan_equity_intents, resolve_equity_mark
 from options_portal_domain.session_gates import (
     MarketSentimentPolicy,
+    MorningProfitBookPolicy,
     SoftEodPolicy,
     compute_index_bias,
     entry_conflicts_with_index,
     filter_entry_intents,
     is_trading_session,
+    morning_profit_book_decision,
     soft_flatten_decision,
 )
 from options_portal_domain.tz import now_ist
 from options_portal_domain.types import SignalAction
+from options_portal_domain.universe import is_index_underlying
 from options_portal_hybrid.scorer import WeightedHybridScorer
 from options_portal_notify.factory import build_gmail_notifier, build_notifier
 from options_portal_risk.order_router import SafeOrderRouter
 from options_portal_sentiment.vader_scorer import VaderScorer
-from options_portal_ta.indicators import EMAPlugin, RSIPlugin, SupertrendPlugin, VWAPPlugin
+from options_portal_ta.indicators import (
+    EMAPlugin,
+    RSIPlugin,
+    SupertrendPlugin,
+    VWAPPlugin,
+    atr as atr_indicator,
+)
 from options_portal_ta.registry import IndicatorRegistry
 from options_portal_ta.signal_generator import ConfluenceSignalGenerator
 
@@ -196,8 +205,16 @@ async def run_symbol_tick(
                 entry_avg = None
 
     soft_policy = SoftEodPolicy.from_config(cfg)
+    morning_policy = MorningProfitBookPolicy.from_config(cfg)
     mkt_policy = MarketSentimentPolicy.from_config(cfg)
     _remember_index_hybrid(symbol, decision.hybrid_score, mkt_policy)
+    # Resolve instrument key early for index segment check (NSE_INDEX/BSE_INDEX).
+    instrument_key = resolve_instrument_key(
+        symbol, overrides=getattr(broker, "instrument_overrides", None)
+    )
+    result["instrument_key"] = instrument_key
+    index_underlying = is_index_underlying(symbol, instrument_key=instrument_key)
+    result["index_underlying"] = index_underlying
     ist_now = now_ist()
     trading_day = is_nse_trading_day(ist_now.date())
     result["trading_day"] = trading_day
@@ -208,6 +225,9 @@ async def run_symbol_tick(
         "open_ist": soft_policy.open_ist,
         "soft_flatten_ist": soft_policy.soft_flatten_ist,
         "soft_flatten_until_ist": soft_policy.soft_flatten_until_ist,
+        "morning_tp_ist": soft_policy.morning_tp_ist,
+        "morning_tp_until_ist": soft_policy.morning_tp_until_ist,
+        "in_morning_profit_window": soft_policy.in_morning_profit_window(ist_now),
         "no_new_entries_after": soft_policy.no_new_entries_after,
         "close_ist": soft_policy.close_ist,
         "user_hours_note": soft_policy.user_hours_note,
@@ -238,6 +258,27 @@ async def run_symbol_tick(
         return result
 
     reason_summary = decision.reason_summary or decision.action.value
+    # Index underlyings: never equity entry; soft-close any open paper immediately.
+    if index_underlying and (open_side is None or open_qty <= 0):
+        note = (
+            f"index_not_equity: {symbol} is an index underlying — "
+            "skip equity stock entry/exit book (hybrid scored for sentiment only)"
+        )
+        logger.info("%s %s", symbol, note)
+        result["order"] = None
+        result["note"] = note
+        result["soft_eod"] = {
+            "active": False,
+            "action": "none",
+            "reason": note,
+        }
+        result["morning_tp"] = {
+            "active": False,
+            "action": "none",
+            "reason": "index_not_equity",
+        }
+        return result
+
     flatten = soft_flatten_decision(
         open_side=open_side,  # type: ignore[arg-type]
         open_qty=open_qty,
@@ -245,6 +286,16 @@ async def run_symbol_tick(
         policy=soft_policy,
         now=ist_now,
     )
+    # Index opens win over soft-flatten overnight hold — always clean the book.
+    if index_underlying and open_side is not None and open_qty > 0:
+        flatten = {
+            "active": True,
+            "action": "flatten",
+            "reason": (
+                f"index_not_equity: soft-close open {open_side} "
+                f"{symbol} (indices must not stay in equity paper book)"
+            ),
+        }
     result["soft_eod"] = flatten
 
     if flatten["action"] == "overnight_hold":
@@ -268,11 +319,13 @@ async def run_symbol_tick(
         flatten["action"] == "flatten"
         or decision.action != SignalAction.HOLD
         or (open_qty > 0 and open_side is not None)
+        or (
+            not index_underlying
+            and open_qty > 0
+            and morning_policy.enabled
+            and morning_policy.in_window(ist_now)
+        )
     )
-    instrument_key = resolve_instrument_key(
-        symbol, overrides=getattr(broker, "instrument_overrides", None)
-    )
-    result["instrument_key"] = instrument_key
     ltp_px: float | None = None
     quote_instrument_key: str | None = None
     if may_trade:
@@ -372,6 +425,33 @@ async def run_symbol_tick(
             result["note"] = note
             return result
 
+    atr14: float | None = None
+    if (
+        not index_underlying
+        and open_qty > 0
+        and morning_policy.enabled
+        and morning_policy.in_window(ist_now)
+        and candles
+    ):
+        try:
+            atr14 = atr_indicator(candles, morning_policy.atr_period)
+        except Exception:  # noqa: BLE001
+            logger.exception("%s ATR%d compute failed for morning TP/stop", symbol, morning_policy.atr_period)
+            atr14 = None
+    result["atr14"] = atr14
+
+    morning_tp = morning_profit_book_decision(
+        open_side=open_side,  # type: ignore[arg-type]
+        open_qty=open_qty,
+        entry_avg=entry_avg,
+        mark=fill_price if may_trade else None,
+        policy=morning_policy,
+        now=ist_now,
+        is_index=index_underlying,
+        atr14=atr14,
+    )
+    result["morning_tp"] = morning_tp
+
     if flatten["action"] == "flatten":
         logger.info("%s %s", symbol, flatten["reason"])
         intents = plan_equity_intents(
@@ -383,6 +463,22 @@ async def run_symbol_tick(
             price=fill_price,
             reason=flatten["reason"],
         )
+    elif morning_tp.get("action") in {"profit_book", "stop"}:
+        logger.info("%s %s", symbol, morning_tp["reason"])
+        intents = plan_equity_intents(
+            symbol,
+            SignalAction.EXIT,
+            open_side=open_side,  # type: ignore[arg-type]
+            open_qty=open_qty,
+            qty=share_qty,
+            price=fill_price,
+            reason=str(morning_tp["reason"]),
+            exit_qty=int(morning_tp.get("exit_qty") or open_qty),
+        )
+    elif index_underlying:
+        # Defense: never plan stock entry for indices even if earlier gate missed.
+        intents = []
+        result["note"] = "index_not_equity — entry refused"
     else:
         intents = plan_equity_intents(
             symbol,

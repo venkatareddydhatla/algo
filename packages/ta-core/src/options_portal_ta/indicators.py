@@ -49,6 +49,15 @@ def _atr(candles: Sequence[Candle], period: int) -> float | None:
     return sum(trs[-period:]) / period
 
 
+def atr(candles: Sequence[Candle], period: int = 14) -> float | None:
+    """Average True Range over ``period`` bars (default ATR14).
+
+    Public helper for morning dynamic TP/stop thresholds. Returns ``None``
+    when there are fewer than ``period + 1`` candles.
+    """
+    return _atr(candles, int(period))
+
+
 class RSIPlugin:
     name = "rsi"
     version = "1.0.0"

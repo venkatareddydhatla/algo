@@ -124,6 +124,45 @@ def unrealized_equity_pnl(
     return realized_equity_pnl(position_side, entry_avg, mark, qty)
 
 
+def unrealized_pnl_pct(
+    position_side: PositionSide | str,
+    entry_avg: float,
+    mark: float,
+) -> float:
+    """Unrealized PnL as percent of entry price (qty-independent).
+
+    Long: ``(mark - entry) / entry * 100``; short: ``(entry - mark) / entry * 100``.
+    """
+    entry = float(entry_avg)
+    if entry <= 0:
+        return 0.0
+    side = str(position_side).strip().lower()
+    m = float(mark)
+    if side == "long":
+        return (m - entry) / entry * 100.0
+    if side == "short":
+        return (entry - m) / entry * 100.0
+    raise ValueError(f"unknown position_side={position_side!r}")
+
+
+def profit_book_exit_qty(open_qty: int, *, fraction: float = 1.0) -> int:
+    """Shares to exit for profit booking.
+
+    Default ``fraction=1.0`` closes the full book (qty is currently 1).
+    Use ``fraction=0.5`` later for a 50% scale-out when ``open_qty > 1``.
+    """
+    q = max(0, int(open_qty))
+    if q <= 0:
+        return 0
+    frac = float(fraction)
+    if frac >= 1.0:
+        return q
+    if frac <= 0:
+        return 0
+    # Scale-out: at least 1 share, never more than open.
+    return max(1, min(q, int(q * frac)))
+
+
 def plan_equity_intents(
     symbol: str,
     action: SignalAction | str,
@@ -133,29 +172,38 @@ def plan_equity_intents(
     qty: int,
     price: float,
     reason: str = "",
+    exit_qty: int | None = None,
 ) -> list[EquityOrderIntent]:
     """Map hybrid bias → equity share intents.
 
     - BUY_CE_BIAS → long (BUY entry); exit short first if flipping
     - BUY_PE_BIAS → short (SELL entry); exit long first if flipping
     - HOLD / EXIT / REDUCE → close open paper position when present
+
+    ``exit_qty`` caps how many open shares to close (default = full ``open_qty``).
+    Useful for morning profit-book full exit today and 50% scale-out later.
     """
     sym = symbol.upper()
     act = action.value if isinstance(action, SignalAction) else str(action)
     px = float(price)
     share_qty = max(1, int(qty))
     pos_qty = max(0, int(open_qty))
+    close_qty = (
+        pos_qty
+        if exit_qty is None
+        else max(0, min(pos_qty, int(exit_qty)))
+    )
     reason_txt = reason or act
     intents: list[EquityOrderIntent] = []
 
     def _exit_intent(kind: EquityActionKind = "exit") -> EquityOrderIntent | None:
-        if open_side is None or pos_qty <= 0:
+        if open_side is None or close_qty <= 0:
             return None
         if open_side == "long":
             return EquityOrderIntent(
                 symbol=sym,
                 side="SELL",
-                qty=pos_qty,
+                qty=close_qty,
                 limit_price=px,
                 reason=f"{reason_txt} · close long",
                 action_kind=kind,
@@ -165,7 +213,7 @@ def plan_equity_intents(
         return EquityOrderIntent(
             symbol=sym,
             side="BUY",
-            qty=pos_qty,
+            qty=close_qty,
             limit_price=px,
             reason=f"{reason_txt} · cover short",
             action_kind=kind,

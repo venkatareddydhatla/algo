@@ -11,9 +11,9 @@ from typing import Any
 
 from options_portal_domain.calendar import is_nse_trading_day
 from options_portal_domain.config import load_config, scan_symbols, trading_mode, watchlist_symbols
-from options_portal_domain.session_gates import SoftEodPolicy
+from options_portal_domain.session_gates import MorningProfitBookPolicy, SoftEodPolicy
 from options_portal_domain.tz import ensure_tzdata, now_ist
-from options_portal_domain.universe import scan_batch_size
+from options_portal_domain.universe import is_index_underlying, scan_batch_size
 from options_portal_notify.daily_summary import (
     QUIET_SUMMARY_REASONS,
     daily_summary_config,
@@ -94,19 +94,19 @@ async def _run_batch(symbols: list[str], cfg: dict) -> None:
             logger.exception("Entry selection flush failed")
 
 
-async def _tick_open_book_soft_flatten(cfg: dict[str, Any]) -> dict[str, Any]:
-    """Evaluate soft flatten for open paper symbols only (timely path)."""
+async def _tick_open_book_management(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Evaluate open-book exits on a timely path (not blocked by full scans).
+
+    Runs when any of:
+    - soft-flatten window (15:20–15:40 IST)
+    - morning profit-book window (09:15–10:15 IST)
+    - open book contains index underlyings (soft-close ``index_not_equity``)
+    """
     soft_policy = SoftEodPolicy.from_config(cfg)
+    morning_policy = MorningProfitBookPolicy.from_config(cfg)
     ist_now = now_ist()
     if not is_nse_trading_day(ist_now.date()):
         return {"ran": False, "reason": "non_trading_day", "symbols": 0}
-    if not soft_policy.in_soft_flatten_window(ist_now):
-        return {
-            "ran": False,
-            "reason": "outside_soft_flatten_window",
-            "symbols": 0,
-            "window": f"{soft_policy.soft_flatten_ist}-{soft_policy.soft_flatten_until_ist}",
-        }
 
     mode = trading_mode(cfg)
     safe_mode = "dry_run" if mode == "live" else mode
@@ -118,11 +118,23 @@ async def _tick_open_book_soft_flatten(cfg: dict[str, Any]) -> dict[str, Any]:
         if paper.available:
             symbols = [str(s).upper() for s in paper.open_symbols(mode=safe_mode)]  # type: ignore[arg-type]
     except Exception:  # noqa: BLE001
-        logger.exception("soft-flatten open-book: paper ledger unavailable")
+        logger.exception("open-book management: paper ledger unavailable")
         return {"ran": False, "reason": "paper_unavailable", "symbols": 0}
 
     if not symbols:
         return {"ran": True, "reason": "no_open_positions", "symbols": 0}
+
+    index_opens = [s for s in symbols if is_index_underlying(s)]
+    in_soft = soft_policy.in_soft_flatten_window(ist_now)
+    in_morning = morning_policy.enabled and morning_policy.in_window(ist_now)
+    if not in_soft and not in_morning and not index_opens:
+        return {
+            "ran": False,
+            "reason": "outside_open_book_windows",
+            "symbols": 0,
+            "soft_window": f"{soft_policy.soft_flatten_ist}-{soft_policy.soft_flatten_until_ist}",
+            "morning_window": f"{morning_policy.start_ist}-{morning_policy.until_ist}",
+        }
 
     # Modest concurrency — open book is small (≤ max_open_symbols).
     trading = cfg.get("trading", {}) or {}
@@ -132,54 +144,72 @@ async def _tick_open_book_soft_flatten(cfg: dict[str, Any]) -> dict[str, Any]:
     async def _one(symbol: str) -> None:
         async with sem:
             try:
-                # No entry admission — exits / soft flatten only on this path.
+                # No entry admission — exits / soft flatten / morning TP only.
                 result = await run_symbol_tick(symbol, cfg, entry_admission=None)
                 soft = result.get("soft_eod") or {}
+                morning = result.get("morning_tp") or {}
                 logger.info(
-                    "soft-flatten open-book tick %s -> hybrid=%s soft=%s note=%s",
+                    "open-book tick %s -> hybrid=%s soft=%s morning=%s note=%s",
                     symbol,
                     result.get("hybrid_action"),
                     soft.get("action"),
-                    result.get("note") or soft.get("reason"),
+                    morning.get("action"),
+                    result.get("note") or soft.get("reason") or morning.get("reason"),
                 )
             except Exception:  # noqa: BLE001
-                logger.exception("soft-flatten open-book tick failed for %s", symbol)
+                logger.exception("open-book tick failed for %s", symbol)
 
     logger.info(
-        "Soft-flatten open-book pass starting symbols=%d window=%s-%s IST",
+        "Open-book pass starting symbols=%d soft=%s morning=%s index_opens=%s",
         len(symbols),
-        soft_policy.soft_flatten_ist,
-        soft_policy.soft_flatten_until_ist,
+        in_soft,
+        in_morning,
+        index_opens,
     )
     await asyncio.gather(*[_one(s) for s in symbols])
-    return {"ran": True, "reason": "ok", "symbols": len(symbols)}
+    return {
+        "ran": True,
+        "reason": "ok",
+        "symbols": len(symbols),
+        "soft": in_soft,
+        "morning": in_morning,
+        "index_opens": index_opens,
+    }
+
+
+# Back-compat alias for tests / imports.
+_tick_open_book_soft_flatten = _tick_open_book_management
 
 
 async def soft_flatten_poll_loop(stop_event: asyncio.Event) -> None:
-    """Poll soft flatten on open paper positions (not blocked by full scans).
+    """Poll open-book exits (soft flatten, morning TP, index soft-close).
 
     Full-universe scans can run many minutes under live MD. Soft flatten used
     to fire only when each symbol's turn arrived mid-scan, so a slow/hung cycle
     (or a symbol last seen before 15:20) could exit hours late. This loop ticks
-    the open book on its own cadence inside the soft-flatten window.
+    the open book on its own cadence for soft-flatten, morning profit-book, and
+    any open index underlyings that must leave the equity paper book.
     """
     cfg = load_config()
     soft_policy = SoftEodPolicy.from_config(cfg)
+    morning_policy = MorningProfitBookPolicy.from_config(cfg)
     poll_sec = soft_policy.soft_flatten_poll_interval_sec
     logger.info(
-        "Soft-flatten open-book loop starting poll=%ss window=%s-%s IST "
-        "(independent of full-universe scan)",
+        "Open-book management loop starting poll=%ss "
+        "morning=%s-%s soft=%s-%s IST (independent of full-universe scan)",
         poll_sec,
+        morning_policy.start_ist,
+        morning_policy.until_ist,
         soft_policy.soft_flatten_ist,
         soft_policy.soft_flatten_until_ist,
     )
-    # Immediate check so a restart inside the window still flattens promptly.
+    # Immediate check so a restart inside a window still acts promptly.
     try:
-        status = await _tick_open_book_soft_flatten(cfg)
+        status = await _tick_open_book_management(cfg)
         if status.get("ran") and status.get("symbols", 0) > 0:
-            logger.info("Soft-flatten open-book pass: %s", status)
+            logger.info("Open-book pass: %s", status)
     except Exception:  # noqa: BLE001
-        logger.exception("Soft-flatten open-book pass failed")
+        logger.exception("Open-book pass failed")
     while not stop_event.is_set():
         cfg = load_config()
         soft_policy = SoftEodPolicy.from_config(cfg)
@@ -189,12 +219,12 @@ async def soft_flatten_poll_loop(stop_event: asyncio.Event) -> None:
             break
         except TimeoutError:
             try:
-                status = await _tick_open_book_soft_flatten(cfg)
+                status = await _tick_open_book_management(cfg)
                 if status.get("ran") and int(status.get("symbols") or 0) > 0:
-                    logger.info("Soft-flatten open-book pass: %s", status)
+                    logger.info("Open-book pass: %s", status)
             except Exception:  # noqa: BLE001
-                logger.exception("Soft-flatten open-book pass failed")
-    logger.info("Soft-flatten open-book loop stopped")
+                logger.exception("Open-book pass failed")
+    logger.info("Open-book management loop stopped")
 
 
 async def daily_summary_poll_loop(stop_event: asyncio.Event) -> None:
