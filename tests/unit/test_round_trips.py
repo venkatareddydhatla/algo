@@ -5,6 +5,7 @@ from __future__ import annotations
 from options_portal_domain.round_trips import (
     closed_round_trip_fill_ids,
     closed_trades_for_ist_day,
+    open_book_fill_ids,
     pair_round_trip_trades,
     sort_closed_trades_newest_first,
 )
@@ -66,6 +67,8 @@ def test_pair_round_trip_long_and_omit_open():
     assert closed_trades_for_ist_day(trades, "2026-11-15") == trades
     # Closed purge targets TCS entry+exit only; open INFY entry stays
     assert closed_round_trip_fill_ids(fills) == {"1", "2"}
+    # Open-book purge targets unpaired INFY entry only
+    assert open_book_fill_ids(fills) == {"3"}
 
 
 def test_sort_closed_trades_newest_first():

@@ -143,3 +143,21 @@ def closed_round_trip_fill_ids(fills: list[dict[str, Any]]) -> set[str]:
             if fid:
                 ids.add(str(fid))
     return ids
+
+
+def open_book_fill_ids(fills: list[dict[str, Any]]) -> set[str]:
+    """Fill ids that are *not* part of a completed round-trip.
+
+    Includes still-open unpaired entry fills (and any orphan legs). Used by
+    open-book purge to clear Open positions while keeping closed history.
+    """
+    closed = closed_round_trip_fill_ids(fills)
+    out: set[str] = set()
+    for fill in fills:
+        fid = fill.get("id")
+        if fid is None:
+            continue
+        sid = str(fid)
+        if sid and sid not in closed:
+            out.add(sid)
+    return out
