@@ -117,6 +117,55 @@ def is_nse_trading_day(
     return IndiaMarketCalendar().is_trading_day(day)
 
 
+def previous_nse_trading_day(
+    d: date,
+    *,
+    holidays: set[date] | None = None,
+) -> date:
+    """Nearest NSE trading day strictly before ``d``."""
+    cal = (
+        IndiaMarketCalendar(holidays=holidays)
+        if holidays is not None
+        else IndiaMarketCalendar()
+    )
+    cursor = d - timedelta(days=1)
+    for _ in range(14):
+        if cal.is_trading_day(cursor):
+            return cursor
+        cursor -= timedelta(days=1)
+    return cursor
+
+
+def pnl_ist_day(
+    as_of: datetime | None = None,
+    *,
+    holidays: set[date] | None = None,
+) -> date:
+    """IST date used for Day realized / day-loss (NSE cash session day).
+
+    Calendar midnight IST is the wrong boundary for Trades UI: after 00:00 IST
+    Closed trades still list the prior session's round-trips, but a naive
+    ``now_ist().date()`` sum goes to ₹0. Attribute PnL to the session day
+    from cash open (09:15 IST) through the next trading morning before open;
+    before open (and on weekends/holidays) use the previous NSE trading day.
+    """
+    now = as_of if as_of is not None else now_ist()
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=ist())
+    else:
+        now = now.astimezone(ist())
+    cal = (
+        IndiaMarketCalendar(holidays=holidays)
+        if holidays is not None
+        else IndiaMarketCalendar()
+    )
+    today = now.date()
+    open_dt, _ = cal.session_open_close_ist(today)
+    if cal.is_trading_day(today) and now >= open_dt:
+        return today
+    return previous_nse_trading_day(today, holidays=holidays)
+
+
 def _parse_hhmm(value: str) -> time:
     hour, minute = value.split(":")
     return time(int(hour), int(minute))

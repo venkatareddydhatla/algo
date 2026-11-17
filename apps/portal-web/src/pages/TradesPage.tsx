@@ -8,11 +8,19 @@ type ClosedTrade = Record<string, unknown>;
 export default function TradesPage() {
   const [data, setData] = useState<Record<string, unknown> | null>(null);
   const [offset, setOffset] = useState(0);
+  /** Optional IST day YYYY-MM-DD for Day realized; empty = NSE session day default. */
+  const [day, setDay] = useState("");
 
   useEffect(() => {
     (async () => {
       try {
-        setData(await api.trades({ offset, limit: PAGE_SIZE }));
+        setData(
+          await api.trades({
+            offset,
+            limit: PAGE_SIZE,
+            day: day.trim() || undefined,
+          }),
+        );
       } catch {
         setData({
           mode: "dry_run",
@@ -27,13 +35,14 @@ export default function TradesPage() {
           fills_limit: PAGE_SIZE,
           closed_trades: [],
           closed_trades_total: 0,
+          day_ist: day.trim() || undefined,
           day_realized: 0,
           day_unrealized: 0,
           source: "local-empty",
         });
       }
     })();
-  }, [offset]);
+  }, [offset, day]);
 
   const positions = (data?.positions as Array<Record<string, unknown>>) || [];
   const trades =
@@ -205,8 +214,34 @@ export default function TradesPage() {
         </table>
       </div>
       <p className="pnl">
-        Day realized ₹ {Number(data?.day_realized ?? 0).toLocaleString()} · unrealized ₹{" "}
+        Day realized
+        {data?.day_ist ? ` (${String(data.day_ist)} IST)` : ""} ₹{" "}
+        {Number(data?.day_realized ?? 0).toLocaleString()} · unrealized ₹{" "}
         {Number(data?.day_unrealized ?? 0).toLocaleString()}
+      </p>
+      <p className="muted" style={{ fontSize: "0.85rem", marginTop: 0 }}>
+        Day realized = sum of closed round-trip PnL for the NSE cash session IST day
+        (rolls at next 09:15 IST open; not UTC midnight).{" "}
+        <label>
+          Day{" "}
+          <input
+            type="date"
+            value={day}
+            onChange={(e) => {
+              setOffset(0);
+              setDay(e.target.value);
+            }}
+            style={{ marginLeft: "0.25rem" }}
+          />
+        </label>
+        {day ? (
+          <>
+            {" · "}
+            <button type="button" onClick={() => setDay("")}>
+              Use session day
+            </button>
+          </>
+        ) : null}
       </p>
       <p className="muted" style={{ fontSize: "0.85rem" }}>
         Dry-run fills are retained for review. Purge/archive only before live — see
