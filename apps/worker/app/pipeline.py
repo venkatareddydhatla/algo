@@ -16,6 +16,7 @@ from options_portal_domain.session_gates import (
     MarketSentimentPolicy,
     MorningProfitBookPolicy,
     SoftEodPolicy,
+    allow_open_book_risk_exits,
     atr_trail_scale_out_decision,
     compute_index_bias,
     entry_conflicts_with_index,
@@ -247,6 +248,9 @@ async def run_symbol_tick(
     entry_session = is_trading_session(
         ist_now, policy=soft_policy, trading_day=trading_day
     )
+    risk_exit_session = allow_open_book_risk_exits(
+        ist_now, policy=soft_policy, trading_day=trading_day
+    )
     result["session"] = {
         "open_ist": soft_policy.open_ist,
         "soft_flatten_ist": soft_policy.soft_flatten_ist,
@@ -254,6 +258,7 @@ async def run_symbol_tick(
         "morning_tp_ist": soft_policy.morning_tp_ist,
         "morning_tp_until_ist": soft_policy.morning_tp_until_ist,
         "in_morning_profit_window": soft_policy.in_morning_profit_window(ist_now),
+        "in_risk_exit_window": soft_policy.in_risk_exit_window(ist_now),
         "no_new_entries_after": soft_policy.no_new_entries_after,
         "close_ist": soft_policy.close_ist,
         "user_hours_note": soft_policy.user_hours_note,
@@ -264,6 +269,7 @@ async def run_symbol_tick(
         "before_session_open": soft_policy.before_session_open(ist_now),
         "allow_new_entries": soft_policy.allow_new_entries(ist_now),
         "is_trading_session": entry_session,
+        "allow_open_book_risk_exits": risk_exit_session,
         "trading_day": trading_day,
     }
 
@@ -329,6 +335,7 @@ async def run_symbol_tick(
         and not index_underlying
         and open_qty > 0
         and open_side is not None
+        and risk_exit_session
     )
     morning_mgmt_needed = (
         not index_underlying
@@ -336,6 +343,7 @@ async def run_symbol_tick(
         and open_side is not None
         and morning_policy.enabled
         and morning_policy.in_window(ist_now)
+        and risk_exit_session
     )
 
     # Overnight hold: still fetch mark when ATR/morning may exit (priority >
@@ -489,6 +497,9 @@ async def run_symbol_tick(
         atr14=atr14,
         is_index=index_underlying,
         trail_state=trail_state,
+        now=ist_now,
+        session_policy=soft_policy,
+        trading_day=trading_day,
     )
     result["atr_trail"] = atr_mgmt
 
@@ -501,6 +512,8 @@ async def run_symbol_tick(
         now=ist_now,
         is_index=index_underlying,
         atr14=atr14,
+        session_policy=soft_policy,
+        trading_day=trading_day,
     )
     result["morning_tp"] = morning_tp
 

@@ -16,6 +16,7 @@ from options_portal_domain.session_gates import (
     MarketSentimentPolicy,
     MorningProfitBookPolicy,
     SoftEodPolicy,
+    allow_open_book_risk_exits,
     at_or_after_ist,
     atr_trail_scale_out_decision,
     compute_index_bias,
@@ -606,6 +607,123 @@ def test_atr_trail_qty1_profit_book_and_scale_out():
         exit_qty=qty4["exit_qty"],
     )
     assert intents[0].qty == 2
+
+
+def test_risk_exit_window_aligns_soft_flatten_until():
+    """Open-book risk exits: [09:15, 15:40] IST; entries stay [09:15, 15:20)."""
+    policy = SoftEodPolicy(
+        open_ist="09:15",
+        no_new_entries_after="15:20",
+        soft_flatten_ist="15:20",
+        soft_flatten_until_ist="15:40",
+    )
+    # Wed 2026-11-18 00:05 IST — TATACONSUM profit_book bug (cash closed)
+    midnight = datetime(2026, 11, 18, 0, 5, 0)
+    assert policy.before_session_open(midnight) is True
+    assert policy.in_risk_exit_window(midnight) is False
+    assert allow_open_book_risk_exits(midnight, policy=policy, trading_day=True) is False
+    assert is_trading_session(midnight, policy=policy, trading_day=True) is False
+
+    preopen = datetime(2026, 11, 18, 9, 14, 0)
+    assert allow_open_book_risk_exits(preopen, policy=policy, trading_day=True) is False
+
+    open_exact = datetime(2026, 11, 18, 9, 15, 0)
+    assert policy.in_risk_exit_window(open_exact) is True
+    assert allow_open_book_risk_exits(open_exact, policy=policy, trading_day=True) is True
+    assert is_trading_session(open_exact, policy=policy, trading_day=True) is True
+
+    mid = datetime(2026, 11, 18, 12, 0, 0)
+    assert allow_open_book_risk_exits(mid, policy=policy, trading_day=True) is True
+
+    # After entry cutoff but still in risk-exit / soft-flatten window
+    soft_start = datetime(2026, 11, 18, 15, 20, 0)
+    assert is_trading_session(soft_start, policy=policy, trading_day=True) is False
+    assert allow_open_book_risk_exits(soft_start, policy=policy, trading_day=True) is True
+    assert policy.in_soft_flatten_window(soft_start) is True
+
+    soft_until = datetime(2026, 11, 18, 15, 40, 0)
+    assert allow_open_book_risk_exits(soft_until, policy=policy, trading_day=True) is True
+    assert policy.in_soft_flatten_window(soft_until) is True
+
+    after = datetime(2026, 11, 18, 15, 41, 0)
+    assert allow_open_book_risk_exits(after, policy=policy, trading_day=True) is False
+    assert policy.in_soft_flatten_window(after) is False
+
+    # Holiday / weekend: clock in window still refused
+    assert allow_open_book_risk_exits(mid, policy=policy, trading_day=False) is False
+
+
+def test_profit_book_refused_at_0005_ist_allowed_in_session():
+    """Regression: TATACONSUM profit_book at 00:05 IST must not fill overnight."""
+    atr_policy = AtrTrailScaleOutPolicy()
+    soft = SoftEodPolicy()
+    # Profit threshold: entry 100, ATR=2 → +3.0 (1.5×ATR)
+    midnight = datetime(2026, 11, 18, 0, 5, 0)
+    overnight = atr_trail_scale_out_decision(
+        open_side="long",
+        open_qty=1,
+        entry_avg=100.0,
+        mark=103.00,
+        policy=atr_policy,
+        atr14=2.0,
+        trail_state={"activated": False, "extreme": None, "trail_stop": None},
+        now=midnight,
+        session_policy=soft,
+        trading_day=True,
+    )
+    assert overnight["action"] == "none"
+    assert overnight["exit_qty"] == 0
+    assert "outside_risk_exit_window" in overnight["reason"]
+
+    # Same uPnL during cash session → profit_book OK
+    midday = datetime(2026, 11, 18, 11, 30, 0)
+    session = atr_trail_scale_out_decision(
+        open_side="long",
+        open_qty=1,
+        entry_avg=100.0,
+        mark=103.00,
+        policy=atr_policy,
+        atr14=2.0,
+        trail_state={"activated": False, "extreme": None, "trail_stop": None},
+        now=midday,
+        session_policy=soft,
+        trading_day=True,
+    )
+    assert session["action"] == "profit_book"
+    assert session["exit_qty"] == 1
+
+    # atr_stop also refused overnight
+    stop_night = atr_trail_scale_out_decision(
+        open_side="long",
+        open_qty=1,
+        entry_avg=100.0,
+        mark=96.00,  # −4% < −1.5×ATR
+        policy=atr_policy,
+        atr14=2.0,
+        trail_state={"activated": False, "extreme": None, "trail_stop": None},
+        now=midnight,
+        session_policy=soft,
+        trading_day=True,
+    )
+    assert stop_night["action"] == "none"
+    assert "outside_risk_exit_window" in stop_night["reason"]
+
+    # Morning TP also refused outside risk window (even if morning clock matched —
+    # 00:05 is outside morning window too; assert risk gate message when forced).
+    morning = MorningProfitBookPolicy()
+    morning_night = morning_profit_book_decision(
+        open_side="long",
+        open_qty=1,
+        entry_avg=100.0,
+        mark=101.0,
+        policy=morning,
+        now=midnight,
+        atr14=2.0,
+        session_policy=soft,
+        trading_day=True,
+    )
+    assert morning_night["action"] == "none"
+    assert "outside_risk_exit_window" in morning_night["reason"]
 
 
 def test_atr_trail_missing_atr_pct_fallback_and_initial_stop():

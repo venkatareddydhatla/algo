@@ -7,8 +7,14 @@ Product rules (equity dry-run):
   pre-open, and post-cutoff must not persist entry fills or send entry Gmail.
 - **Index underlyings** (NIFTY, BANKNIFTY, … / NSE_INDEX|BSE_INDEX) never use
   stock hybrid entry; open index paper is soft-closed with ``index_not_equity``.
-- **ATR trailing stop + profit scale-out** (stocks only; all day while open) on
-  the ~15s open-book poll (`trading.risk.atr_trail_scale_out`):
+- **Open-book risk exits** (``profit_book``, ``profit_scale_out``, ``atr_stop``,
+  ``atr_trail``, ``morning_profit_book``, ``morning_stop``) only on NSE trading
+  days inside ``[open_ist, soft_flatten_until_ist]`` IST (default **09:15–15:40**,
+  aligned with soft_flatten_until). Use ``allow_open_book_risk_exits`` /
+  ``SoftEodPolicy.in_risk_exit_window``. Outside that window the worker may
+  still poll for marks / news / TA — **no risk-exit fills or Gmail**.
+- **ATR trailing stop + profit scale-out** (stocks only; during the risk-exit
+  window above) on the ~15s open-book poll (`trading.risk.atr_trail_scale_out`):
   - Initial stop: uPnL ≤ −1.5×ATR14 (or −0.8% if ATR missing) → ``atr_stop``
   - Trail activates at uPnL ≥ +1.0×ATR (or +0.5%): trail = extreme − 1.0×ATR
     (long high−ATR; short low+ATR); extreme updates each poll; never loosen;
@@ -18,7 +24,7 @@ Product rules (equity dry-run):
   - Same-tick priority: stop/trail > scale/profit > soft_flatten
 - **Morning dynamic TP/stop** [morning_tp_ist, morning_tp_until_ist] inclusive
   by HH:MM (default **09:15–10:00 IST**), stocks only (not indices), on the
-  ~15s open-book poll:
+  ~15s open-book poll (also requires the risk-exit cash window):
   - Profit: uPnL ≥ max(0.3% entry, 0.5×ATR14) → ``morning_profit_book``
   - Stop: uPnL ≤ −max(0.5% entry, 0.75×ATR14) → ``morning_stop``
   - If ATR14 unavailable → percent floors only. After 10:00: no morning exits.
@@ -31,8 +37,8 @@ Product rules (equity dry-run):
 - Daily summary (16:00 IST) is also a separate schedule gate.
 - Optional light NIFTY/BANKNIFTY gate: block new opposite entries only when
   index hybrid strongly conflicts; skip when noisy/weak.
-- Worker may keep scanning overnight for news/TA refresh; orders/fills for
-  Action entry must not.
+- Worker may keep scanning overnight for news/TA / mark refresh; orders/fills
+  for Action entry and open-book risk exits must not.
 """
 
 from __future__ import annotations
@@ -130,8 +136,8 @@ class SoftEodPolicy:
     morning_tp_until_ist: str = DEFAULT_MORNING_TP_UNTIL_IST
     # Documented user monitoring window (no hard flatten at end)
     user_hours_note: str = (
-        "09:15–15:40 IST (morning TP/stop 09:15–10:00; soft flatten 15:20–15:40; "
-        "no hard 15:40 square-off)"
+        "09:15–15:40 IST (risk exits 09:15–15:40; morning TP/stop 09:15–10:00; "
+        "soft flatten 15:20–15:40; no hard 15:40 square-off)"
     )
 
     @classmethod
@@ -179,10 +185,21 @@ class SoftEodPolicy:
             user_hours_note=str(
                 session.get(
                     "user_hours_note",
-                    "09:15–15:40 IST (morning TP/stop 09:15–10:00; soft flatten 15:20–15:40; "
-                    "no hard 15:40 square-off)",
+                    "09:15–15:40 IST (risk exits 09:15–15:40; morning TP/stop 09:15–10:00; "
+                    "soft flatten 15:20–15:40; no hard 15:40 square-off)",
                 )
             ),
+        )
+
+    def in_risk_exit_window(self, now: datetime | None = None) -> bool:
+        """True during inclusive open-book risk-exit HH:MM window.
+
+        Default ``[open_ist, soft_flatten_until_ist]`` = **09:15–15:40 IST**.
+        Covers ATR stop/trail/profit_book/scale-out and morning TP/stop.
+        Soft flatten still uses its narrower ``[15:20, 15:40]`` gate.
+        """
+        return hhmm_in_inclusive_window(
+            self.open_ist, self.soft_flatten_until_ist, now
         )
 
     def in_morning_profit_window(self, now: datetime | None = None) -> bool:
@@ -404,11 +421,17 @@ def morning_profit_book_decision(
     now: datetime | None = None,
     is_index: bool = False,
     atr14: float | None = None,
+    session_policy: SoftEodPolicy | None = None,
+    trading_day: bool | None = None,
 ) -> dict[str, Any]:
     """Evaluate morning dynamic TP/stop for an open equity position.
 
     Returns keys: active, action ('profit_book'|'stop'|'none'), reason,
     exit_qty, unrealized_pct, unrealized_rupees, thresholds (when computable).
+
+    When ``now`` / ``trading_day`` are supplied, also requires the cash
+    risk-exit window (default 09:15–15:40 IST trading days) so overnight
+    polls cannot book morning TP/stop fills.
     """
     empty = {
         "exit_qty": 0,
@@ -437,6 +460,22 @@ def morning_profit_book_decision(
             "reason": "no open position",
             **empty,
         }
+    # Cash risk-exit session (when caller supplies clock/day context).
+    if now is not None or trading_day is not None:
+        if not allow_open_book_risk_exits(
+            now, policy=session_policy, trading_day=trading_day
+        ):
+            soft = session_policy or SoftEodPolicy()
+            return {
+                "active": False,
+                "action": "none",
+                "reason": (
+                    f"outside_risk_exit_window: "
+                    f"{soft.open_ist}-{soft.soft_flatten_until_ist} IST "
+                    f"(morning TP/stop refused; marks may still refresh)"
+                ),
+                **empty,
+            }
     if not policy.in_window(now):
         return {
             "active": False,
@@ -517,10 +556,11 @@ def morning_profit_book_decision(
 
 @dataclass(frozen=True)
 class AtrTrailScaleOutPolicy:
-    """All-day ATR initial stop + trailing stop + profit scale-out (stocks).
+    """ATR initial stop + trailing stop + profit scale-out (stocks).
 
     Config under ``trading.risk.atr_trail_scale_out``. Evaluated on the ~15s
-    open-book poll while a stock position is open (indices excluded).
+    open-book poll while a stock position is open **inside the cash risk-exit
+    window** (default 09:15–15:40 IST trading days; indices excluded).
 
     Thresholds (per-share vs entry; ATR path uses ATR×mult; missing ATR → %):
 
@@ -633,8 +673,11 @@ def atr_trail_scale_out_decision(
     atr14: float | None = None,
     is_index: bool = False,
     trail_state: dict[str, Any] | None = None,
+    now: datetime | None = None,
+    session_policy: SoftEodPolicy | None = None,
+    trading_day: bool | None = None,
 ) -> dict[str, Any]:
-    """Evaluate all-day ATR stop / trail / profit scale-out.
+    """Evaluate ATR stop / trail / profit scale-out during cash risk-exit hours.
 
     Mutates ``trail_state`` in place when provided (keys: activated, extreme,
     trail_stop). Same-tick priority inside this helper: ``atr_stop`` >
@@ -644,6 +687,11 @@ def atr_trail_scale_out_decision(
     with reason ``profit_book`` (dry-run share_qty is currently 1). When
     ``open_qty > 1``, exit ``scale_out_fraction`` (default 50%) as
     ``profit_scale_out``.
+
+    When ``now`` / ``trading_day`` are supplied, refuses fills outside
+    ``[open_ist, soft_flatten_until_ist]`` on trading days (default
+    09:15–15:40 IST) — overnight profit_book / atr_stop must not fire.
+    Threshold-only unit tests may omit ``now`` to exercise math alone.
     """
     state = trail_state if trail_state is not None else {
         "activated": False,
@@ -672,6 +720,22 @@ def atr_trail_scale_out_decision(
             reason="no open position",
             trail_state=state,
         )
+    # Cash risk-exit session (when caller supplies clock/day context).
+    if now is not None or trading_day is not None:
+        if not allow_open_book_risk_exits(
+            now, policy=session_policy, trading_day=trading_day
+        ):
+            soft = session_policy or SoftEodPolicy()
+            return _empty_atr_trail_result(
+                active=False,
+                action="none",
+                reason=(
+                    f"outside_risk_exit_window: "
+                    f"{soft.open_ist}-{soft.soft_flatten_until_ist} IST "
+                    f"(atr/profit exits refused; marks may still refresh)"
+                ),
+                trail_state=state,
+            )
     if entry_avg is None or float(entry_avg) <= 0 or mark is None or float(mark) <= 0:
         return _empty_atr_trail_result(
             active=True,
@@ -706,7 +770,7 @@ def atr_trail_scale_out_decision(
         "atr": atr_val,
     }
 
-    # 1) Initial stop — all day while open.
+    # 1) Initial stop — while open inside the cash risk-exit window.
     if upnl_rs <= -float(stop_dist):
         return {
             "active": True,
@@ -959,7 +1023,8 @@ def is_trading_session(
 
     Soft flatten (``in_soft_flatten_window`` / ``soft_flatten_decision``) and
     the 16:00 IST daily summary use separate gates — they intentionally run
-    outside this entry window. Exits / overnight hold are not gated here.
+    outside this entry window. Open-book risk exits use
+    ``allow_open_book_risk_exits`` (wider 09:15–15:40), not this helper.
     """
     pol = policy or SoftEodPolicy()
     clock = _ist_clock(now)
@@ -971,6 +1036,36 @@ def is_trading_session(
     if not trading_day:
         return False
     return pol.allow_new_entries(clock)
+
+
+def allow_open_book_risk_exits(
+    now: datetime | None = None,
+    *,
+    policy: SoftEodPolicy | None = None,
+    trading_day: bool | None = None,
+) -> bool:
+    """True when ATR/morning open-book risk exits may place fills.
+
+    Requires an NSE trading day and IST clock in
+    ``[policy.open_ist, policy.soft_flatten_until_ist]`` inclusive
+    (default **09:15–15:40 IST**). Distinct from:
+
+    - ``is_trading_session`` — new entries only ``[09:15, 15:20)``
+    - ``in_soft_flatten_window`` — soft flatten only ``[15:20, 15:40]``
+    - ``is_cash_market_open`` — UI badge ``[09:15, 15:30)``
+
+    Outside this window: mark polls / news / TA OK; no ``profit_book`` /
+    ``atr_stop`` / ``atr_trail`` / ``morning_*`` fills or exit Gmail.
+    """
+    pol = policy or SoftEodPolicy()
+    clock = _ist_clock(now)
+    if trading_day is None:
+        from options_portal_domain.calendar import is_nse_trading_day
+
+        trading_day = is_nse_trading_day(clock.date())
+    if not trading_day:
+        return False
+    return pol.in_risk_exit_window(clock)
 
 
 def is_cash_market_open(

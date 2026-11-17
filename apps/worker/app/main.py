@@ -107,10 +107,14 @@ async def _tick_open_book_management(cfg: dict[str, Any]) -> dict[str, Any]:
     """Evaluate open-book exits on a timely path (not blocked by full scans).
 
     Runs when any of:
-    - ATR trail / profit scale-out enabled and stock opens exist (all day)
+    - ATR trail / profit scale-out enabled, stock opens exist, and cash
+      risk-exit window (09:15–15:40 IST trading days) — not overnight
     - soft-flatten window (15:20–15:40 IST)
     - morning profit-book window (09:15–10:00 IST)
     - open book contains index underlyings (soft-close ``index_not_equity``)
+
+    Outside the risk-exit window the loop may idle; full-scan / API mark
+    refresh can continue without atr/profit exit fills or Gmail.
     """
     soft_policy = SoftEodPolicy.from_config(cfg)
     morning_policy = MorningProfitBookPolicy.from_config(cfg)
@@ -139,7 +143,11 @@ async def _tick_open_book_management(cfg: dict[str, Any]) -> dict[str, Any]:
     stock_opens = [s for s in symbols if s not in set(index_opens)]
     in_soft = soft_policy.in_soft_flatten_window(ist_now)
     in_morning = morning_policy.enabled and morning_policy.in_window(ist_now)
-    atr_trail_active = atr_trail_policy.enabled and bool(stock_opens)
+    in_risk = soft_policy.in_risk_exit_window(ist_now)
+    # ATR/profit exits only during [09:15, 15:40] — not overnight (TATACONSUM 00:05).
+    atr_trail_active = (
+        atr_trail_policy.enabled and bool(stock_opens) and in_risk
+    )
     if not in_soft and not in_morning and not index_opens and not atr_trail_active:
         return {
             "ran": False,
@@ -147,6 +155,9 @@ async def _tick_open_book_management(cfg: dict[str, Any]) -> dict[str, Any]:
             "symbols": 0,
             "soft_window": f"{soft_policy.soft_flatten_ist}-{soft_policy.soft_flatten_until_ist}",
             "morning_window": f"{morning_policy.start_ist}-{morning_policy.until_ist}",
+            "risk_exit_window": (
+                f"{soft_policy.open_ist}-{soft_policy.soft_flatten_until_ist}"
+            ),
         }
 
     # Modest concurrency — open book is small (≤ max_open_symbols).
@@ -207,9 +218,10 @@ async def soft_flatten_poll_loop(stop_event: asyncio.Event) -> None:
     Full-universe scans can run many minutes under live MD. Soft flatten used
     to fire only when each symbol's turn arrived mid-scan, so a slow/hung cycle
     (or a symbol last seen before 15:20) could exit hours late. This loop ticks
-    the open book on its own cadence for ATR trail/scale-out (all day while
-    stock opens exist), soft-flatten, morning profit-book, and any open index
-    underlyings that must leave the equity paper book.
+    the open book on its own cadence for ATR trail/scale-out (cash risk-exit
+    window 09:15–15:40 IST), soft-flatten (15:20–15:40), morning profit-book
+    (09:15–10:00), and any open index underlyings that must leave the equity
+    paper book. Overnight: no atr/profit exit fills.
     """
     cfg = load_config()
     soft_policy = SoftEodPolicy.from_config(cfg)
