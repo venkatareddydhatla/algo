@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from options_portal_broker.adapter import UpstoxAdapter
+from options_portal_domain.calendar import is_nse_trading_day
 from options_portal_domain.config import load_config, trading_mode
 from options_portal_domain.equity import plan_equity_intents
 from options_portal_domain.session_gates import (
@@ -181,6 +182,8 @@ async def run_symbol_tick(symbol: str, config: dict[str, Any] | None = None) -> 
     mkt_policy = MarketSentimentPolicy.from_config(cfg)
     _remember_index_hybrid(symbol, decision.hybrid_score, mkt_policy)
     ist_now = now_ist()
+    trading_day = is_nse_trading_day(ist_now.date())
+    result["trading_day"] = trading_day
     result["session"] = {
         "soft_flatten_ist": soft_policy.soft_flatten_ist,
         "no_new_entries_after": soft_policy.no_new_entries_after,
@@ -188,7 +191,24 @@ async def run_symbol_tick(symbol: str, config: dict[str, Any] | None = None) -> 
         "user_hours_note": soft_policy.user_hours_note,
         "past_soft_flatten": soft_policy.past_soft_flatten(ist_now),
         "past_no_new_entries": soft_policy.past_no_new_entries(ist_now),
+        "trading_day": trading_day,
     }
+
+    # Weekends / NSE holidays: no soft_flatten, no paper orders, no fill emails
+    if not trading_day:
+        note = (
+            f"non_trading_day={ist_now.date().isoformat()} — "
+            "skip soft_flatten and equity dry-run orders"
+        )
+        logger.info("%s %s", symbol, note)
+        result["order"] = None
+        result["note"] = note
+        result["soft_eod"] = {
+            "active": False,
+            "action": "none",
+            "reason": note,
+        }
+        return result
 
     reason_summary = decision.reason_summary or decision.action.value
     flatten = soft_flatten_decision(

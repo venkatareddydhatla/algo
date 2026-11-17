@@ -137,15 +137,15 @@ Still `dry_run` only — no live orders.
 
 ### Pull Gmail SMTP notify (stacked)
 
-Email on each dry-run paper fill + daily summary at **16:00 IST** to `venkatareddy.dhatla@gmail.com` (HTML tables + plain-text fallback). Needs a Google **App Password** in local `.env` (`GMAIL_APP_PASSWORD`). Optional: `GMAIL_USER`, `NOTIFY_EMAIL_TO`. Never commit secrets. Cloud agents cannot send without your password — test on Windows after pull. Policy: [`docs/options-portal-gmail-notify.md`](./options-portal-gmail-notify.md).
+Email on each dry-run paper fill + daily summary at **16:00 IST** (NSE **trading days only** — no Sat/Sun/stub-holiday fill or summary emails; soft-flatten / paper orders also skipped). Recipient default `venkatareddy.dhatla@gmail.com` (HTML tables + plain-text fallback). Needs a Google **App Password** in local `.env` (`GMAIL_APP_PASSWORD`). Optional: `GMAIL_USER`, `NOTIFY_EMAIL_TO`. Never commit secrets. Cloud agents cannot send without your password — test on Windows after pull (`--force` works any day). Policy: [`docs/options-portal-gmail-notify.md`](./options-portal-gmail-notify.md).
 
 ```powershell
 cd C:\algo
 Set-ExecutionPolicy -Scope Process Bypass
 .\deploy\windows\native\stop-native.ps1
 git fetch origin
-git checkout cursor/gmail-summary-html-tables-42e8
-git pull origin cursor/gmail-summary-html-tables-42e8
+git checkout cursor/skip-non-trading-day-notify-b97d
+git pull origin cursor/skip-non-trading-day-notify-b97d
 .\deploy\windows\native\setup-native.ps1
 # Edit C:\algo\.env — set GMAIL_APP_PASSWORD (never commit / paste in chat)
 .\.venv\Scripts\python.exe scripts\send_test_email.py

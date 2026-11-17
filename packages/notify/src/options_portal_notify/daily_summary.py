@@ -9,6 +9,7 @@ from datetime import date, datetime, time
 from pathlib import Path
 from typing import Any
 
+from options_portal_domain.calendar import is_nse_trading_day
 from options_portal_domain.tz import ist, now_ist
 from options_portal_notify.gmail import GmailSMTPNotifier, gmail_settings
 
@@ -103,9 +104,10 @@ def maybe_send_daily_summary(
 ) -> dict[str, Any]:
     """Send the daily summary if due. Safe no-op when password missing or too early.
 
-    ``force=True`` bypasses the 16:00 IST / once-per-day gate (for local test
-    resends). By default a forced send does **not** write the dedup marker so the
-    scheduled 16:00 email can still go out; pass ``mark_sent=True`` to record it.
+    ``force=True`` bypasses the 16:00 IST / once-per-day gate **and** the
+    NSE trading-day gate (for local test resends on weekends/holidays). By
+    default a forced send does **not** write the dedup marker so the scheduled
+    16:00 email can still go out; pass ``mark_sent=True`` to record it.
     Scheduled sends always mark when SMTP succeeds (``mark_sent`` defaults to
     ``not force``).
 
@@ -133,6 +135,16 @@ def maybe_send_daily_summary(
     path = state_file or state_path()
     last = load_last_sent_day(path)
     should_mark = (not force) if mark_sent is None else bool(mark_sent)
+
+    # Sat/Sun + NSE holiday stub — no scheduled daily email (force still allowed)
+    if not force and not is_nse_trading_day(today):
+        return {
+            "sent": False,
+            "reason": "non_trading_day",
+            "day_ist": today.isoformat(),
+            "last_sent_ist_day": last.isoformat() if last else None,
+            "now_ist": current.isoformat(),
+        }
 
     if not force and not should_send_daily_summary(
         current,
