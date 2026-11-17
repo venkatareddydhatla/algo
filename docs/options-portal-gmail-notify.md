@@ -35,9 +35,12 @@ notify:
     enabled: true
     hour_ist: 16
     minute_ist: 0
+    poll_interval_sec: 30  # worker schedule loop; not tied to full-scan duration
 ```
 
 Dedup marker for the daily email: `data/notify_daily_summary_state.json` (gitignored under `data/`).
+
+The worker runs a **dedicated schedule loop** (default every 30s, override with `DAILY_SUMMARY_POLL_SEC`) so the 16:00 IST send does **not** wait for a full-universe scan to finish. Soft-flatten fill emails can still fire mid-scan at 15:20 while the summary fires on the clock.
 
 ## Windows: pull + test emails
 
@@ -77,5 +80,5 @@ Still `dry_run` only — no live Upstox orders.
 
 - `packages/domain` — `round_trips.pair_round_trip_trades` (shared with Trades UI / `GET /api/v1/trades`)
 - `packages/notify` — `GmailSMTPNotifier`, `build_notifier`, `maybe_send_daily_summary`, HTML multipart formatters (re-exports pairing helpers)
-- Worker: fill email in `apps/worker/app/pipeline.py`; daily check after each full scan in `apps/worker/app/main.py`
+- Worker: fill email in `apps/worker/app/pipeline.py`; daily summary via independent poll loop in `apps/worker/app/main.py` (`daily_summary_poll_loop`)
 - Test CLIs: `scripts/send_test_email.py`, `scripts/send_daily_summary.py --force`

@@ -1,4 +1,4 @@
-"""Worker process — pipeline ticks + RSS news ingest loop."""
+"""Worker process — pipeline ticks + RSS news ingest + daily Gmail summary."""
 
 from __future__ import annotations
 
@@ -7,11 +7,16 @@ import logging
 import os
 import signal
 import time
+from typing import Any
 
 from options_portal_domain.config import load_config, scan_symbols, watchlist_symbols
 from options_portal_domain.tz import ensure_tzdata
 from options_portal_domain.universe import scan_batch_size
-from options_portal_notify.daily_summary import maybe_send_daily_summary
+from options_portal_notify.daily_summary import (
+    QUIET_SUMMARY_REASONS,
+    daily_summary_config,
+    maybe_send_daily_summary,
+)
 from app.news_ingest import news_poll_loop
 from app.pipeline import run_symbol_tick
 
@@ -30,6 +35,18 @@ def _handle_stop(*_args: object) -> None:
     _stop.set()
 
 
+def _log_daily_summary_status(status: dict[str, Any]) -> None:
+    reason = str(status.get("reason") or "")
+    if status.get("sent"):
+        logger.info("Daily Gmail summary sent: %s", status)
+    elif reason in QUIET_SUMMARY_REASONS:
+        if reason == "non_trading_day":
+            logger.debug("Daily Gmail summary skipped: %s", status)
+    else:
+        # gmail_not_configured / smtp_failed / unexpected — surface at INFO
+        logger.info("Daily Gmail summary skipped: %s", status)
+
+
 async def _run_batch(symbols: list[str], cfg: dict) -> None:
     """Scan a batch of symbols with bounded concurrency."""
     trading = cfg.get("trading", {})
@@ -45,6 +62,39 @@ async def _run_batch(symbols: list[str], cfg: dict) -> None:
                 logger.exception("tick failed for %s", symbol)
 
     await asyncio.gather(*[_one(s) for s in symbols])
+
+
+async def daily_summary_poll_loop(stop_event: asyncio.Event) -> None:
+    """Poll 16:00 IST daily summary on its own cadence (not after full scans).
+
+    Full-universe scans can run many minutes (longer under live broker limits).
+    Soft-flatten fill emails fire mid-scan; the daily summary used to wait until
+    ``_run_batch`` returned, so a long/hung cycle after 15:20 could miss 16:00.
+    """
+    cfg = load_config()
+    poll_sec = daily_summary_config(cfg)["poll_interval_sec"]
+    logger.info(
+        "Daily summary schedule loop starting poll=%ss "
+        "(16:00 IST trading days; independent of scan cycle)",
+        poll_sec,
+    )
+    # Immediate check so a restart after 16:00 still sends the same day.
+    try:
+        _log_daily_summary_status(maybe_send_daily_summary(config=cfg))
+    except Exception:  # noqa: BLE001
+        logger.exception("Daily Gmail summary failed")
+    while not stop_event.is_set():
+        cfg = load_config()
+        poll_sec = daily_summary_config(cfg)["poll_interval_sec"]
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=poll_sec)
+            break
+        except TimeoutError:
+            try:
+                _log_daily_summary_status(maybe_send_daily_summary(config=cfg))
+            except Exception:  # noqa: BLE001
+                logger.exception("Daily Gmail summary failed")
+    logger.info("Daily summary schedule loop stopped")
 
 
 async def pipeline_loop() -> None:
@@ -82,21 +132,7 @@ async def pipeline_loop() -> None:
             elapsed,
             scan_batch_size(cfg.get("trading", {})),
         )
-        # Daily dry-run email summary at 16:00 IST (trading days only; needs GMAIL_APP_PASSWORD)
-        try:
-            summary_status = maybe_send_daily_summary(config=cfg)
-            if summary_status.get("sent"):
-                logger.info("Daily Gmail summary sent: %s", summary_status)
-            elif summary_status.get("reason") not in {
-                "not_due",
-                "disabled",
-                "non_trading_day",
-            }:
-                logger.info("Daily Gmail summary skipped: %s", summary_status)
-            elif summary_status.get("reason") == "non_trading_day":
-                logger.debug("Daily Gmail summary skipped: %s", summary_status)
-        except Exception:  # noqa: BLE001
-            logger.exception("Daily Gmail summary failed")
+        # Daily Gmail summary runs in daily_summary_poll_loop (not gated on scan).
         try:
             await asyncio.wait_for(_stop.wait(), timeout=interval)
         except TimeoutError:
@@ -105,16 +141,20 @@ async def pipeline_loop() -> None:
 
 
 async def loop() -> None:
-    """Run pipeline + news poller concurrently until stop."""
+    """Run pipeline + news + daily-summary pollers concurrently until stop."""
     news_task = asyncio.create_task(news_poll_loop(_stop), name="news-poll")
+    summary_task = asyncio.create_task(
+        daily_summary_poll_loop(_stop), name="daily-summary"
+    )
     try:
         await pipeline_loop()
     finally:
         _stop.set()
-        try:
-            await asyncio.wait_for(news_task, timeout=5)
-        except (TimeoutError, asyncio.CancelledError):
-            news_task.cancel()
+        for task in (news_task, summary_task):
+            try:
+                await asyncio.wait_for(task, timeout=5)
+            except (TimeoutError, asyncio.CancelledError):
+                task.cancel()
 
 
 def main() -> None:

@@ -10,6 +10,9 @@ import pytest
 
 from options_portal_domain.tz import ist
 from options_portal_notify.daily_summary import (
+    DEFAULT_POLL_SEC,
+    QUIET_SUMMARY_REASONS,
+    daily_summary_config,
     fills_for_ist_day,
     load_last_sent_day,
     maybe_send_daily_summary,
@@ -313,14 +316,31 @@ def test_build_notifier_excludes_gmail(clear_gmail_env, monkeypatch: pytest.Monk
 
 
 def test_should_send_daily_summary_window():
-    # Monday 2026-11-16 (trading day)
+    # Monday 2026-11-16 (trading day) — open-ended after 16:00 IST (not a narrow slot)
     before = datetime(2026, 11, 16, 15, 59, tzinfo=ist())
     after = datetime(2026, 11, 16, 16, 0, tzinfo=ist())
+    late = datetime(2026, 11, 16, 18, 30, tzinfo=ist())
     assert should_send_daily_summary(before, last_sent=None) is False
     assert should_send_daily_summary(after, last_sent=None) is True
+    assert should_send_daily_summary(late, last_sent=None) is True
     assert (
         should_send_daily_summary(after, last_sent=date(2026, 11, 16)) is False
     )
+
+
+def test_daily_summary_config_poll_interval(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("DAILY_SUMMARY_POLL_SEC", raising=False)
+    cfg = daily_summary_config(
+        {"notify": {"daily_summary": {"enabled": True, "poll_interval_sec": 45}}}
+    )
+    assert cfg["poll_interval_sec"] == 45
+    assert cfg["hour_ist"] == 16
+    monkeypatch.setenv("DAILY_SUMMARY_POLL_SEC", "15")
+    cfg_env = daily_summary_config({"notify": {"daily_summary": {}}})
+    assert cfg_env["poll_interval_sec"] == 15
+    monkeypatch.delenv("DAILY_SUMMARY_POLL_SEC", raising=False)
+    assert daily_summary_config({})["poll_interval_sec"] == DEFAULT_POLL_SEC
+    assert "not_due" in QUIET_SUMMARY_REASONS
 
 
 def test_fills_for_ist_day():

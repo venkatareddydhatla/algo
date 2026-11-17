@@ -17,16 +17,25 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_HOUR_IST = 16
 DEFAULT_MINUTE_IST = 0
+# Independent of full-universe scan duration — poll often enough to hit ~16:00 IST.
+DEFAULT_POLL_SEC = 30
 _STATE_FILENAME = "notify_daily_summary_state.json"
+# Reasons that are routine (do not INFO-log on every poll).
+QUIET_SUMMARY_REASONS = frozenset({"not_due", "disabled", "non_trading_day"})
 
 
 def daily_summary_config(config: dict[str, Any] | None = None) -> dict[str, Any]:
     notify = (config or {}).get("notify") or {}
     raw = notify.get("daily_summary") or {}
+    poll = raw.get("poll_interval_sec", DEFAULT_POLL_SEC)
+    env_poll = os.environ.get("DAILY_SUMMARY_POLL_SEC")
+    if env_poll is not None and str(env_poll).strip() != "":
+        poll = env_poll
     return {
         "enabled": bool(raw.get("enabled", True)),
         "hour_ist": int(raw.get("hour_ist", DEFAULT_HOUR_IST)),
         "minute_ist": int(raw.get("minute_ist", DEFAULT_MINUTE_IST)),
+        "poll_interval_sec": max(5, int(poll)),
     }
 
 

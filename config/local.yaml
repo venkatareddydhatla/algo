@@ -184,6 +184,8 @@ notify:
     enabled: true
     hour_ist: 16
     minute_ist: 0
+    # Worker polls on this cadence (independent of full-universe scan length).
+    poll_interval_sec: 30
 
 persistence:
   postgres_url_env: DATABASE_URL
