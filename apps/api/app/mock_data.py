@@ -121,15 +121,25 @@ MOCK_TRADES: dict[str, Any] = {
     "positions": [
         {
             "symbol": "NIFTY 24500 CE",
+            "side": "long",
             "qty": 25,
             "avg_price": 138.0,
             "unrealized_pnl": 1125.0,
+            "opened_at": "2026-11-15T04:05:00+00:00",
+            "entry_ts": "2026-11-15T04:05:00+00:00",
+            "opened_at_ist_display": "2026-11-15 09:35 IST",
+            "entry_ts_ist_display": "2026-11-15 09:35 IST",
         },
         {
             "symbol": "RELIANCE 2920 PE",
+            "side": "short",
             "qty": 250,
             "avg_price": 64.5,
             "unrealized_pnl": -2400.0,
+            "opened_at": "2026-11-14T05:00:00+00:00",
+            "entry_ts": "2026-11-14T05:00:00+00:00",
+            "opened_at_ist_display": "2026-11-14 10:30 IST",
+            "entry_ts_ist_display": "2026-11-14 10:30 IST",
         },
     ],
     "fills": [

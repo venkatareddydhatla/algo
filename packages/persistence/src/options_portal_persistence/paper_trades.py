@@ -56,6 +56,46 @@ def _format_ist(dt: datetime) -> tuple[str, str]:
     return local.isoformat(), local.strftime("%Y-%m-%d %H:%M IST")
 
 
+def _position_entry_fields(opened_at: Any) -> dict[str, Any]:
+    """Wire ``opened_at`` / ``entry_ts`` + IST display for Open positions UI.
+
+    ``opened_at`` is stored as UTC ISO when the leg is entered. Display matches
+    Closed trades Entry (IST): ``YYYY-MM-DD HH:MM IST``.
+    """
+    raw = str(opened_at).strip() if opened_at is not None else ""
+    if not raw:
+        return {
+            "opened_at": None,
+            "entry_ts": None,
+            "opened_at_ist_display": "—",
+            "entry_ts_ist_display": "—",
+        }
+    if raw.endswith(" IST"):
+        return {
+            "opened_at": raw,
+            "entry_ts": raw,
+            "opened_at_ist_display": raw,
+            "entry_ts_ist_display": raw,
+        }
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return {
+            "opened_at": raw,
+            "entry_ts": raw,
+            "opened_at_ist_display": "—",
+            "entry_ts_ist_display": "—",
+        }
+    ts_ist, ts_display = _format_ist(dt)
+    return {
+        "opened_at": raw,
+        "entry_ts": raw,
+        "opened_at_ist": ts_ist,
+        "opened_at_ist_display": ts_display,
+        "entry_ts_ist_display": ts_display,
+    }
+
+
 def _row_to_fill(row: sqlite3.Row) -> dict[str, Any]:
     return {
         "id": row["id"],
@@ -384,6 +424,7 @@ class PaperTradeStore:
                 upnl = 0.0
                 mark_source = "none"
             day_unrealized += upnl
+            entry = _position_entry_fields(p.get("opened_at"))
             positions.append(
                 {
                     "symbol": p["symbol"],
@@ -393,7 +434,7 @@ class PaperTradeStore:
                     "mark_price": mark_px,
                     "mark_source": mark_source,
                     "unrealized_pnl": upnl,
-                    "opened_at": p["opened_at"],
+                    **entry,
                 }
             )
         return {

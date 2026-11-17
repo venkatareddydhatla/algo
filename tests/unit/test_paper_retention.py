@@ -83,6 +83,33 @@ def test_archive_and_purge_clears_ledger(paper_env: Path):
     assert int(n) == 1
 
 
+def test_position_entry_fields_formats_utc_as_ist():
+    from options_portal_persistence.paper_trades import _position_entry_fields
+
+    fields = _position_entry_fields("2026-11-15T04:05:00+00:00")
+    assert fields["opened_at"] == "2026-11-15T04:05:00+00:00"
+    assert fields["entry_ts"] == fields["opened_at"]
+    assert fields["entry_ts_ist_display"] == "2026-11-15 09:35 IST"
+    assert fields["opened_at_ist_display"] == "2026-11-15 09:35 IST"
+
+
+def test_open_positions_include_entry_ist_display(paper_env: Path):
+    """Open positions expose opened_at / entry_ts + YYYY-MM-DD HH:MM IST."""
+    store = PaperTradeStore()
+    _sim_fill(store, "RELIANCE", "open-ist", price=1400.0)
+    summary = store.summary(mode="dry_run")
+    assert len(summary["positions"]) == 1
+    pos = summary["positions"][0]
+    assert pos["symbol"] == "RELIANCE"
+    assert pos["opened_at"]
+    assert pos["entry_ts"] == pos["opened_at"]
+    assert str(pos["entry_ts_ist_display"]).endswith("IST")
+    assert str(pos["opened_at_ist_display"]).endswith("IST")
+    assert pos["entry_ts_ist_display"] == pos["opened_at_ist_display"]
+    # Closed-trades Entry (IST) style: YYYY-MM-DD HH:MM IST
+    assert len(str(pos["entry_ts_ist_display"]).split()) == 3
+
+
 def test_purge_closed_trades_keeps_open_positions(paper_env: Path):
     store = PaperTradeStore()
     _sim_round_trip(store, "BPCL", "closed-1", 500.0, 996.96)
