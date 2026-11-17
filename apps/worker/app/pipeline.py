@@ -9,7 +9,7 @@ from typing import Any
 from options_portal_broker.adapter import UpstoxAdapter
 from options_portal_domain.calendar import is_nse_trading_day
 from options_portal_domain.config import load_config, trading_mode
-from options_portal_domain.equity import plan_equity_intents
+from options_portal_domain.equity import plan_equity_intents, resolve_equity_mark
 from options_portal_domain.session_gates import (
     MarketSentimentPolicy,
     SoftEodPolicy,
@@ -150,8 +150,8 @@ async def run_symbol_tick(symbol: str, config: dict[str, Any] | None = None) -> 
         "candle_count": len(candles),
     }
 
-    last_price = float(candles[-1].close) if candles else 0.0
-    result["last_price"] = last_price
+    candle_close = float(candles[-1].close) if candles else 0.0
+    result["last_price"] = candle_close
 
     if not _equity_enabled(cfg):
         result["order"] = None
@@ -169,6 +169,7 @@ async def run_symbol_tick(symbol: str, config: dict[str, Any] | None = None) -> 
 
     open_side = None
     open_qty = 0
+    entry_avg: float | None = None
     portfolio: dict[str, Any] = {}
     if paper is not None and paper.available:
         safe_mode_for_ledger = "dry_run" if mode == "live" else mode
@@ -177,6 +178,10 @@ async def run_symbol_tick(symbol: str, config: dict[str, Any] | None = None) -> 
         if pos:
             open_side = pos.get("side")
             open_qty = int(pos.get("qty") or 0)
+            try:
+                entry_avg = float(pos.get("avg_price") or 0) or None
+            except (TypeError, ValueError):
+                entry_avg = None
 
     soft_policy = SoftEodPolicy.from_config(cfg)
     mkt_policy = MarketSentimentPolicy.from_config(cfg)
@@ -233,6 +238,47 @@ async def run_symbol_tick(symbol: str, config: dict[str, Any] | None = None) -> 
         )
         return result
 
+    # Live LTP for paper fill marks (entry / exit / soft_flatten / cover).
+    # Historical candle close alone can be stale and equal entry → +0 PnL.
+    # Fetch only when we may place an order (skip idle HOLD with no position).
+    may_trade = (
+        flatten["action"] == "flatten"
+        or decision.action != SignalAction.HOLD
+        or (open_qty > 0 and open_side is not None)
+    )
+    ltp_px: float | None = None
+    if may_trade:
+        try:
+            quote = await broker.get_ltp(symbol)
+            if quote and quote.get("last_price") is not None:
+                raw_ltp = float(quote["last_price"])
+                if raw_ltp > 0:
+                    ltp_px = raw_ltp
+        except Exception:  # noqa: BLE001
+            logger.exception("%s get_ltp failed while resolving equity mark", symbol)
+
+    mark = resolve_equity_mark(
+        ltp=ltp_px,
+        candle_close=candle_close or None,
+        entry_avg=entry_avg if open_qty > 0 else None,
+    )
+    fill_price = mark.price
+    result["mark_price"] = fill_price
+    result["mark_source"] = mark.source
+    result["quote_source"] = getattr(broker, "last_quote_source", mark.source)
+    if may_trade:
+        if mark.source == "ltp":
+            logger.info("%s equity mark LTP=%.4f", symbol, fill_price)
+        else:
+            logger.warning(
+                "%s equity mark FALLBACK source=%s price=%.4f detail=%s "
+                "(prefer live LTP; entry-copy yields useless +0 PnL)",
+                symbol,
+                mark.source,
+                fill_price,
+                mark.detail,
+            )
+
     if flatten["action"] == "flatten":
         logger.info("%s %s", symbol, flatten["reason"])
         intents = plan_equity_intents(
@@ -241,7 +287,7 @@ async def run_symbol_tick(symbol: str, config: dict[str, Any] | None = None) -> 
             open_side=open_side,  # type: ignore[arg-type]
             open_qty=open_qty,
             qty=share_qty,
-            price=last_price or 1.0,
+            price=fill_price,
             reason=flatten["reason"],
         )
     else:
@@ -251,7 +297,7 @@ async def run_symbol_tick(symbol: str, config: dict[str, Any] | None = None) -> 
             open_side=open_side,  # type: ignore[arg-type]
             open_qty=open_qty,
             qty=share_qty,
-            price=last_price or 1.0,
+            price=fill_price,
             reason=reason_summary,
         )
 

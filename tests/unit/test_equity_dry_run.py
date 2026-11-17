@@ -6,11 +6,66 @@ from pathlib import Path
 
 import pytest
 
-from options_portal_domain.equity import plan_equity_intents
+from options_portal_domain.equity import (
+    plan_equity_intents,
+    realized_equity_pnl,
+    resolve_equity_mark,
+    unrealized_equity_pnl,
+)
 from options_portal_domain.types import OrderResult, SignalAction
 from options_portal_persistence.paper_trades import PaperTradeStore
 from options_portal_risk.gates import DefaultRiskGate
 from options_portal_risk.order_router import SafeOrderRouter
+
+
+def test_resolve_equity_mark_prefers_ltp():
+    mark = resolve_equity_mark(
+        ltp=14350.25,
+        candle_close=14346.45,
+        entry_avg=14346.45,
+    )
+    assert mark.source == "ltp"
+    assert mark.price == pytest.approx(14350.25)
+
+
+def test_resolve_equity_mark_falls_back_to_candle_then_entry():
+    candle = resolve_equity_mark(
+        ltp=None,
+        candle_close=14340.0,
+        entry_avg=14346.45,
+    )
+    assert candle.source == "candle_close"
+    assert candle.price == pytest.approx(14340.0)
+    assert "LTP unavailable" in candle.detail
+
+    entry = resolve_equity_mark(ltp=None, candle_close=None, entry_avg=14346.45)
+    assert entry.source == "entry_avg"
+    assert entry.price == pytest.approx(14346.45)
+    assert "PnL will be 0" in entry.detail
+
+
+def test_realized_and_unrealized_pnl_math():
+    assert realized_equity_pnl("long", 100.0, 110.0, 2) == pytest.approx(20.0)
+    assert realized_equity_pnl("short", 200.0, 180.0, 1) == pytest.approx(20.0)
+    assert realized_equity_pnl("long", 14346.45, 14346.45, 1) == pytest.approx(0.0)
+    assert unrealized_equity_pnl("long", 100.0, 105.0, 3) == pytest.approx(15.0)
+    assert unrealized_equity_pnl("short", 100.0, 90.0, 2) == pytest.approx(20.0)
+
+
+def test_exit_intent_uses_provided_mark_not_entry():
+    """soft_flatten / signal exit must carry live mark into limit_price."""
+    exit_i = plan_equity_intents(
+        "MIDCPNIFTY",
+        SignalAction.HOLD,
+        open_side="long",
+        open_qty=1,
+        qty=1,
+        price=14355.10,  # live mark at close — not entry 14346.45
+        reason="soft_flatten_ist=15:20: close long",
+    )[0]
+    assert exit_i.action_kind == "exit"
+    assert exit_i.limit_price == pytest.approx(14355.10)
+    assert exit_i.limit_price != pytest.approx(14346.45)
 
 
 def test_plan_ce_bias_buys_long():
@@ -306,6 +361,50 @@ def test_paper_ledger_short_cover_pnl(paper_env: Path):
         OrderResult("c2", "simulated", "dry_run", "SIM-c2", None),
     )
     assert meta["realized_pnl"] == pytest.approx(20.0)
+
+
+def test_paper_ledger_exit_mark_pnl_and_upnl_marks(paper_env: Path):
+    """Exit fill stores mark ≠ entry; summary uPnL uses live marks map."""
+    store = PaperTradeStore()
+    entry = plan_equity_intents(
+        "MIDCPNIFTY",
+        SignalAction.BUY_CE_BIAS,
+        open_side=None,
+        open_qty=0,
+        qty=1,
+        price=14346.45,
+        reason="entry",
+    )[0]
+    store.record_simulated_fill(
+        entry,
+        OrderResult("m1", "simulated", "dry_run", "SIM-m1", None),
+    )
+    # Open uPnL with live mark
+    snap = store.summary(marks={"MIDCPNIFTY": 14360.0})
+    assert len(snap["positions"]) == 1
+    assert snap["positions"][0]["mark_source"] == "ltp"
+    assert snap["positions"][0]["mark_price"] == pytest.approx(14360.0)
+    assert snap["positions"][0]["unrealized_pnl"] == pytest.approx(13.55)
+    assert snap["day_unrealized"] == pytest.approx(13.55)
+
+    exit_i = plan_equity_intents(
+        "MIDCPNIFTY",
+        SignalAction.HOLD,
+        open_side="long",
+        open_qty=1,
+        qty=1,
+        price=14360.0,
+        reason="soft_flatten",
+    )[0]
+    meta = store.record_simulated_fill(
+        exit_i,
+        OrderResult("m2", "simulated", "dry_run", "SIM-m2", None),
+    )
+    assert meta["realized_pnl"] == pytest.approx(13.55)
+    closed = store.summary()["closed_trades"][0]
+    assert closed["entry_price"] == pytest.approx(14346.45)
+    assert closed["exit_price"] == pytest.approx(14360.0)
+    assert closed["pnl"] == pytest.approx(13.55)
 
 
 @pytest.mark.asyncio

@@ -7,8 +7,11 @@ Credentials (never commit values — env names only):
   UPSTOX_INSTRUMENT_MAP (optional JSON symbol→instrument_key overrides)
 
 When ``UPSTOX_ACCESS_TOKEN`` is present, ``get_candles`` calls Upstox Historical
-Candle V3. On missing token, unresolved instrument, or HTTP failure → synthetic
-candles (current dry-run fallback). Live order placement remains blocked.
+Candle V3 and ``get_ltp`` hits market-quote/ltp. Equity dry-run paper fills
+prefer LTP as the fill mark (exit/entry/soft_flatten); candle close is only a
+logged fallback when LTP is unavailable. On missing token, unresolved
+instrument, or HTTP failure → synthetic candles (current dry-run fallback).
+Live order placement remains blocked.
 """
 
 from __future__ import annotations

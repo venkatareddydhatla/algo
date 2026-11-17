@@ -1,4 +1,18 @@
-"""Equity dry-run order intents (share buy/sell — not options CE/PE)."""
+"""Equity dry-run order intents (share buy/sell — not options CE/PE).
+
+Fill / mark prices
+------------------
+Paper fills (entry, exit, soft_flatten, cover) should use a **live market mark**
+when market data is available:
+
+1. **Preferred:** Upstox (or configured MD) last traded price / LTP for the symbol.
+2. **Fallback:** last candle close — logged as a warning (historical bars can be
+   stale vs live LTP; exit may incorrectly match entry).
+3. **Last resort:** open position entry avg — logged loudly (realized PnL will be
+   0; investigate MD rather than silently copying entry).
+
+Never silently reuse entry price when LTP succeeded.
+"""
 
 from __future__ import annotations
 
@@ -10,6 +24,7 @@ from options_portal_domain.types import SignalAction
 EquitySide = Literal["BUY", "SELL"]
 PositionSide = Literal["long", "short"]
 EquityActionKind = Literal["entry", "exit", "flip_close", "flip_open"]
+EquityMarkSource = Literal["ltp", "candle_close", "entry_avg", "fallback"]
 
 
 @dataclass(frozen=True)
@@ -25,6 +40,86 @@ class EquityOrderIntent:
     # Desired open side after this fill (None = flat / closed)
     resulting_position: PositionSide | None
     signal_action: str
+
+
+@dataclass(frozen=True)
+class EquityMark:
+    """Resolved fill / mark-to-market price with provenance."""
+
+    price: float
+    source: EquityMarkSource
+    detail: str = ""
+
+
+def resolve_equity_mark(
+    *,
+    ltp: float | None = None,
+    candle_close: float | None = None,
+    entry_avg: float | None = None,
+    min_price: float = 0.01,
+) -> EquityMark:
+    """Pick an equity mark: LTP → candle close → entry avg → min fallback.
+
+    Callers must log when ``source != "ltp"`` so stale/entry-copy is never silent
+    while market data is expected to be healthy.
+    """
+    if ltp is not None and float(ltp) > 0:
+        return EquityMark(
+            price=float(ltp),
+            source="ltp",
+            detail="live market last/LTP",
+        )
+    if candle_close is not None and float(candle_close) > 0:
+        return EquityMark(
+            price=float(candle_close),
+            source="candle_close",
+            detail=(
+                "LTP unavailable — using last candle close "
+                "(may match entry if historical bars are stale)"
+            ),
+        )
+    if entry_avg is not None and float(entry_avg) > 0:
+        return EquityMark(
+            price=float(entry_avg),
+            source="entry_avg",
+            detail=(
+                "LTP and candle close unavailable — reusing entry avg "
+                "(PnL will be 0; investigate market data)"
+            ),
+        )
+    return EquityMark(
+        price=float(min_price),
+        source="fallback",
+        detail="no mark available — using minimum fallback price",
+    )
+
+
+def realized_equity_pnl(
+    position_side: PositionSide | str,
+    entry_avg: float,
+    exit_mark: float,
+    qty: int,
+) -> float:
+    """Realized PnL: long (exit−entry)×qty; short (entry−exit)×qty."""
+    q = max(0, int(qty))
+    entry = float(entry_avg)
+    exit_px = float(exit_mark)
+    side = str(position_side).strip().lower()
+    if side == "long":
+        return (exit_px - entry) * q
+    if side == "short":
+        return (entry - exit_px) * q
+    raise ValueError(f"unknown position_side={position_side!r}")
+
+
+def unrealized_equity_pnl(
+    position_side: PositionSide | str,
+    entry_avg: float,
+    mark: float,
+    qty: int,
+) -> float:
+    """Mark-to-market uPnL (same geometry as realized vs a live mark)."""
+    return realized_equity_pnl(position_side, entry_avg, mark, qty)
 
 
 def plan_equity_intents(

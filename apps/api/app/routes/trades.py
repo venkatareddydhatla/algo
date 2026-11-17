@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Annotated
+import logging
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Query
 
@@ -13,7 +14,43 @@ from options_portal_domain.round_trips import (
     sort_closed_trades_newest_first,
 )
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/v1", tags=["trades"])
+
+
+async def _live_marks_for_symbols(symbols: list[str]) -> dict[str, float]:
+    """Best-effort Upstox LTP map for open-position uPnL (never raises)."""
+    uniq = sorted({str(s).upper() for s in symbols if s})
+    if not uniq:
+        return {}
+    marks: dict[str, float] = {}
+    try:
+        from options_portal_broker.adapter import UpstoxAdapter
+
+        broker = UpstoxAdapter()
+        try:
+            for sym in uniq:
+                try:
+                    quote = await broker.get_ltp(sym)
+                except Exception:  # noqa: BLE001
+                    logger.exception("trades uPnL LTP failed for %s", sym)
+                    continue
+                if not quote or quote.get("last_price") is None:
+                    logger.warning(
+                        "trades uPnL: no LTP for %s (source=%s) — leaving uPnL 0",
+                        sym,
+                        getattr(broker, "last_quote_source", "unknown"),
+                    )
+                    continue
+                px = float(quote["last_price"])
+                if px > 0:
+                    marks[sym] = px
+        finally:
+            await broker.aclose()
+    except Exception:  # noqa: BLE001
+        logger.exception("trades uPnL mark enrichment unavailable")
+    return marks
 
 
 @router.get("/trades")
@@ -29,6 +66,7 @@ async def trades_summary(
 
     ``fills`` / ``closed_trades`` are paired entry+exit rows (LONG/SHORT), matching
     Backtest Fills and the daily summary email. Open legs stay under ``positions``.
+    Open-position uPnL uses live LTP marks when market data is available.
     """
     mode = trading_mode()
     safe_mode = "dry_run" if mode == "live" else mode
@@ -38,12 +76,16 @@ async def trades_summary(
 
         store = PaperTradeStore()
         if store.available:
-            payload = store.summary(
+            open_syms = store.open_symbols(mode=safe_mode)  # type: ignore[arg-type]
+            marks = await _live_marks_for_symbols(list(open_syms))
+            payload: dict[str, Any] = store.summary(
                 mode=safe_mode,  # type: ignore[arg-type]
                 fills_limit=limit,
                 fills_offset=offset,
+                marks=marks or None,
             )
             payload["requested_mode"] = mode
+            payload["marks_applied"] = sorted(marks.keys())
             payload["retention"] = {
                 **payload.get("retention", {}),
                 **retention,

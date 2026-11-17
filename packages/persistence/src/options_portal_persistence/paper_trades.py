@@ -18,7 +18,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from options_portal_domain.equity import EquityOrderIntent, PositionSide
+from options_portal_domain.equity import (
+    EquityOrderIntent,
+    PositionSide,
+    realized_equity_pnl,
+    unrealized_equity_pnl,
+)
 from options_portal_domain.round_trips import (
     pair_round_trip_trades,
     sort_closed_trades_newest_first,
@@ -196,10 +201,10 @@ class PaperTradeStore:
                 if pos:
                     avg = float(pos["avg_price"])
                     qty = int(intent.qty)
-                    if pos["side"] == "long":
-                        realized = (float(intent.limit_price) - avg) * qty
-                    else:
-                        realized = (avg - float(intent.limit_price)) * qty
+                    exit_mark = float(intent.limit_price)
+                    realized = realized_equity_pnl(
+                        str(pos["side"]), avg, exit_mark, qty
+                    )
                     conn.execute(
                         "DELETE FROM paper_positions WHERE mode = ? AND symbol = ?",
                         (mode, intent.symbol),
@@ -338,6 +343,7 @@ class PaperTradeStore:
         mode: TradingMode = "dry_run",
         fills_limit: int = 50,
         fills_offset: int = 0,
+        marks: dict[str, float] | None = None,
     ) -> dict[str, Any]:
         """Portfolio snapshot with **closed round-trip** rows as primary ``fills``.
 
@@ -345,6 +351,9 @@ class PaperTradeStore:
         Still-open legs appear only under ``positions``. Raw leg count is
         ``raw_fills_total``. Pairing uses ``pair_round_trip_trades`` (shared with
         the daily summary email).
+
+        Pass ``marks`` (symbol → live LTP / last) to compute unrealized PnL.
+        Without marks, uPnL stays 0 and ``mark_source`` is ``none``.
         """
         positions_raw = self.list_positions(mode=mode)
         raw_fills_total = self.count_fills(mode=mode)
@@ -354,17 +363,38 @@ class PaperTradeStore:
         off = max(0, int(fills_offset))
         page = closed[off : off + lim]
         day_realized = self.day_realized_pnl(mode=mode)
-        positions = [
-            {
-                "symbol": p["symbol"],
-                "side": p["side"],
-                "qty": int(p["qty"]),
-                "avg_price": float(p["avg_price"]),
-                "unrealized_pnl": 0.0,  # mark-to-market deferred; spot not cached here
-                "opened_at": p["opened_at"],
-            }
-            for p in positions_raw
-        ]
+        mark_map = {
+            str(sym).upper(): float(px)
+            for sym, px in (marks or {}).items()
+            if px is not None and float(px) > 0
+        }
+        positions: list[dict[str, Any]] = []
+        day_unrealized = 0.0
+        for p in positions_raw:
+            sym = str(p["symbol"]).upper()
+            avg = float(p["avg_price"])
+            qty = int(p["qty"])
+            side = str(p["side"])
+            mark_px = mark_map.get(sym)
+            if mark_px is not None:
+                upnl = unrealized_equity_pnl(side, avg, mark_px, qty)
+                mark_source = "ltp"
+            else:
+                upnl = 0.0
+                mark_source = "none"
+            day_unrealized += upnl
+            positions.append(
+                {
+                    "symbol": p["symbol"],
+                    "side": side,
+                    "qty": qty,
+                    "avg_price": avg,
+                    "mark_price": mark_px,
+                    "mark_source": mark_source,
+                    "unrealized_pnl": upnl,
+                    "opened_at": p["opened_at"],
+                }
+            )
         return {
             "mode": mode,
             "instrument": "equity",
@@ -381,7 +411,7 @@ class PaperTradeStore:
             "closed_trades_total": len(closed),
             "raw_fills_total": raw_fills_total,
             "day_realized": day_realized,
-            "day_unrealized": 0.0,
+            "day_unrealized": day_unrealized,
             "fees_est": 0.0,
             "open_symbols": [p["symbol"] for p in positions],
             "retention": {
@@ -390,7 +420,8 @@ class PaperTradeStore:
                 "note": (
                     "Dry-run fills are retained until an explicit purge/archive "
                     "before live. Trades UI shows closed round-trips (paginated; "
-                    "not today-only). Open legs stay under Open positions."
+                    "not today-only). Open legs stay under Open positions. "
+                    "uPnL uses live LTP marks when market data is available."
                 ),
             },
         }
