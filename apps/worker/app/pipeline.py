@@ -238,8 +238,9 @@ async def run_symbol_tick(symbol: str, config: dict[str, Any] | None = None) -> 
         )
         return result
 
-    # Live LTP for paper fill marks (entry / exit / soft_flatten / cover).
+    # Live LTP for THIS symbol only (entry / exit / soft_flatten / cover).
     # Historical candle close alone can be stale and equal entry → +0 PnL.
+    # Never reuse another symbol's quote / entry avg / synthetic close.
     # Fetch only when we may place an order (skip idle HOLD with no position).
     may_trade = (
         flatten["action"] == "flatten"
@@ -251,15 +252,25 @@ async def run_symbol_tick(symbol: str, config: dict[str, Any] | None = None) -> 
         try:
             quote = await broker.get_ltp(symbol)
             if quote and quote.get("last_price") is not None:
-                raw_ltp = float(quote["last_price"])
-                if raw_ltp > 0:
-                    ltp_px = raw_ltp
+                # Guard: adapter must echo the requested symbol
+                q_sym = str(quote.get("symbol") or "").strip().upper()
+                if q_sym and q_sym != symbol.upper():
+                    logger.error(
+                        "%s get_ltp returned mismatched symbol=%s — ignoring quote",
+                        symbol,
+                        q_sym,
+                    )
+                else:
+                    raw_ltp = float(quote["last_price"])
+                    if raw_ltp > 0:
+                        ltp_px = raw_ltp
         except Exception:  # noqa: BLE001
             logger.exception("%s get_ltp failed while resolving equity mark", symbol)
 
     mark = resolve_equity_mark(
         ltp=ltp_px,
         candle_close=candle_close or None,
+        # entry_avg from get_position(symbol) — never a global last-fill price
         entry_avg=entry_avg if open_qty > 0 else None,
     )
     fill_price = mark.price

@@ -253,7 +253,13 @@ class UpstoxAdapter:
         return _parse_upstox_candles(symbol, timeframe, raw_candles)
 
     async def get_ltp(self, symbol: str) -> dict[str, Any] | None:
-        """Fetch last traded price quote when token present; None on failure."""
+        """Fetch last traded price for ``symbol`` only (never another instrument).
+
+        Upstox V2 ``/v2/market-quote/ltp`` expects query param ``symbol`` (comma-
+        separated instrument keys). Response ``data`` may contain multiple quotes;
+        we match the requested instrument_key / tradingsymbol and reject mismatches
+        so one symbol's LTP cannot price another symbol's paper fill.
+        """
         if not self.access_token:
             self.last_quote_source = "synthetic"
             return None
@@ -263,30 +269,54 @@ class UpstoxAdapter:
             return None
         client = await self._get_client()
         try:
+            # V2 OpenAPI name is ``symbol`` (value = instrument_key). Passing the
+            # wrong query name caused empty/failed LTP and synthetic fallbacks that
+            # collided across equities (shared base-1000 close ≈ 360ONE entry).
             resp = await client.get(
                 f"{self.base_url}{QUOTE_LTP_PATH}",
-                params={"instrument_key": instrument_key},
+                params={"symbol": instrument_key},
                 headers=self._auth_headers(),
             )
             resp.raise_for_status()
             payload = resp.json()
-            data = payload.get("data") or {}
-            # Response keyed by exchange:tradingsymbol variants
-            for _key, quote in data.items():
-                if isinstance(quote, dict) and "last_price" in quote:
-                    self.last_quote_source = "upstox"
-                    return {
-                        "symbol": symbol,
-                        "instrument_key": instrument_key,
-                        "last_price": float(quote["last_price"]),
-                        "source": "upstox",
-                    }
-            self.last_quote_source = "synthetic"
-            return None
+            last_price = select_ltp_from_quote_data(
+                payload.get("data"),
+                symbol=symbol,
+                instrument_key=instrument_key,
+            )
+            if last_price is None:
+                self.last_quote_source = "synthetic"
+                logger.warning(
+                    "Upstox LTP response had no matching quote for %s (%s)",
+                    symbol,
+                    instrument_key,
+                )
+                return None
+            self.last_quote_source = "upstox"
+            return {
+                "symbol": symbol.upper(),
+                "instrument_key": instrument_key,
+                "last_price": last_price,
+                "source": "upstox",
+            }
         except Exception:  # noqa: BLE001
             logger.exception("Upstox LTP fetch failed for %s", symbol)
             self.last_quote_source = "synthetic"
             return None
+
+    async def get_ltp_map(self, symbols: Sequence[str]) -> dict[str, float]:
+        """Batch LTP fetch keyed by uppercased symbol (skips unknowns / failures)."""
+        out: dict[str, float] = {}
+        for raw in symbols:
+            sym = str(raw or "").strip().upper()
+            if not sym or sym in out:
+                continue
+            quote = await self.get_ltp(sym)
+            if quote and quote.get("last_price") is not None:
+                px = float(quote["last_price"])
+                if px > 0:
+                    out[sym] = px
+        return out
 
     async def get_option_chain(self, symbol: str, expiry: date) -> dict[str, Any]:
         """Synthetic ATM-centered chain for dry-run / local demos.
@@ -294,9 +324,7 @@ class UpstoxAdapter:
         Live option-chain REST wiring is out of scope for this PR; spot may use
         live LTP when token present.
         """
-        spot = {"NIFTY": 24500.0, "BANKNIFTY": 52000.0, "RELIANCE": 2920.0, "TCS": 3900.0}.get(
-            symbol.upper(), 1000.0
-        )
+        spot = _synthetic_base_price(symbol)
         quote = await self.get_ltp(symbol)
         if quote and quote.get("last_price"):
             spot = float(quote["last_price"])
@@ -406,6 +434,90 @@ class UpstoxAdapter:
         }
 
 
+def select_ltp_from_quote_data(
+    data: Any,
+    *,
+    symbol: str,
+    instrument_key: str,
+) -> float | None:
+    """Pick ``last_price`` for the requested symbol/instrument only.
+
+    Upstox LTP ``data`` is normally a map keyed by ``EXCHANGE:TRADINGSYMBOL``
+    (e.g. ``NSE_EQ:BPCL``) with ``instrument_token`` / ``last_price``. Never return
+    the first quote blindly — a multi-instrument payload would cross-contaminate
+    exit marks across the paper ledger.
+    """
+    sym = str(symbol or "").strip().upper()
+    ikey = str(instrument_key or "").strip()
+    if not sym or not ikey:
+        return None
+
+    entries: list[tuple[str, dict[str, Any]]] = []
+    if isinstance(data, dict):
+        for key, quote in data.items():
+            if isinstance(quote, dict):
+                entries.append((str(key), quote))
+    elif isinstance(data, list):
+        for item in data:
+            if isinstance(item, dict):
+                key = str(
+                    item.get("instrument_key")
+                    or item.get("instrument_token")
+                    or item.get("symbol")
+                    or ""
+                )
+                entries.append((key, item))
+    else:
+        return None
+
+    def _token(quote: dict[str, Any]) -> str:
+        return str(
+            quote.get("instrument_token")
+            or quote.get("instrument_key")
+            or ""
+        ).strip()
+
+    def _price(quote: dict[str, Any]) -> float | None:
+        raw = quote.get("last_price")
+        if raw is None:
+            return None
+        try:
+            px = float(raw)
+        except (TypeError, ValueError):
+            return None
+        return px if px > 0 else None
+
+    # 1) Exact instrument_token / instrument_key match
+    for _key, quote in entries:
+        if _token(quote) == ikey:
+            px = _price(quote)
+            if px is not None:
+                return px
+
+    # 2) Response map key encodes tradingsymbol (NSE_EQ:BPCL / NSE_INDEX:Nifty 50)
+    for key, quote in entries:
+        key_u = key.upper().replace("|", ":")
+        if key_u.endswith(f":{sym}") or key_u == sym or key_u.endswith(f"|{sym}"):
+            px = _price(quote)
+            if px is not None:
+                return px
+        # Index underlyings: key may be "NSE_INDEX:Nifty 50" while symbol is NIFTY
+        token = _token(quote)
+        if token == ikey or token.replace("|", ":") == ikey.replace("|", ":"):
+            px = _price(quote)
+            if px is not None:
+                return px
+
+    # 3) Single-entry payload: accept only if token empty or matches
+    if len(entries) == 1:
+        key, quote = entries[0]
+        token = _token(quote)
+        if not token or token == ikey or sym in key.upper():
+            return _price(quote)
+
+    return None
+
+
 def _parse_upstox_candles(
     symbol: str,
     timeframe: Timeframe,
@@ -458,15 +570,32 @@ def _parse_ts(value: Any) -> datetime | None:
     return dt.astimezone(timezone.utc)
 
 
+def _synthetic_base_price(symbol: str) -> float:
+    """Per-symbol synthetic seed so fallback closes never collide across names."""
+    known = {
+        "NIFTY": 24500.0,
+        "BANKNIFTY": 52000.0,
+        "RELIANCE": 2920.0,
+        "TCS": 3900.0,
+    }
+    sym = symbol.upper()
+    if sym in known:
+        return known[sym]
+    # Stable hash → distinct bases (avoids every unknown equity sharing 1000.0 /
+    # the same close that previously leaked as a shared exit mark).
+    h = 0
+    for ch in sym:
+        h = (h * 33 + ord(ch)) & 0xFFFFFFFF
+    return round(200.0 + (h % 9800), 2)
+
+
 def _synthetic_candles(
     symbol: str,
     timeframe: Timeframe,
     start: datetime,
     end: datetime,
 ) -> list[Candle]:
-    base = {"NIFTY": 24500.0, "BANKNIFTY": 52000.0, "RELIANCE": 2920.0, "TCS": 3900.0}.get(
-        symbol.upper(), 1000.0
-    )
+    base = _synthetic_base_price(symbol)
     step_minutes = {"5m": 5, "15m": 15, "1d": 24 * 60}[timeframe]
     candles: list[Candle] = []
     ts = start.astimezone(timezone.utc)

@@ -413,6 +413,74 @@ def test_paper_ledger_exit_mark_pnl_and_upnl_marks(paper_env: Path):
     assert closed["pnl"] == pytest.approx(13.55)
 
 
+def test_closing_n_symbols_do_not_share_one_exit_price(paper_env: Path):
+    """Regression: soft-close N names with distinct LTP map → distinct Exit px.
+
+    Bug: every closed trade showed Exit px ₹996.96 (360ONE's entry) because LTP
+    selection took the first quote / synthetic base-1000 close for all symbols.
+    """
+    store = PaperTradeStore()
+    # Distinct per-symbol entries (must not be overwritten by a shared mark)
+    book = {
+        "360ONE": {"entry": 996.96, "ltp": 1005.50},
+        "BPCL": {"entry": 340.10, "ltp": 348.75},
+        "AXISBANK": {"entry": 1120.00, "ltp": 1111.25},
+        "ASIANPAINT": {"entry": 2910.00, "ltp": 2895.40},
+        "APOLLOHOSP": {"entry": 7005.00, "ltp": 7050.10},
+        "ADANIPORTS": {"entry": 1210.50, "ltp": 1222.00},
+    }
+    for sym, px in book.items():
+        entry = plan_equity_intents(
+            sym,
+            SignalAction.BUY_CE_BIAS,
+            open_side=None,
+            open_qty=0,
+            qty=1,
+            price=px["entry"],
+            reason=f"{sym} entry",
+        )[0]
+        store.record_simulated_fill(
+            entry,
+            OrderResult(f"e-{sym}", "simulated", "dry_run", f"SIM-e-{sym}", None),
+        )
+        pos = store.get_position(sym)
+        assert pos is not None
+        assert float(pos["avg_price"]) == pytest.approx(px["entry"])
+
+    # Soft-close each symbol at THAT symbol's LTP (not a shared mark)
+    for sym, px in book.items():
+        mark = resolve_equity_mark(ltp=px["ltp"], candle_close=None, entry_avg=px["entry"])
+        assert mark.source == "ltp"
+        assert mark.price == pytest.approx(px["ltp"])
+        exit_i = plan_equity_intents(
+            sym,
+            SignalAction.HOLD,
+            open_side="long",
+            open_qty=1,
+            qty=1,
+            price=mark.price,
+            reason="soft_flatten",
+        )[0]
+        assert exit_i.limit_price == pytest.approx(px["ltp"])
+        store.record_simulated_fill(
+            exit_i,
+            OrderResult(f"x-{sym}", "simulated", "dry_run", f"SIM-x-{sym}", None),
+        )
+
+    closed = {t["symbol"]: t for t in store.summary()["closed_trades"]}
+    assert set(closed) == set(book)
+    exit_prices = [closed[s]["exit_price"] for s in book]
+    assert len(set(exit_prices)) == len(book), exit_prices
+    assert 996.96 not in exit_prices  # 360ONE entry must not become everyone's exit
+    for sym, px in book.items():
+        assert closed[sym]["entry_price"] == pytest.approx(px["entry"])
+        assert closed[sym]["exit_price"] == pytest.approx(px["ltp"])
+        assert closed[sym]["exit_price"] != pytest.approx(996.96) or sym == "360ONE"
+        # 360ONE exit is its LTP, not its entry
+        if sym == "360ONE":
+            assert closed[sym]["exit_price"] == pytest.approx(1005.50)
+
+
 @pytest.mark.asyncio
 async def test_trades_api_reads_paper_ledger(paper_env: Path):
     store = PaperTradeStore()

@@ -12,6 +12,8 @@ when market data is available:
    0; investigate MD rather than silently copying entry).
 
 Never silently reuse entry price when LTP succeeded.
+Never apply another symbol's LTP / candle close / entry avg to this symbol's fill —
+marks are always resolved per instrument key / tradingsymbol.
 """
 
 from __future__ import annotations
