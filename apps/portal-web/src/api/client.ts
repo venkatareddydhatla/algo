@@ -143,6 +143,10 @@ export type BacktestResult = {
   avg_trade_pnl: number;
   fills: BacktestFill[];
   note?: string;
+  /** True when bars are synthetic — headline metrics are not tradeable expectancy. */
+  metrics_are_synthetic?: boolean;
+  win_rate_label?: string | null;
+  pnl_label?: string | null;
 };
 
 function qs(params: Record<string, string | number | boolean | undefined>): string {
@@ -186,6 +190,7 @@ export const api = {
     from_date?: string;
     to_date?: string;
     dry_run?: boolean;
+    allow_synthetic?: boolean;
   }) => postJson<BacktestResult>("/api/v1/backtest/run", body),
   news: () => getJson<{ items: NewsRow[]; source: string }>("/api/v1/news"),
   trades: (opts?: { offset?: number; limit?: number; day?: string }) =>

@@ -348,7 +348,7 @@ cd C:\algo
 .\deploy\windows\native\start-native.ps1 -WithWorker
 ```
 
-Signals page: Top CE / Top PE strip above the table. Nav **Backtest** runs `/api/v1/backtest/run` (always `dry_run`).
+Signals page: Top CE / Top PE strip above the table. Nav **Backtest** runs `/api/v1/backtest/run` (always `dry_run`). Prefers **Upstox historical candles**; default Run **refuses** silent synthetic so win-rate/PnL cannot look like expectancy. Missing history → API/UI error (`No real history for SYMBOL; check Upstox token / instrument / dates`). Optional advanced `allow_synthetic` labels metrics **synthetic — not tradeable**.
 
 | Surface | URL |
 |---------|-----|

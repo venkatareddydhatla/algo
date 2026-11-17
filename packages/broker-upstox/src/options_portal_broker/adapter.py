@@ -180,6 +180,72 @@ class UpstoxAdapter:
             logger.exception("Upstox token refresh HTTP error")
             return False
 
+    async def get_real_candles(
+        self,
+        symbol: str,
+        timeframe: Timeframe,
+        start: datetime,
+        end: datetime,
+    ) -> list[Candle]:
+        """Upstox historical candles only — never synthesizes.
+
+        On missing token, unresolved instrument, empty response, or HTTP failure,
+        returns ``[]`` and sets ``last_candle_source`` / ``last_candle_detail``.
+        Used by dry-run backtest so synthetic bars cannot be mistaken for expectancy.
+        """
+        await self.ensure_auth()
+        sym = symbol.upper().strip()
+        if not self.access_token:
+            self.last_candle_source = "unavailable"
+            self.last_candle_detail = "no UPSTOX_ACCESS_TOKEN"
+            return []
+
+        instrument_key = resolve_instrument_key(sym, overrides=self.instrument_overrides)
+        if not instrument_key:
+            self.last_candle_source = "unavailable"
+            self.last_candle_detail = f"unresolved instrument_key for {sym}"
+            logger.error(
+                "%s real candles: unresolved instrument_key — refusing synthetic",
+                sym,
+            )
+            return []
+
+        try:
+            live = await self._fetch_historical_candles(
+                sym, instrument_key, timeframe, start, end
+            )
+            if live:
+                self.last_candle_source = "upstox"
+                self.last_candle_detail = f"live candles ({instrument_key})"
+                logger.info(
+                    "%s candles: source=upstox instrument_key=%s bars=%d last_close=%.4f",
+                    sym,
+                    instrument_key,
+                    len(live),
+                    float(live[-1].close),
+                )
+                return list(live)
+            self.last_candle_source = "unavailable"
+            self.last_candle_detail = (
+                f"Upstox empty candles for {sym} ({instrument_key})"
+            )
+            logger.error(
+                "%s candles: empty Upstox response instrument_key=%s — no real history",
+                sym,
+                instrument_key,
+            )
+        except Exception:  # noqa: BLE001
+            self.last_candle_source = "unavailable"
+            self.last_candle_detail = (
+                f"Upstox candle fetch failed for {sym} ({instrument_key})"
+            )
+            logger.exception(
+                "%s candles: fetch failed instrument_key=%s — no real history",
+                sym,
+                instrument_key,
+            )
+        return []
+
     async def get_candles(
         self,
         symbol: str,
@@ -187,62 +253,24 @@ class UpstoxAdapter:
         start: datetime,
         end: datetime,
     ) -> Sequence[Candle]:
-        """Live Upstox candles when access token present; else synthetic fallback."""
-        await self.ensure_auth()
-        if not self.access_token:
-            candles = _synthetic_candles(symbol, timeframe, start, end)
-            self.last_candle_source = "synthetic"
-            self.last_candle_detail = "no UPSTOX_ACCESS_TOKEN — synthetic fallback"
-            return candles
+        """Live Upstox candles when access token present; else synthetic fallback.
 
-        instrument_key = resolve_instrument_key(symbol, overrides=self.instrument_overrides)
-        if not instrument_key:
-            candles = _synthetic_candles(symbol, timeframe, start, end)
-            self.last_candle_source = "synthetic"
-            self.last_candle_detail = f"unresolved instrument_key for {symbol} — synthetic"
-            logger.error(
-                "%s candles: unresolved instrument_key — synthetic fallback "
-                "(paper fills must not reuse another symbol's price)",
-                symbol.upper(),
-            )
-            return candles
+        Prefer :meth:`get_real_candles` when synthetic bars must not look like
+        tradeable expectancy (e.g. Backtest UI).
+        """
+        live = await self.get_real_candles(symbol, timeframe, start, end)
+        if live:
+            return live
 
-        try:
-            live = await self._fetch_historical_candles(
-                symbol, instrument_key, timeframe, start, end
-            )
-            if live:
-                self.last_candle_source = "upstox"
-                self.last_candle_detail = f"live candles ({instrument_key})"
-                logger.info(
-                    "%s candles: source=upstox instrument_key=%s bars=%d last_close=%.4f",
-                    symbol.upper(),
-                    instrument_key,
-                    len(live),
-                    float(live[-1].close),
-                )
-                return live
-            self.last_candle_source = "synthetic"
-            self.last_candle_detail = (
-                f"Upstox empty candles for {symbol} ({instrument_key}) — synthetic fallback"
-            )
-            logger.error(
-                "%s candles: empty Upstox response instrument_key=%s — synthetic fallback",
-                symbol.upper(),
-                instrument_key,
-            )
-        except Exception:  # noqa: BLE001
-            self.last_candle_source = "synthetic"
-            self.last_candle_detail = (
-                f"Upstox candle fetch failed for {symbol} ({instrument_key}) — synthetic"
-            )
-            logger.exception(
-                "%s candles: fetch failed instrument_key=%s — synthetic fallback",
-                symbol.upper(),
-                instrument_key,
-            )
-
-        return _synthetic_candles(symbol, timeframe, start, end)
+        # Preserve prior synthetic fallback for paper/MD paths that still need bars.
+        detail = self.last_candle_detail or "unavailable"
+        candles = _synthetic_candles(symbol, timeframe, start, end)
+        self.last_candle_source = "synthetic"
+        if "synthetic" not in detail.lower():
+            self.last_candle_detail = f"{detail} — synthetic fallback"
+        else:
+            self.last_candle_detail = detail
+        return candles
 
     async def _fetch_historical_candles(
         self,

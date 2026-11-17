@@ -4,11 +4,12 @@ import { BacktestResult, api } from "../api/client";
 
 export default function BacktestPage() {
   const [params, setParams] = useSearchParams();
-  const initialSymbol = (params.get("symbol") || "NIFTY").toUpperCase();
+  const initialSymbol = (params.get("symbol") || "RELIANCE").toUpperCase();
   const [symbol, setSymbol] = useState(initialSymbol);
   const [bars, setBars] = useState(200);
   const [fromDate, setFromDate] = useState(params.get("from") || "");
   const [toDate, setToDate] = useState(params.get("to") || "");
+  const [allowSynthetic, setAllowSynthetic] = useState(false);
   const [result, setResult] = useState<BacktestResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -23,7 +24,7 @@ export default function BacktestPage() {
           setWatchlistHints(wl.items.map((r) => r.symbol).slice(0, 12));
         }
       } catch {
-        if (!cancelled) setWatchlistHints(["NIFTY", "BANKNIFTY", "RELIANCE", "TCS"]);
+        if (!cancelled) setWatchlistHints(["RELIANCE", "TCS", "INFY", "RVNL"]);
       }
     })();
     return () => {
@@ -37,6 +38,10 @@ export default function BacktestPage() {
   }, [params]);
 
   const fills = useMemo(() => result?.fills ?? [], [result]);
+  const syntheticResult =
+    !!result &&
+    (result.metrics_are_synthetic === true ||
+      String(result.source || "").startsWith("synthetic"));
 
   async function run(e?: FormEvent) {
     e?.preventDefault();
@@ -59,6 +64,7 @@ export default function BacktestPage() {
         from_date: fromDate || undefined,
         to_date: toDate || undefined,
         dry_run: true,
+        allow_synthetic: allowSynthetic || undefined,
       });
       setResult(data);
     } catch (err) {
@@ -75,7 +81,8 @@ export default function BacktestPage() {
         <h1>Backtest</h1>
         <p className="muted">
           Historical hybrid signal replay for one symbol — always <span className="mono">dry_run</span>.
-          Spot-proxy PnL (not a full options chain).
+          Prefers Upstox history; spot-proxy PnL (not a full options chain). Stocks only for meaningful
+          equity replay (indices are signal/spot-proxy context).
         </p>
       </div>
 
@@ -87,7 +94,7 @@ export default function BacktestPage() {
             value={symbol}
             list="bt-symbols"
             onChange={(e) => setSymbol(e.target.value.toUpperCase())}
-            placeholder="NIFTY"
+            placeholder="RELIANCE"
             required
           />
           <datalist id="bt-symbols">
@@ -125,6 +132,17 @@ export default function BacktestPage() {
             onChange={(e) => setToDate(e.target.value)}
           />
         </label>
+        <label className="filter bt-advanced">
+          <span className="muted">Advanced</span>
+          <span className="bt-check">
+            <input
+              type="checkbox"
+              checked={allowSynthetic}
+              onChange={(e) => setAllowSynthetic(e.target.checked)}
+            />
+            <span className="mono">allow_synthetic</span>
+          </span>
+        </label>
         <button type="submit" disabled={busy}>
           {busy ? "Running…" : "Run dry_run"}
         </button>
@@ -154,20 +172,48 @@ export default function BacktestPage() {
         </p>
       ) : null}
 
-      {error ? <p className="notice">{error}</p> : null}
+      {error ? <p className="notice bt-error">{error}</p> : null}
 
       {result ? (
         <>
+          {syntheticResult ? (
+            <p className="notice bt-synthetic-banner" role="alert">
+              Synthetic bars — not tradeable. Win rate / PnL are not expectancy. Prefer Upstox
+              history (token + instrument + dates). Uncheck <span className="mono">allow_synthetic</span>{" "}
+              to refuse this path.
+            </p>
+          ) : null}
           <div className="bt-metrics" role="group" aria-label="Backtest summary">
             <Metric label="Trades" value={String(result.trades)} />
-            <Metric label="Win rate" value={`${(result.win_rate * 100).toFixed(1)}%`} />
+            <Metric
+              label="Win rate"
+              value={
+                syntheticResult
+                  ? result.win_rate_label || "synthetic — not tradeable"
+                  : `${(result.win_rate * 100).toFixed(1)}%`
+              }
+              muted={syntheticResult}
+            />
             <Metric
               label="PnL"
-              value={`${result.pnl >= 0 ? "+" : ""}${result.pnl.toFixed(2)}`}
-              tone={result.pnl >= 0 ? "ce" : "pe"}
+              value={
+                syntheticResult
+                  ? result.pnl_label || "synthetic — not tradeable"
+                  : `${result.pnl >= 0 ? "+" : ""}${result.pnl.toFixed(2)}`
+              }
+              tone={syntheticResult ? undefined : result.pnl >= 0 ? "ce" : "pe"}
+              muted={syntheticResult}
             />
-            <Metric label="Max DD" value={result.max_drawdown.toFixed(2)} />
-            <Metric label="Profit factor" value={result.profit_factor.toFixed(2)} />
+            <Metric
+              label="Max DD"
+              value={syntheticResult ? "—" : result.max_drawdown.toFixed(2)}
+              muted={syntheticResult}
+            />
+            <Metric
+              label="Profit factor"
+              value={syntheticResult ? "—" : result.profit_factor.toFixed(2)}
+              muted={syntheticResult}
+            />
             <Metric label="Bars" value={`${result.bars_evaluated}/${result.bars}`} />
           </div>
           <p className="muted mono bt-meta">
@@ -231,15 +277,21 @@ function Metric({
   label,
   value,
   tone,
+  muted,
 }: {
   label: string;
   value: string;
   tone?: "ce" | "pe";
+  muted?: boolean;
 }) {
   return (
     <div className="bt-metric">
       <span className="muted">{label}</span>
-      <span className={`mono ${tone === "ce" ? "action-BUY_CE_BIAS" : tone === "pe" ? "action-BUY_PE_BIAS" : ""}`}>
+      <span
+        className={`mono ${muted ? "bt-metric-synthetic" : ""} ${
+          tone === "ce" ? "action-BUY_CE_BIAS" : tone === "pe" ? "action-BUY_PE_BIAS" : ""
+        }`}
+      >
         {value}
       </span>
     </div>

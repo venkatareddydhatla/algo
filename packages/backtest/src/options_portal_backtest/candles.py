@@ -1,4 +1,8 @@
-"""Load or synthesize 15m candles for dry-run backtests."""
+"""Load real or synthesize 15m candles for dry-run backtests.
+
+Default path refuses silent synthetic bars so UI win-rate / PnL cannot be
+mistaken for tradeable expectancy. Synthetic is opt-in via ``allow_synthetic``.
+"""
 
 from __future__ import annotations
 
@@ -12,6 +16,10 @@ from options_portal_domain.tz import ist
 from options_portal_domain.types import Candle, Timeframe
 
 IST = ist()
+
+
+class RealHistoryUnavailable(RuntimeError):
+    """Raised when fixture/Upstox history is missing and synthetic is refused."""
 
 
 def fixture_dir() -> Path:
@@ -105,6 +113,16 @@ def synthesize_candles(
     return out
 
 
+def _refuse_message(symbol: str, detail: str | None = None) -> str:
+    base = (
+        f"No real history for {symbol.upper()}; "
+        "check Upstox token / instrument / dates"
+    )
+    if detail:
+        return f"{base} ({detail})"
+    return base
+
+
 def resolve_candles(
     symbol: str,
     *,
@@ -112,22 +130,71 @@ def resolve_candles(
     end: date | None = None,
     bars: int | None = None,
     fixture_path: Path | None = None,
+    allow_synthetic: bool = False,
+    preloaded: list[Candle] | None = None,
+    preloaded_source: str | None = None,
+    min_bars: int = 40,
 ) -> tuple[list[Candle], str]:
-    """Load fixture CSV when present; otherwise synthesize dry-run bars."""
+    """Resolve candles for backtest.
+
+    Preference order:
+    1. Explicit ``preloaded`` bars (e.g. Upstox historical from API)
+    2. Fixture CSV when present
+    3. Synthetic only when ``allow_synthetic=True``
+    4. Otherwise raise :class:`RealHistoryUnavailable`
+    """
+    sym = symbol.upper().strip()
+
+    if preloaded is not None:
+        candles = list(preloaded)
+        if start:
+            candles = [c for c in candles if c.ts.astimezone(IST).date() >= start]
+        if end:
+            candles = [c for c in candles if c.ts.astimezone(IST).date() <= end]
+        if bars is not None and len(candles) > bars:
+            candles = candles[-bars:]
+        source = preloaded_source or "upstox"
+        if source.startswith("synthetic") and not allow_synthetic:
+            raise RealHistoryUnavailable(_refuse_message(sym, "synthetic refused"))
+        if len(candles) >= min_bars and not source.startswith("synthetic"):
+            return candles, source
+        if len(candles) >= min_bars and source.startswith("synthetic") and allow_synthetic:
+            return candles, source
+        if not allow_synthetic:
+            raise RealHistoryUnavailable(
+                _refuse_message(
+                    sym,
+                    f"incomplete history: {len(candles)} bars < {min_bars}",
+                )
+            )
+        # Incomplete real history + allow_synthetic → fall through to synthesize
+
     path = fixture_path
     if path is None:
-        candidate = fixture_dir() / f"{symbol.upper()}.csv"
+        candidate = fixture_dir() / f"{sym}.csv"
         if candidate.is_file():
             path = candidate
     if path is not None and path.is_file():
-        candles = load_candles_csv(path, symbol=symbol)
+        candles = load_candles_csv(path, symbol=sym)
         if start:
-            candles = [c for c in candles if c.ts.date() >= start]
+            candles = [c for c in candles if c.ts.astimezone(IST).date() >= start]
         if end:
-            candles = [c for c in candles if c.ts.date() <= end]
+            candles = [c for c in candles if c.ts.astimezone(IST).date() <= end]
         if bars is not None and len(candles) > bars:
             candles = candles[-bars:]
-        return candles, f"fixture:{path.name}"
+        if len(candles) >= min_bars:
+            return candles, f"fixture:{path.name}"
+        if not allow_synthetic:
+            raise RealHistoryUnavailable(
+                _refuse_message(
+                    sym,
+                    f"fixture incomplete: {len(candles)} bars < {min_bars}",
+                )
+            )
+        # Incomplete fixture + allow_synthetic → fall through to synthesize
+
+    if not allow_synthetic:
+        raise RealHistoryUnavailable(_refuse_message(sym))
 
     today = date.today()
     end_d = end or today
@@ -137,7 +204,5 @@ def resolve_candles(
         start_d = start or (end_d - timedelta(days=days_needed))
     else:
         start_d = start or (end_d - timedelta(days=60))
-    candles = synthesize_candles(
-        symbol, start=start_d, end=end_d, bars=bars
-    )
+    candles = synthesize_candles(sym, start=start_d, end=end_d, bars=bars)
     return candles, "synthetic"

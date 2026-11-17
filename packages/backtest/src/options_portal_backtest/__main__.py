@@ -30,6 +30,11 @@ def main(argv: list[str] | None = None) -> int:
     run_p.add_argument("--to", dest="to_date", default=None, help="YYYY-MM-DD")
     run_p.add_argument("--bars", type=int, default=200, help="Max bars (default 200)")
     run_p.add_argument("--fixture", type=Path, default=None, help="Optional candles CSV")
+    run_p.add_argument(
+        "--allow-synthetic",
+        action="store_true",
+        help="Opt-in synthetic bars (labeled not tradeable; default refuses)",
+    )
     run_p.add_argument("--json", action="store_true", help="Print JSON summary")
 
     args = parser.parse_args(argv)
@@ -44,6 +49,7 @@ def main(argv: list[str] | None = None) -> int:
         bars=args.bars,
         dry_run=True,
         fixture_path=args.fixture,
+        allow_synthetic=bool(args.allow_synthetic),
     )
     payload = result.to_dict()
     if args.json:
