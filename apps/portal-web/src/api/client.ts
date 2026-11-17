@@ -89,6 +89,26 @@ export type TopHybrid = {
   note?: string;
 };
 
+export type IndexQuote = {
+  symbol: string;
+  last_price?: number | null;
+  change?: number | null;
+  change_pct?: number | null;
+  source?: string | null;
+  stale?: boolean;
+  as_of?: string | null;
+  instrument_key?: string | null;
+};
+
+export type MarketIndicesPayload = {
+  market_status: "OPEN" | "CLOSE" | string;
+  trading_day?: boolean;
+  session?: { open_ist: string; close_ist: string; tz: string };
+  as_of_ist?: string;
+  indices: IndexQuote[];
+  poll_hint_sec?: number;
+};
+
 export type BacktestFill = {
   entry_ts: string;
   exit_ts: string;
@@ -178,6 +198,7 @@ export const api = {
     ),
   health: () => getJson<Record<string, unknown>>("/api/v1/health"),
   config: () => getJson<Record<string, unknown>>("/api/v1/admin/config"),
+  marketIndices: () => getJson<MarketIndicesPayload>("/api/v1/market/indices"),
 };
 
 /** Local fallbacks when API is offline */

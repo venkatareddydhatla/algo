@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { MOCK, SignalRow, api } from "../api/client";
 import { HybridStrip } from "../components/HybridStrip";
+import { MarketIndexStrip } from "../components/MarketIndexStrip";
 import { fmtIstDateTime } from "../lib/ist";
 
 const PAGE_SIZE = 50;
@@ -115,13 +116,16 @@ export default function DashboardPage() {
 
   return (
     <section>
-      <div className="section-head">
-        <h1>Watchlist signals</h1>
-        <p className="muted">
-          NSE F&O universe ({total} symbols) — source: {source}. Worker scores the full
-          watchlist in batches; actionable names sort to the top. Hover Reason for the
-          decision rationale.
-        </p>
+      <div className="section-head section-head-row">
+        <div>
+          <h1>Watchlist signals</h1>
+          <p className="muted">
+            NSE F&O universe ({total} symbols) — source: {source}. Worker scores the full
+            watchlist in batches; actionable names sort to the top. Hover Reason for the
+            decision rationale.
+          </p>
+        </div>
+        <MarketIndexStrip />
       </div>
 
       <HybridStrip

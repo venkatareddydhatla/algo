@@ -135,6 +135,18 @@ class SoftEodPolicy:
         clock = _hhmm_tuple(_ist_clock(now).time())
         return clock < _hhmm_tuple(self.open_ist)
 
+    def past_session_close(self, now: datetime | None = None) -> bool:
+        """True when IST clock HH:MM is at or after close_ist (default 15:30)."""
+        return at_or_after_ist(self.close_ist, now)
+
+    def in_cash_session(self, now: datetime | None = None) -> bool:
+        """True when IST clock is in [open_ist, close_ist) cash hours (default 09:15–15:30).
+
+        Distinct from ``allow_new_entries`` (cuts off at no_new_entries_after / 15:20).
+        Use for market OPEN/CLOSE UI status, not entry gating.
+        """
+        return not self.before_session_open(now) and not self.past_session_close(now)
+
     def allow_new_entries(self, now: datetime | None = None) -> bool:
         """True when IST clock is in [open_ist, no_new_entries_after).
 
@@ -364,6 +376,27 @@ def is_trading_session(
     if not trading_day:
         return False
     return pol.allow_new_entries(clock)
+
+
+def is_cash_market_open(
+    now: datetime | None = None,
+    *,
+    policy: SoftEodPolicy | None = None,
+    trading_day: bool | None = None,
+) -> bool:
+    """True during NSE cash hours on a trading day (default 09:15–15:30 IST).
+
+    UI market OPEN/CLOSE badge — not the entry window (see ``is_trading_session``).
+    """
+    pol = policy or SoftEodPolicy()
+    clock = _ist_clock(now)
+    if trading_day is None:
+        from options_portal_domain.calendar import is_nse_trading_day
+
+        trading_day = is_nse_trading_day(clock.date())
+    if not trading_day:
+        return False
+    return pol.in_cash_session(clock)
 
 
 def filter_entry_intents(

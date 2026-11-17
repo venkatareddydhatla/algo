@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routes import admin, backtest, health, news, signals, trades, watchlist
+from app.routes import admin, backtest, health, market, news, signals, trades, watchlist
 from options_portal_domain.config import load_config, trading_mode
 from options_portal_domain.tz import ensure_tzdata
 from options_portal_persistence.db import is_local_profile
@@ -78,6 +78,7 @@ app.add_middleware(
 )
 
 app.include_router(health.router)
+app.include_router(market.router)
 app.include_router(signals.router)
 app.include_router(watchlist.router)
 app.include_router(news.router)
