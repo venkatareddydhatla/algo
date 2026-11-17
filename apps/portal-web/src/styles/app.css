@@ -176,6 +176,17 @@ th {
   letter-spacing: 0.04em;
 }
 
+/* Entry/exit px + PnL: keep ₹ + digits on one line in crowded tables */
+.num-cell {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  min-width: 7.25rem;
+}
+
+th.num-cell {
+  min-width: 6.5rem;
+}
+
 .action {
   font-family: var(--mono);
   font-size: 0.8rem;

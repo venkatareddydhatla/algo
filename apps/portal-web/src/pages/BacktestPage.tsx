@@ -184,10 +184,10 @@ export default function BacktestPage() {
                   <th>Side</th>
                   <th>Entry (IST)</th>
                   <th>Exit (IST)</th>
-                  <th>Entry px</th>
-                  <th>Exit px</th>
+                  <th className="num-cell">Entry px</th>
+                  <th className="num-cell">Exit px</th>
                   <th>Bars</th>
-                  <th>PnL</th>
+                  <th className="num-cell">PnL</th>
                   <th>Reason</th>
                 </tr>
               </thead>
@@ -206,10 +206,10 @@ export default function BacktestPage() {
                       </td>
                       <td className="mono">{fmtFillIst(f.entry_at_ist, f.entry_ts)}</td>
                       <td className="mono">{fmtFillIst(f.exit_at_ist, f.exit_ts)}</td>
-                      <td className="mono">{f.entry_price.toFixed(2)}</td>
-                      <td className="mono">{f.exit_price.toFixed(2)}</td>
+                      <td className="mono num-cell">{f.entry_price.toFixed(2)}</td>
+                      <td className="mono num-cell">{f.exit_price.toFixed(2)}</td>
                       <td className="mono">{f.bars_held}</td>
-                      <td className={`mono ${f.pnl >= 0 ? "action-BUY_CE_BIAS" : "action-BUY_PE_BIAS"}`}>
+                      <td className={`mono num-cell ${f.pnl >= 0 ? "action-BUY_CE_BIAS" : "action-BUY_PE_BIAS"}`}>
                         {f.pnl >= 0 ? "+" : ""}
                         {f.pnl.toFixed(2)}
                       </td>
