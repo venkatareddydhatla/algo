@@ -248,6 +248,23 @@ git pull origin cursor/trades-page-round-trips-cb5e
 
 Open http://127.0.0.1:5173/trades — Open positions unchanged; Closed trades show Symbol, Side LONG/SHORT, Entry/Exit IST, Entry/Exit px, PnL, Reason, dry_run.
 
+### Pull |hybrid| ranked entry selection (stacked)
+
+Equity dry-run **new entries** fill free `max_open_symbols` slots by strongest `|hybrid|` (not CSV/scan first-fill). **Anti-churn:** keep existing opens — only fill empty slots (no rotate for tiny score edges). Soft flatten / overnight `|hybrid| ≥ 0.70` unchanged. Cap stays **10** (configurable).
+
+```powershell
+cd C:\algo
+Set-ExecutionPolicy -Scope Process Bypass
+.\deploy\windows\native\stop-native.ps1
+git fetch origin
+git checkout cursor/hybrid-rank-entry-selection-ecf7
+git pull origin cursor/hybrid-rank-entry-selection-ecf7
+.\deploy\windows\native\setup-native.ps1
+.\deploy\windows\native\start-native.ps1 -WithWorker
+```
+
+Verify worker log: `Entry selection enabled anti_churn=empty_slots_only` and after a scan `Entry selection flush`. Still `dry_run` only.
+
 If the API fails with `ZoneInfoNotFoundError: 'No time zone found with key Asia/Kolkata'`, install tzdata and restart:
 
 ```powershell
