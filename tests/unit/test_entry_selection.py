@@ -313,3 +313,50 @@ async def test_admission_stages_strongest_and_selects():
     )
     # 1 free slot → STRONG only
     assert [c.symbol for c in picked] == ["STRONG"]
+
+
+@pytest.mark.asyncio
+async def test_admission_refuses_index_underlyings():
+    """NIFTY/BANKNIFTY/… must never enter deferred equity admission queue."""
+    mod = _load_worker_entry_admission()
+    EntryCycleAdmission = mod.EntryCycleAdmission
+    PendingEntry = mod.PendingEntry
+    from options_portal_domain.equity import EquityOrderIntent
+
+    def _intent(sym: str) -> EquityOrderIntent:
+        return EquityOrderIntent(
+            symbol=sym,
+            side="BUY",
+            qty=1,
+            limit_price=24000.0,
+            reason="index hybrid",
+            action_kind="entry",
+            resulting_position="long",
+            signal_action="BUY_CE_BIAS",
+        )
+
+    adm = EntryCycleAdmission(max_open_symbols=10)
+    for sym in ("NIFTY", "BANKNIFTY", "FINNIFTY", "SENSEX"):
+        await adm.stage(
+            PendingEntry(
+                symbol=sym,
+                hybrid_score=0.95,
+                confidence=0.9,
+                intents=[_intent(sym)],
+                safe_mode="dry_run",
+                limits={"max_open_symbols": 10},
+            )
+        )
+    await adm.stage(
+        PendingEntry(
+            symbol="RELIANCE",
+            hybrid_score=0.80,
+            confidence=0.7,
+            intents=[_intent("RELIANCE")],
+            safe_mode="dry_run",
+            limits={"max_open_symbols": 10},
+        )
+    )
+    cands = {c.symbol for c in adm.pending_candidates()}
+    assert cands == {"RELIANCE"}
+    assert "NIFTY" not in cands

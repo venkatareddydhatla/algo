@@ -53,7 +53,15 @@ trading:
     soft_flatten_until_ist: "15:40"  # inclusive end; refuse soft_flatten after this HH:MM
     soft_flatten_poll_interval_sec: 15  # open-book loop; independent of full scan
     overnight_hold_min_hybrid_abs: 0.70  # |hybrid| ≥ this + same-side → allow overnight
-    user_hours_note: "09:15–15:40 IST (soft flatten 15:20–15:40; no hard 15:40 square-off)"
+    # Morning first-hour profit book (stocks only; indices blocked separately).
+    # Rule: unrealized ≥ +0.4% of entry → full-qty exit (ATR trail deferred).
+    morning_profit_book:
+      enabled: true
+      start_ist: "09:15"
+      until_ist: "10:15"           # inclusive HH:MM; after 10:15 no morning TP
+      min_unrealized_pct: 0.4      # percent of entry (not ATR)
+      exit_fraction: 1.0           # 1.0 full exit; 0.5 later for scale-out when qty>1
+    user_hours_note: "09:15–15:40 IST (morning TP 09:15–10:15; soft flatten 15:20–15:40; no hard 15:40 square-off)"
   # Light broader-market gate (optional). Blocks new opposite entries only when
   # NIFTY/BANKNIFTY hybrid strongly conflicts; skips when scores missing or disagree.
   market_sentiment:

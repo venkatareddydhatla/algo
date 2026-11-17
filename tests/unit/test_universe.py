@@ -7,7 +7,10 @@ from pathlib import Path
 from options_portal_domain.config import load_config, scan_symbols, watchlist_symbols
 from options_portal_domain.universe import (
     DEMO_SYMBOLS,
+    INDEX_SYMBOLS,
     active_scan_symbols,
+    instrument_key_is_index,
+    is_index_underlying,
     load_universe_csv,
     resolve_watchlist_symbols,
 )
@@ -24,6 +27,38 @@ def test_universe_csv_has_indices_and_equities():
         assert sym in symbols
     assert any(r.kind == "index" for r in rows)
     assert any(r.kind == "equity" for r in rows)
+
+
+def test_is_index_underlying_denylist_and_instrument_key():
+    """Equity book must refuse known indices + NSE_INDEX/BSE_INDEX keys."""
+    for sym in (
+        "NIFTY",
+        "BANKNIFTY",
+        "FINNIFTY",
+        "MIDCPNIFTY",
+        "SENSEX",
+        "NIFTYNXT50",
+        "INDIAVIX",
+    ):
+        assert is_index_underlying(sym) is True
+        assert sym in INDEX_SYMBOLS or is_index_underlying(sym)
+
+    assert instrument_key_is_index("NSE_INDEX|Nifty 50") is True
+    assert instrument_key_is_index("BSE_INDEX|SENSEX") is True
+    assert instrument_key_is_index("NSE_INDEX:Nifty Bank") is True
+    assert instrument_key_is_index("NSE_EQ|INE002A01018") is False
+
+    assert is_index_underlying("RELIANCE", instrument_key="NSE_EQ|INE002A01018") is False
+    assert is_index_underlying("TCS") is False
+    # kind / key win even for unknown symbol names
+    assert is_index_underlying("CUSTOMIDX", kind="index") is True
+    assert is_index_underlying(
+        "WEIRD", instrument_key="NSE_INDEX|Something"
+    ) is True
+    # CSV index rows
+    rows = {r.symbol: r for r in load_universe_csv(CSV)}
+    assert is_index_underlying("NIFTY", kind=rows["NIFTY"].kind) is True
+    assert is_index_underlying("RELIANCE", kind=rows["RELIANCE"].kind) is False
 
 
 def test_resolve_universe_alias():

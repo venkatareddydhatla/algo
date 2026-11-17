@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
-# Major NSE index F&O underlyings (weekly expiry by default).
+# Major NSE/BSE index underlyings (F&O + cash index quotes).
+# Equity dry-run must NEVER open/hold these as stock paper positions.
 INDEX_SYMBOLS = frozenset(
     {
         "NIFTY",
@@ -16,8 +17,14 @@ INDEX_SYMBOLS = frozenset(
         "MIDCPNIFTY",
         "NIFTYNXT50",
         "NIFTYFPI",
+        "SENSEX",
+        "INDIAVIX",
+        "BANKEX",
     }
 )
+
+# Instrument-key segment prefixes used by Upstox (and similar) for indices.
+_INDEX_KEY_SEGMENTS = ("NSE_INDEX", "BSE_INDEX")
 
 DEMO_SYMBOLS = ("NIFTY", "BANKNIFTY", "RELIANCE", "TCS")
 
@@ -26,6 +33,49 @@ UNIVERSE_ALIASES: dict[str, str] = {
     "nse_fno": "config/universe/nse_fno_underlyings.csv",
     "nse_fno_demo": "demo",  # sentinel — use DEMO_SYMBOLS
 }
+
+
+def instrument_key_is_index(instrument_key: str | None) -> bool:
+    """True when instrument_key segment is NSE_INDEX / BSE_INDEX (``|`` or ``:``)."""
+    raw = str(instrument_key or "").strip().upper()
+    if not raw:
+        return False
+    # Forms: NSE_INDEX|Nifty 50 · NSE_INDEX:Nifty 50 · NSE_INDEX|...
+    segment = raw.replace(":", "|").split("|", 1)[0].strip()
+    return segment in _INDEX_KEY_SEGMENTS or any(
+        seg in raw for seg in _INDEX_KEY_SEGMENTS
+    )
+
+
+def is_index_underlying(
+    symbol: str,
+    *,
+    instrument_key: str | None = None,
+    kind: str | None = None,
+) -> bool:
+    """True for index underlyings that must not use equity stock entry/exit book.
+
+    Preference order:
+    1. Explicit universe ``kind=index``
+    2. Instrument-key segment ``NSE_INDEX`` / ``BSE_INDEX``
+    3. Known denylist (``INDEX_SYMBOLS``) + light name patterns
+    """
+    sym = str(symbol or "").strip().upper()
+    if not sym:
+        return False
+    kind_norm = str(kind or "").strip().lower()
+    if kind_norm == "index":
+        return True
+    if instrument_key_is_index(instrument_key):
+        return True
+    if sym in INDEX_SYMBOLS:
+        return True
+    # Light patterns: avoid matching ordinary equities (e.g. not *BANK*).
+    if sym.endswith("NIFTY") or sym.startswith("NIFTY"):
+        return True
+    if sym in {"SENSEX", "BANKEX"} or sym.endswith("VIX"):
+        return True
+    return False
 
 
 @dataclass(frozen=True)

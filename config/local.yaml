@@ -49,7 +49,13 @@ trading:
     soft_flatten_until_ist: "15:40"
     soft_flatten_poll_interval_sec: 15
     overnight_hold_min_hybrid_abs: 0.70
-    user_hours_note: "09:15–15:40 IST (soft flatten 15:20–15:40; no hard 15:40 square-off)"
+    morning_profit_book:
+      enabled: true
+      start_ist: "09:15"
+      until_ist: "10:15"
+      min_unrealized_pct: 0.4
+      exit_fraction: 1.0
+    user_hours_note: "09:15–15:40 IST (morning TP 09:15–10:15; soft flatten 15:20–15:40; no hard 15:40 square-off)"
   market_sentiment:
     enabled: true
     symbols:

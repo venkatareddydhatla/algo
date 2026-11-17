@@ -21,6 +21,7 @@ from options_portal_domain.entry_selection import (
 from options_portal_domain.equity import EquityOrderIntent
 from options_portal_domain.session_gates import SoftEodPolicy, is_trading_session
 from options_portal_domain.tz import now_ist
+from options_portal_domain.universe import is_index_underlying
 from options_portal_notify.factory import build_gmail_notifier
 from options_portal_risk.order_router import SafeOrderRouter
 
@@ -73,8 +74,18 @@ class EntryCycleAdmission:
         )
 
     async def stage(self, pending: PendingEntry) -> None:
-        """Keep the strongest |hybrid| pending row per symbol."""
+        """Keep the strongest |hybrid| pending row per symbol.
+
+        Index underlyings are refused even if already queued elsewhere — they
+        must never enter the equity paper book via deferred admission.
+        """
         sym = pending.symbol.upper()
+        if is_index_underlying(sym):
+            logger.info(
+                "Entry admission refused index underlying %s (not equity stock)",
+                sym,
+            )
+            return
         async with self._lock:
             prev = self._pending.get(sym)
             if prev is None or abs(pending.hybrid_score) > abs(prev.hybrid_score):
@@ -116,6 +127,25 @@ class EntryCycleAdmission:
                 "slots": 0,
                 "target_open": 0,
                 "dynamic": self.dynamic_enabled,
+            }
+
+        # Refuse index underlyings still sitting in the deferred queue.
+        index_skipped = sorted(s for s in pending if is_index_underlying(s))
+        for sym in index_skipped:
+            pending.pop(sym, None)
+            logger.info(
+                "Entry admission flush dropped deferred index %s (index_not_equity)",
+                sym,
+            )
+        if not pending:
+            return {
+                "admitted": [],
+                "skipped": index_skipped,
+                "open_before": [],
+                "slots": 0,
+                "target_open": 0,
+                "dynamic": self.dynamic_enabled,
+                "reason": "index_not_equity — deferred index entries dropped",
             }
 
         soft_policy = SoftEodPolicy.from_config(cfg)
@@ -164,7 +194,9 @@ class EntryCycleAdmission:
             dynamic=self.dynamic_enabled,
         )
         admitted_syms = {c.symbol.upper() for c in selected}
-        skipped = sorted(s for s in pending if s not in admitted_syms)
+        skipped = sorted(
+            set(index_skipped) | {s for s in pending if s not in admitted_syms}
+        )
         slots = max(0, self.max_open_symbols - len(open_symbols))
         if self.dynamic_enabled:
             # Effective free slots used this cycle (may be < hard-cap free).
@@ -186,9 +218,14 @@ class EntryCycleAdmission:
         )
         if skipped:
             logger.info(
-                "Entry selection skipped (below |hybrid| threshold, weaker, or no slots): %s",
+                "Entry selection skipped (index / below |hybrid| / weaker / no slots): %s",
                 ", ".join(
-                    f"{s}|h|={abs(pending[s].hybrid_score):.3f}" for s in skipped[:30]
+                    (
+                        f"{s}|index"
+                        if s in index_skipped
+                        else f"{s}|h|={abs(pending[s].hybrid_score):.3f}"
+                    )
+                    for s in skipped[:30]
                 )
                 + ("..." if len(skipped) > 30 else ""),
             )

@@ -1,10 +1,17 @@
-"""Soft EOD flatten + light index market-sentiment gates (IST).
+"""Soft EOD flatten + morning profit book + light index market-sentiment (IST).
 
 Product rules (equity dry-run):
 - **New entries (open/add / flip_open)** only on NSE trading days inside the
   cash entry window [open_ist, no_new_entries_after) IST (default 09:15–15:20).
   Use ``is_trading_session`` / ``SoftEodPolicy.allow_new_entries`` — nights,
   pre-open, and post-cutoff must not persist entry fills or send entry Gmail.
+- **Index underlyings** (NIFTY, BANKNIFTY, … / NSE_INDEX|BSE_INDEX) never use
+  stock hybrid entry; open index paper is soft-closed with ``index_not_equity``.
+- **Morning profit book** [morning_tp_ist, morning_tp_until_ist] inclusive by
+  HH:MM (default 09:15–10:15 IST): for open **equity** (not indices), if
+  unrealized PnL ≥ +0.4% of entry → full-qty exit with reason
+  ``morning_profit_book``. Evaluated on the open-book poll (~15s) like soft
+  flatten. Rule is percent-of-entry (ATR trail deferred).
 - Soft flatten window [soft_flatten_ist, soft_flatten_until_ist] inclusive by
   HH:MM (default 15:20–15:40 IST): close open paper equity unless |hybrid|
   meets overnight conviction on the same side. Separate from the entry window.
@@ -25,14 +32,23 @@ from dataclasses import dataclass
 from datetime import datetime, time
 from typing import Any, Literal, Sequence
 
-from options_portal_domain.equity import EquityActionKind, PositionSide
+from options_portal_domain.equity import (
+    EquityActionKind,
+    PositionSide,
+    profit_book_exit_qty,
+    unrealized_pnl_pct,
+)
 from options_portal_domain.tz import ist, now_ist
 from options_portal_domain.types import SignalAction
 
 IndexBias = Literal["bullish", "bearish", "neutral", "noisy", "unavailable"]
 
-# Worker open-book soft-flatten poll (independent of full-universe scan).
+# Worker open-book soft-flatten / morning-TP poll (independent of full-universe scan).
 DEFAULT_SOFT_FLATTEN_POLL_SEC = 15
+DEFAULT_MORNING_TP_IST = "09:15"
+DEFAULT_MORNING_TP_UNTIL_IST = "10:15"
+# Percent-of-entry threshold (not ATR) — cheap on the ~15s open-book path.
+DEFAULT_MORNING_TP_MIN_UNREALIZED_PCT = 0.4
 
 
 def parse_hhmm(value: str) -> time:
@@ -85,9 +101,12 @@ class SoftEodPolicy:
     soft_flatten_until_ist: str = "15:40"
     overnight_hold_min_hybrid_abs: float = 0.70
     soft_flatten_poll_interval_sec: int = DEFAULT_SOFT_FLATTEN_POLL_SEC
+    morning_tp_ist: str = DEFAULT_MORNING_TP_IST
+    morning_tp_until_ist: str = DEFAULT_MORNING_TP_UNTIL_IST
     # Documented user monitoring window (no hard flatten at end)
     user_hours_note: str = (
-        "09:15–15:40 IST (soft flatten 15:20–15:40; no hard 15:40 square-off)"
+        "09:15–15:40 IST (morning TP 09:15–10:15; soft flatten 15:20–15:40; "
+        "no hard 15:40 square-off)"
     )
 
     @classmethod
@@ -109,6 +128,7 @@ class SoftEodPolicy:
         env_poll = os.environ.get("SOFT_FLATTEN_POLL_SEC")
         if env_poll is not None and str(env_poll).strip() != "":
             poll = env_poll
+        morning = dict(session.get("morning_profit_book") or equity.get("morning_profit_book") or {})
         return cls(
             open_ist=str(session.get("open", "09:15")),
             close_ist=str(session.get("close", "15:30")),
@@ -119,12 +139,31 @@ class SoftEodPolicy:
             soft_flatten_until_ist=str(session.get("soft_flatten_until_ist", "15:40")),
             overnight_hold_min_hybrid_abs=float(overnight),
             soft_flatten_poll_interval_sec=max(5, int(poll)),
+            morning_tp_ist=str(
+                morning.get(
+                    "start_ist",
+                    session.get("morning_tp_ist", DEFAULT_MORNING_TP_IST),
+                )
+            ),
+            morning_tp_until_ist=str(
+                morning.get(
+                    "until_ist",
+                    session.get("morning_tp_until_ist", DEFAULT_MORNING_TP_UNTIL_IST),
+                )
+            ),
             user_hours_note=str(
                 session.get(
                     "user_hours_note",
-                    "09:15–15:40 IST (soft flatten 15:20–15:40; no hard 15:40 square-off)",
+                    "09:15–15:40 IST (morning TP 09:15–10:15; soft flatten 15:20–15:40; "
+                    "no hard 15:40 square-off)",
                 )
             ),
+        )
+
+    def in_morning_profit_window(self, now: datetime | None = None) -> bool:
+        """True during inclusive morning profit-book HH:MM window."""
+        return hhmm_in_inclusive_window(
+            self.morning_tp_ist, self.morning_tp_until_ist, now
         )
 
     def past_no_new_entries(self, now: datetime | None = None) -> bool:
@@ -241,6 +280,134 @@ def soft_flatten_decision(
             f"(hybrid={hybrid_score:.3f} below overnight "
             f"min_abs={policy.overnight_hold_min_hybrid_abs})"
         ),
+    }
+
+
+@dataclass(frozen=True)
+class MorningProfitBookPolicy:
+    """First-hour profit booking for open equity (stocks only, not indices).
+
+    Threshold rule (chosen for open-book poll cheapness): unrealized PnL
+    ≥ ``min_unrealized_pct`` percent of entry (default **+0.4%**). ATR(14)
+    trail is deferred — do not mix rules on the ~15s path.
+    """
+
+    enabled: bool = True
+    start_ist: str = DEFAULT_MORNING_TP_IST
+    until_ist: str = DEFAULT_MORNING_TP_UNTIL_IST
+    min_unrealized_pct: float = DEFAULT_MORNING_TP_MIN_UNREALIZED_PCT
+    # 1.0 = full exit (qty is 1 today); set 0.5 later for 50% scale-out.
+    exit_fraction: float = 1.0
+
+    @classmethod
+    def from_config(cls, config: dict[str, Any]) -> MorningProfitBookPolicy:
+        trading = config.get("trading") or {}
+        session = dict(trading.get("session") or {})
+        equity = dict(trading.get("equity") or {})
+        raw = dict(
+            session.get("morning_profit_book")
+            or equity.get("morning_profit_book")
+            or {}
+        )
+        soft = SoftEodPolicy.from_config(config)
+        return cls(
+            enabled=bool(raw.get("enabled", True)),
+            start_ist=str(raw.get("start_ist", soft.morning_tp_ist)),
+            until_ist=str(raw.get("until_ist", soft.morning_tp_until_ist)),
+            min_unrealized_pct=float(
+                raw.get(
+                    "min_unrealized_pct",
+                    DEFAULT_MORNING_TP_MIN_UNREALIZED_PCT,
+                )
+            ),
+            exit_fraction=float(raw.get("exit_fraction", 1.0)),
+        )
+
+    def in_window(self, now: datetime | None = None) -> bool:
+        return hhmm_in_inclusive_window(self.start_ist, self.until_ist, now)
+
+
+def morning_profit_book_decision(
+    *,
+    open_side: PositionSide | None,
+    open_qty: int,
+    entry_avg: float | None,
+    mark: float | None,
+    policy: MorningProfitBookPolicy,
+    now: datetime | None = None,
+    is_index: bool = False,
+) -> dict[str, Any]:
+    """Evaluate morning first-hour profit booking for an open equity position.
+
+    Returns keys: active, action ('profit_book'|'none'), reason, exit_qty,
+    unrealized_pct (when computable).
+    """
+    if is_index:
+        return {
+            "active": False,
+            "action": "none",
+            "reason": "index_not_equity — morning TP stocks only",
+            "exit_qty": 0,
+            "unrealized_pct": None,
+        }
+    if not policy.enabled:
+        return {
+            "active": False,
+            "action": "none",
+            "reason": "morning_profit_book disabled",
+            "exit_qty": 0,
+            "unrealized_pct": None,
+        }
+    if open_side is None or int(open_qty) <= 0:
+        return {
+            "active": False,
+            "action": "none",
+            "reason": "no open position",
+            "exit_qty": 0,
+            "unrealized_pct": None,
+        }
+    if not policy.in_window(now):
+        return {
+            "active": False,
+            "action": "none",
+            "reason": (
+                f"outside morning_profit_book window "
+                f"{policy.start_ist}-{policy.until_ist} IST"
+            ),
+            "exit_qty": 0,
+            "unrealized_pct": None,
+        }
+    if entry_avg is None or float(entry_avg) <= 0 or mark is None or float(mark) <= 0:
+        return {
+            "active": True,
+            "action": "none",
+            "reason": "morning window: missing entry_avg/mark for TP check",
+            "exit_qty": 0,
+            "unrealized_pct": None,
+        }
+
+    pct = unrealized_pnl_pct(open_side, float(entry_avg), float(mark))
+    threshold = float(policy.min_unrealized_pct)
+    if pct >= threshold:
+        qty = profit_book_exit_qty(int(open_qty), fraction=policy.exit_fraction)
+        return {
+            "active": True,
+            "action": "profit_book",
+            "reason": (
+                f"morning_profit_book: uPnL={pct:.3f}% ≥ {threshold}% of entry "
+                f"({policy.start_ist}-{policy.until_ist} IST); exit_qty={qty}"
+            ),
+            "exit_qty": qty,
+            "unrealized_pct": pct,
+        }
+    return {
+        "active": True,
+        "action": "none",
+        "reason": (
+            f"morning window: uPnL={pct:.3f}% < {threshold}% of entry — hold"
+        ),
+        "exit_qty": 0,
+        "unrealized_pct": pct,
     }
 
 

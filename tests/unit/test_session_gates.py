@@ -6,9 +6,14 @@ from datetime import datetime
 
 import pytest
 
-from options_portal_domain.equity import plan_equity_intents
+from options_portal_domain.equity import (
+    plan_equity_intents,
+    profit_book_exit_qty,
+    unrealized_pnl_pct,
+)
 from options_portal_domain.session_gates import (
     MarketSentimentPolicy,
+    MorningProfitBookPolicy,
     SoftEodPolicy,
     at_or_after_ist,
     compute_index_bias,
@@ -16,6 +21,7 @@ from options_portal_domain.session_gates import (
     filter_entry_intents,
     is_cash_market_open,
     is_trading_session,
+    morning_profit_book_decision,
     overnight_hold_allowed,
     soft_flatten_decision,
 )
@@ -256,3 +262,130 @@ def test_market_sentiment_policy_from_config():
     )
     assert policy.enabled is True
     assert policy.symbols == ("NIFTY", "BANKNIFTY")
+
+
+def test_morning_profit_book_window_and_threshold():
+    """09:15–10:15 IST: +0.4% of entry → profit_book; after 10:15 → none."""
+    policy = MorningProfitBookPolicy(
+        enabled=True,
+        start_ist="09:15",
+        until_ist="10:15",
+        min_unrealized_pct=0.4,
+        exit_fraction=1.0,
+    )
+    soft = SoftEodPolicy.from_config(
+        {
+            "trading": {
+                "session": {
+                    "morning_profit_book": {
+                        "enabled": True,
+                        "start_ist": "09:15",
+                        "until_ist": "10:15",
+                        "min_unrealized_pct": 0.4,
+                    }
+                }
+            }
+        }
+    )
+    assert soft.in_morning_profit_window(datetime(2026, 11, 17, 9, 15, 0))
+    assert soft.in_morning_profit_window(datetime(2026, 11, 17, 10, 15, 0))
+    assert not soft.in_morning_profit_window(datetime(2026, 11, 17, 10, 16, 0))
+    assert not soft.in_morning_profit_window(datetime(2026, 11, 17, 11, 0, 0))
+
+    # Long: entry 100 → mark 100.40 = +0.40% → book
+    hit = morning_profit_book_decision(
+        open_side="long",
+        open_qty=1,
+        entry_avg=100.0,
+        mark=100.40,
+        policy=policy,
+        now=datetime(2026, 11, 17, 9, 45, 0),
+    )
+    assert hit["action"] == "profit_book"
+    assert hit["exit_qty"] == 1
+    assert hit["unrealized_pct"] == pytest.approx(0.4)
+    assert "morning_profit_book" in hit["reason"]
+
+    # Just under threshold
+    miss = morning_profit_book_decision(
+        open_side="long",
+        open_qty=1,
+        entry_avg=100.0,
+        mark=100.39,
+        policy=policy,
+        now=datetime(2026, 11, 17, 9, 45, 0),
+    )
+    assert miss["action"] == "none"
+    assert miss["unrealized_pct"] == pytest.approx(0.39)
+
+    # After window — no morning TP
+    late = morning_profit_book_decision(
+        open_side="long",
+        open_qty=1,
+        entry_avg=100.0,
+        mark=101.0,
+        policy=policy,
+        now=datetime(2026, 11, 17, 10, 16, 0),
+    )
+    assert late["action"] == "none"
+    assert late["active"] is False
+    assert "outside" in late["reason"]
+
+    # Indices never morning-TP
+    idx = morning_profit_book_decision(
+        open_side="long",
+        open_qty=1,
+        entry_avg=100.0,
+        mark=101.0,
+        policy=policy,
+        now=datetime(2026, 11, 17, 9, 30, 0),
+        is_index=True,
+    )
+    assert idx["action"] == "none"
+    assert "index_not_equity" in idx["reason"]
+
+    # Short geometry
+    short_hit = morning_profit_book_decision(
+        open_side="short",
+        open_qty=1,
+        entry_avg=200.0,
+        mark=199.0,  # +0.5%
+        policy=policy,
+        now=datetime(2026, 11, 17, 9, 20, 0),
+    )
+    assert short_hit["action"] == "profit_book"
+    assert unrealized_pnl_pct("short", 200.0, 199.0) == pytest.approx(0.5)
+
+
+def test_profit_book_exit_qty_full_and_scale_out():
+    """qty=1 → full exit; fraction=0.5 with qty>1 ready for later scale-out."""
+    assert profit_book_exit_qty(1, fraction=1.0) == 1
+    assert profit_book_exit_qty(4, fraction=0.5) == 2
+    assert profit_book_exit_qty(1, fraction=0.5) == 1  # at least 1 when open
+    assert profit_book_exit_qty(0, fraction=1.0) == 0
+
+    half = MorningProfitBookPolicy(exit_fraction=0.5, min_unrealized_pct=0.4)
+    decision = morning_profit_book_decision(
+        open_side="long",
+        open_qty=4,
+        entry_avg=100.0,
+        mark=100.5,
+        policy=half,
+        now=datetime(2026, 11, 17, 9, 30, 0),
+    )
+    assert decision["action"] == "profit_book"
+    assert decision["exit_qty"] == 2
+
+    intents = plan_equity_intents(
+        "RELIANCE",
+        SignalAction.EXIT,
+        open_side="long",
+        open_qty=4,
+        qty=1,
+        price=100.5,
+        reason=decision["reason"],
+        exit_qty=decision["exit_qty"],
+    )
+    assert len(intents) == 1
+    assert intents[0].qty == 2
+    assert intents[0].action_kind == "exit"
