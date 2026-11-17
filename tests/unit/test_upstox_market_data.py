@@ -222,8 +222,78 @@ def test_synthetic_bases_differ_across_symbols():
     assert bases["360ONE"] != 1000.0 or bases["BPCL"] != bases["360ONE"]
 
 
-def test_360one_has_instrument_key():
-    assert resolve_instrument_key("360ONE", overrides=None) == "NSE_EQ|INE726L01019"
+def test_360one_and_ioc_have_correct_instrument_keys():
+    """Stale/missing ISINs caused LTP miss → synthetic/shared marks (996.96 bug)."""
+    from options_portal_broker.instruments import clear_instrument_key_cache
+
+    clear_instrument_key_cache()
+    # Current Upstox NSE master ISIN for 360 ONE WAM (not legacy INE726L01019)
+    assert resolve_instrument_key("360ONE", overrides=None) == "NSE_EQ|INE466L01038"
+    assert resolve_instrument_key("IOC", overrides=None) == "NSE_EQ|INE242A01010"
+    assert resolve_instrument_key("BPCL", overrides=None) == "NSE_EQ|INE029A01011"
+    # Face-value / ISIN refresh cases
+    assert resolve_instrument_key("KOTAKBANK") == "NSE_EQ|INE237A01036"
+    assert resolve_instrument_key("BAJFINANCE") == "NSE_EQ|INE296A01032"
+    # Must not share keys across names
+    assert resolve_instrument_key("IOC") != resolve_instrument_key("360ONE")
+
+
+def test_fno_universe_equities_all_resolve_instrument_keys():
+    import csv
+    from pathlib import Path
+
+    from options_portal_broker.instruments import clear_instrument_key_cache
+
+    clear_instrument_key_cache()
+    path = Path("config/universe/nse_fno_underlyings.csv")
+    assert path.is_file()
+    missing: list[str] = []
+    for row in csv.DictReader(path.open(encoding="utf-8")):
+        if str(row.get("kind") or "").strip().lower() != "equity":
+            continue
+        sym = str(row.get("symbol") or "").strip().upper()
+        if resolve_instrument_key(sym) is None:
+            missing.append(sym)
+    assert missing == [], f"unmapped F&O equities (LTP will fail): {missing[:20]}"
+
+
+@pytest.mark.asyncio
+async def test_get_ltp_ioc_ignores_360one_quote():
+    """IOC must never take 360ONE's last_price from a multi-quote payload."""
+    from options_portal_broker.adapter import select_ltp_from_quote_data
+
+    ioc_key = resolve_instrument_key("IOC")
+    one_key = resolve_instrument_key("360ONE")
+    assert ioc_key and one_key and ioc_key != one_key
+    payload = {
+        "NSE_EQ:360ONE": {
+            "last_price": 996.96,
+            "instrument_token": one_key,
+        },
+        "NSE_EQ:IOC": {
+            "last_price": 144.04,
+            "instrument_token": ioc_key,
+        },
+    }
+    assert select_ltp_from_quote_data(
+        payload, symbol="IOC", instrument_key=ioc_key
+    ) == pytest.approx(144.04)
+    assert select_ltp_from_quote_data(
+        payload, symbol="IOC", instrument_key=ioc_key
+    ) != pytest.approx(996.96)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"status": "success", "data": payload})
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        adapter = UpstoxAdapter(access_token="test-token-not-real", http_client=client)
+        quote = await adapter.get_ltp("IOC")
+
+    assert quote is not None
+    assert quote["symbol"] == "IOC"
+    assert quote["instrument_key"] == ioc_key
+    assert quote["last_price"] == pytest.approx(144.04)
 
 
 @pytest.mark.asyncio

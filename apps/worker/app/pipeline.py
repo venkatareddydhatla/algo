@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from options_portal_broker.adapter import UpstoxAdapter
+from options_portal_broker.instruments import resolve_instrument_key
 from options_portal_domain.calendar import is_nse_trading_day
 from options_portal_domain.config import load_config, trading_mode
 from options_portal_domain.equity import plan_equity_intents, resolve_equity_mark
@@ -247,29 +248,62 @@ async def run_symbol_tick(symbol: str, config: dict[str, Any] | None = None) -> 
         or decision.action != SignalAction.HOLD
         or (open_qty > 0 and open_side is not None)
     )
+    instrument_key = resolve_instrument_key(
+        symbol, overrides=getattr(broker, "instrument_overrides", None)
+    )
+    result["instrument_key"] = instrument_key
     ltp_px: float | None = None
+    quote_instrument_key: str | None = None
     if may_trade:
         try:
             quote = await broker.get_ltp(symbol)
             if quote and quote.get("last_price") is not None:
                 # Guard: adapter must echo the requested symbol
                 q_sym = str(quote.get("symbol") or "").strip().upper()
+                q_key = str(quote.get("instrument_key") or "").strip()
                 if q_sym and q_sym != symbol.upper():
                     logger.error(
-                        "%s get_ltp returned mismatched symbol=%s — ignoring quote",
+                        "%s get_ltp returned mismatched symbol=%s instrument_key=%s — ignoring",
                         symbol,
                         q_sym,
+                        q_key or instrument_key,
+                    )
+                elif (
+                    instrument_key
+                    and q_key
+                    and q_key != instrument_key
+                ):
+                    logger.error(
+                        "%s get_ltp instrument_key mismatch want=%s got=%s — ignoring",
+                        symbol,
+                        instrument_key,
+                        q_key,
                     )
                 else:
                     raw_ltp = float(quote["last_price"])
                     if raw_ltp > 0:
                         ltp_px = raw_ltp
+                        quote_instrument_key = q_key or instrument_key
         except Exception:  # noqa: BLE001
-            logger.exception("%s get_ltp failed while resolving equity mark", symbol)
+            logger.exception(
+                "%s get_ltp failed instrument_key=%s while resolving equity mark",
+                symbol,
+                instrument_key,
+            )
+
+    # Live candle close only when Upstox returned bars for THIS instrument_key.
+    # Synthetic closes (missing key / HTTP failure) must not price paper fills
+    # when a live token is configured — that path previously shared ~996.96.
+    live_candle_close: float | None = None
+    if market_data_source == "upstox" and candle_close > 0:
+        live_candle_close = candle_close
+    elif candle_close > 0 and not broker.credentials_configured():
+        # No token: synthetic / fixture candles are the only MD (local demo)
+        live_candle_close = candle_close
 
     mark = resolve_equity_mark(
         ltp=ltp_px,
-        candle_close=candle_close or None,
+        candle_close=live_candle_close,
         # entry_avg from get_position(symbol) — never a global last-fill price
         entry_avg=entry_avg if open_qty > 0 else None,
     )
@@ -277,18 +311,45 @@ async def run_symbol_tick(symbol: str, config: dict[str, Any] | None = None) -> 
     result["mark_price"] = fill_price
     result["mark_source"] = mark.source
     result["quote_source"] = getattr(broker, "last_quote_source", mark.source)
+    result["mark_instrument_key"] = quote_instrument_key or instrument_key
     if may_trade:
-        if mark.source == "ltp":
-            logger.info("%s equity mark LTP=%.4f", symbol, fill_price)
-        else:
-            logger.warning(
-                "%s equity mark FALLBACK source=%s price=%.4f detail=%s "
-                "(prefer live LTP; entry-copy yields useless +0 PnL)",
-                symbol,
-                mark.source,
-                fill_price,
-                mark.detail,
+        logger.log(
+            logging.INFO if mark.source == "ltp" else logging.WARNING,
+            "%s equity mark source=%s price=%.4f instrument_key=%s "
+            "candle_source=%s quote_source=%s detail=%s",
+            symbol,
+            mark.source,
+            fill_price,
+            quote_instrument_key or instrument_key or "UNRESOLVED",
+            market_data_source,
+            getattr(broker, "last_quote_source", "?"),
+            mark.detail or mark.source,
+        )
+        # Token present but still on synthetic/entry fallback → skip paper order.
+        # Prevents IOC (etc.) from printing another name's LTP or a shared fake close.
+        if broker.credentials_configured() and mark.source not in {"ltp", "candle_close"}:
+            note = (
+                f"refusing paper fill: mark_source={mark.source} "
+                f"instrument_key={instrument_key or 'UNRESOLVED'} "
+                f"(need this symbol's LTP or live candle close)"
             )
+            logger.error("%s %s", symbol, note)
+            result["order"] = None
+            result["note"] = note
+            return result
+        if (
+            broker.credentials_configured()
+            and mark.source == "candle_close"
+            and market_data_source != "upstox"
+        ):
+            note = (
+                f"refusing paper fill on synthetic candle mark "
+                f"instrument_key={instrument_key or 'UNRESOLVED'}"
+            )
+            logger.error("%s %s", symbol, note)
+            result["order"] = None
+            result["note"] = note
+            return result
 
     if flatten["action"] == "flatten":
         logger.info("%s %s", symbol, flatten["reason"])

@@ -166,6 +166,26 @@ git pull origin cursor/purge-closed-trades-2133
 
 Verify: http://127.0.0.1:5173/trades — Closed trades empty / cleared; Open positions still listed. Bad shared 996.96 exits are gone. Still `dry_run` only.
 
+### Pull fix IOC/360ONE entry+exit marks (stacked)
+
+IOC (and ~170 other F&O names) had **no** Upstox `instrument_key`, so entry/exit fell back to synthetic candles. After the shared-base fix, IOC exits printed ~₹3958 (IOC’s hash synthetic) while entries could still show ₹996.96 from the older shared path / wrong 360ONE ISIN. This tip maps **every** F&O equity (including IOC) to the correct `NSE_EQ|<ISIN>`, fixes stale 360ONE/KOTAKBANK/BAJFINANCE keys, logs `symbol+instrument_key+price source` on every mark, and refuses paper fills on synthetic marks when `UPSTOX_ACCESS_TOKEN` is set.
+
+```powershell
+cd C:\algo
+Set-ExecutionPolicy -Scope Process Bypass
+.\deploy\windows\native\stop-native.ps1
+git fetch origin
+git checkout cursor/fix-ioc-entry-exit-marks-12ab
+git pull origin cursor/fix-ioc-entry-exit-marks-12ab
+.\deploy\windows\native\setup-native.ps1
+.\deploy\windows\native\start-native.ps1 -WithWorker
+
+# Clear bad closed history again (open positions kept)
+.\.venv\Scripts\python.exe scripts\purge_closed_trades.py --confirm
+```
+
+Verify: worker logs show `IOC LTP: source=upstox instrument_key=NSE_EQ|INE242A01010 price=…`; new IOC/360ONE fills use **that** symbol’s LTP (not 996.96 / 3958). Still `dry_run` only. **Purge closed trades again after this pull** so old contaminated rows disappear.
+
 ### Pull paper / dry-run trade retention (stacked)
 
 Keep **all** dry-run paper fills through the review week (no auto-delete). Trades UI shows **closed round-trips** (paginated; not today-only) — same entry/exit pairing as Backtest Fills and the daily summary email. Before real orders, purge/archive explicitly via admin API or `scripts\purge_paper_ledger.py`. After live, prefer ≥90 days fill retention. Policy: [`docs/options-portal-paper-retention.md`](./options-portal-paper-retention.md).

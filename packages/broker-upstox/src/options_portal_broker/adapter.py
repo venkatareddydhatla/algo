@@ -199,7 +199,11 @@ class UpstoxAdapter:
             candles = _synthetic_candles(symbol, timeframe, start, end)
             self.last_candle_source = "synthetic"
             self.last_candle_detail = f"unresolved instrument_key for {symbol} — synthetic"
-            logger.warning("No Upstox instrument_key for %s; using synthetic candles", symbol)
+            logger.error(
+                "%s candles: unresolved instrument_key — synthetic fallback "
+                "(paper fills must not reuse another symbol's price)",
+                symbol.upper(),
+            )
             return candles
 
         try:
@@ -209,14 +213,33 @@ class UpstoxAdapter:
             if live:
                 self.last_candle_source = "upstox"
                 self.last_candle_detail = f"live candles ({instrument_key})"
+                logger.info(
+                    "%s candles: source=upstox instrument_key=%s bars=%d last_close=%.4f",
+                    symbol.upper(),
+                    instrument_key,
+                    len(live),
+                    float(live[-1].close),
+                )
                 return live
             self.last_candle_source = "synthetic"
-            self.last_candle_detail = "Upstox returned empty candles — synthetic fallback"
-            logger.warning("Upstox empty candles for %s; synthetic fallback", symbol)
+            self.last_candle_detail = (
+                f"Upstox empty candles for {symbol} ({instrument_key}) — synthetic fallback"
+            )
+            logger.error(
+                "%s candles: empty Upstox response instrument_key=%s — synthetic fallback",
+                symbol.upper(),
+                instrument_key,
+            )
         except Exception:  # noqa: BLE001
             self.last_candle_source = "synthetic"
-            self.last_candle_detail = "Upstox candle fetch failed — synthetic fallback"
-            logger.exception("Upstox candle fetch failed for %s; synthetic fallback", symbol)
+            self.last_candle_detail = (
+                f"Upstox candle fetch failed for {symbol} ({instrument_key}) — synthetic"
+            )
+            logger.exception(
+                "%s candles: fetch failed instrument_key=%s — synthetic fallback",
+                symbol.upper(),
+                instrument_key,
+            )
 
         return _synthetic_candles(symbol, timeframe, start, end)
 
@@ -262,10 +285,19 @@ class UpstoxAdapter:
         """
         if not self.access_token:
             self.last_quote_source = "synthetic"
+            logger.warning(
+                "%s LTP: no UPSTOX_ACCESS_TOKEN — cannot price paper fill from live MD",
+                symbol.upper(),
+            )
             return None
         instrument_key = resolve_instrument_key(symbol, overrides=self.instrument_overrides)
         if not instrument_key:
             self.last_quote_source = "synthetic"
+            logger.error(
+                "%s LTP: unresolved instrument_key — refusing cross-symbol quote; "
+                "add symbol to config/universe/nse_eq_instrument_keys.csv",
+                symbol.upper(),
+            )
             return None
         client = await self._get_client()
         try:
@@ -286,13 +318,20 @@ class UpstoxAdapter:
             )
             if last_price is None:
                 self.last_quote_source = "synthetic"
-                logger.warning(
-                    "Upstox LTP response had no matching quote for %s (%s)",
-                    symbol,
+                logger.error(
+                    "%s LTP: no matching quote in response instrument_key=%s "
+                    "(never use another symbol's last_price)",
+                    symbol.upper(),
                     instrument_key,
                 )
                 return None
             self.last_quote_source = "upstox"
+            logger.info(
+                "%s LTP: source=upstox instrument_key=%s price=%.4f",
+                symbol.upper(),
+                instrument_key,
+                last_price,
+            )
             return {
                 "symbol": symbol.upper(),
                 "instrument_key": instrument_key,
@@ -300,7 +339,11 @@ class UpstoxAdapter:
                 "source": "upstox",
             }
         except Exception:  # noqa: BLE001
-            logger.exception("Upstox LTP fetch failed for %s", symbol)
+            logger.exception(
+                "%s LTP: fetch failed instrument_key=%s",
+                symbol.upper(),
+                instrument_key,
+            )
             self.last_quote_source = "synthetic"
             return None
 

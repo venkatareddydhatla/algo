@@ -422,7 +422,8 @@ def test_closing_n_symbols_do_not_share_one_exit_price(paper_env: Path):
     store = PaperTradeStore()
     # Distinct per-symbol entries (must not be overwritten by a shared mark)
     book = {
-        "360ONE": {"entry": 996.96, "ltp": 1005.50},
+        "360ONE": {"entry": 1176.80, "ltp": 1180.50},
+        "IOC": {"entry": 144.04, "ltp": 145.20},
         "BPCL": {"entry": 340.10, "ltp": 348.75},
         "AXISBANK": {"entry": 1120.00, "ltp": 1111.25},
         "ASIANPAINT": {"entry": 2910.00, "ltp": 2895.40},
@@ -470,15 +471,76 @@ def test_closing_n_symbols_do_not_share_one_exit_price(paper_env: Path):
     closed = {t["symbol"]: t for t in store.summary()["closed_trades"]}
     assert set(closed) == set(book)
     exit_prices = [closed[s]["exit_price"] for s in book]
+    entry_prices = [closed[s]["entry_price"] for s in book]
     assert len(set(exit_prices)) == len(book), exit_prices
-    assert 996.96 not in exit_prices  # 360ONE entry must not become everyone's exit
+    assert len(set(entry_prices)) == len(book), entry_prices
+    # Classic contamination print must not appear on any name's entry or exit
+    assert 996.96 not in exit_prices
+    assert 996.96 not in entry_prices
     for sym, px in book.items():
         assert closed[sym]["entry_price"] == pytest.approx(px["entry"])
         assert closed[sym]["exit_price"] == pytest.approx(px["ltp"])
-        assert closed[sym]["exit_price"] != pytest.approx(996.96) or sym == "360ONE"
-        # 360ONE exit is its LTP, not its entry
-        if sym == "360ONE":
-            assert closed[sym]["exit_price"] == pytest.approx(1005.50)
+        assert closed[sym]["exit_price"] != pytest.approx(996.96)
+        assert closed[sym]["entry_price"] != pytest.approx(996.96)
+    # IOC must not inherit 360ONE marks
+    assert closed["IOC"]["entry_price"] == pytest.approx(144.04)
+    assert closed["IOC"]["exit_price"] == pytest.approx(145.20)
+    assert closed["360ONE"]["exit_price"] == pytest.approx(1180.50)
+
+
+def test_ioc_and_360one_round_trips_keep_own_entry_and_exit(paper_env: Path):
+    """User bug: IOC SHORT entry 996.96 (360ONE) / exit synthetic — marks must be per-symbol."""
+    store = PaperTradeStore()
+    # SHORT entries (PE bias)
+    for sym, entry, exit_px in (
+        ("IOC", 144.04, 145.50),
+        ("360ONE", 1176.80, 1160.25),
+        ("BPCL", 302.00, 305.10),
+    ):
+        open_i = plan_equity_intents(
+            sym,
+            SignalAction.BUY_PE_BIAS,
+            open_side=None,
+            open_qty=0,
+            qty=1,
+            price=entry,
+            reason=f"{sym} short entry",
+        )[0]
+        assert open_i.side == "SELL"
+        store.record_simulated_fill(
+            open_i,
+            OrderResult(f"e-{sym}", "simulated", "dry_run", f"SIM-e-{sym}", None),
+        )
+        mark = resolve_equity_mark(ltp=exit_px, candle_close=None, entry_avg=entry)
+        assert mark.source == "ltp"
+        assert mark.price == pytest.approx(exit_px)
+        # Cover short
+        cover = plan_equity_intents(
+            sym,
+            SignalAction.HOLD,
+            open_side="short",
+            open_qty=1,
+            qty=1,
+            price=mark.price,
+            reason="soft_flatten",
+        )[0]
+        assert cover.side == "BUY"
+        store.record_simulated_fill(
+            cover,
+            OrderResult(f"x-{sym}", "simulated", "dry_run", f"SIM-x-{sym}", None),
+        )
+
+    closed = {t["symbol"]: t for t in store.summary()["closed_trades"]}
+    assert closed["IOC"]["entry_price"] == pytest.approx(144.04)
+    assert closed["IOC"]["exit_price"] == pytest.approx(145.50)
+    assert closed["360ONE"]["entry_price"] == pytest.approx(1176.80)
+    assert closed["360ONE"]["exit_price"] == pytest.approx(1160.25)
+    # Contamination prints
+    assert closed["IOC"]["entry_price"] != pytest.approx(996.96)
+    assert closed["IOC"]["exit_price"] != pytest.approx(996.96)
+    assert closed["IOC"]["exit_price"] != pytest.approx(3958.95)  # old IOC synthetic
+    assert closed["IOC"]["entry_price"] != closed["360ONE"]["entry_price"]
+    assert closed["IOC"]["exit_price"] != closed["360ONE"]["exit_price"]
 
 
 @pytest.mark.asyncio
