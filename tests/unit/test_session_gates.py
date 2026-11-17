@@ -36,6 +36,7 @@ def test_soft_eod_policy_from_config():
                     "close": "15:30",
                     "no_new_entries_after": "15:20",
                     "soft_flatten_ist": "15:20",
+                    "soft_flatten_until_ist": "15:40",
                     "overnight_hold_min_hybrid_abs": 0.70,
                 }
             }
@@ -43,10 +44,15 @@ def test_soft_eod_policy_from_config():
     )
     assert policy.close_ist == "15:30"
     assert policy.soft_flatten_ist == "15:20"
+    assert policy.soft_flatten_until_ist == "15:40"
     assert policy.overnight_hold_min_hybrid_abs == 0.70
     assert "15:40" in policy.user_hours_note
     assert policy.past_soft_flatten(datetime(2026, 11, 15, 15, 19, 0)) is False
     assert policy.past_soft_flatten(datetime(2026, 11, 15, 15, 20, 0)) is True
+    assert policy.in_soft_flatten_window(datetime(2026, 11, 15, 15, 20, 0)) is True
+    assert policy.in_soft_flatten_window(datetime(2026, 11, 15, 15, 40, 0)) is True
+    assert policy.in_soft_flatten_window(datetime(2026, 11, 15, 15, 41, 0)) is False
+    assert policy.past_soft_flatten_until(datetime(2026, 11, 15, 17, 13, 0)) is True
 
 
 def test_overnight_hold_same_side_conviction():
@@ -86,9 +92,13 @@ def test_soft_flatten_allows_overnight_on_strong_same_side():
     assert "conviction" in decision["reason"]
 
 
-def test_no_hard_force_at_1540_still_uses_soft_rules():
-    """15:40 is past soft flatten — still conviction-based, not a separate hard square-off."""
-    policy = SoftEodPolicy(soft_flatten_ist="15:20", overnight_hold_min_hybrid_abs=0.70)
+def test_soft_flatten_window_end_still_conviction_based():
+    """At soft_flatten_until (15:40) still conviction-based — not a hard force close."""
+    policy = SoftEodPolicy(
+        soft_flatten_ist="15:20",
+        soft_flatten_until_ist="15:40",
+        overnight_hold_min_hybrid_abs=0.70,
+    )
     late = datetime(2026, 11, 15, 15, 40, 0)
     hold = soft_flatten_decision(
         open_side="long",
@@ -106,6 +116,27 @@ def test_no_hard_force_at_1540_still_uses_soft_rules():
     )
     assert hold["action"] == "overnight_hold"
     assert flatten["action"] == "flatten"
+
+
+def test_soft_flatten_refused_after_until_cutoff():
+    """After soft_flatten_until_ist: refuse new soft_flatten (late worker / hung scan)."""
+    policy = SoftEodPolicy(
+        soft_flatten_ist="15:20",
+        soft_flatten_until_ist="15:40",
+        overnight_hold_min_hybrid_abs=0.70,
+    )
+    after = datetime(2026, 11, 15, 17, 13, 0)
+    decision = soft_flatten_decision(
+        open_side="long",
+        open_qty=1,
+        hybrid_score=0.65,
+        policy=policy,
+        now=after,
+    )
+    assert decision["action"] == "none"
+    assert decision["active"] is False
+    assert "refused" in decision["reason"]
+    assert "15:40" in decision["reason"]
 
 
 def test_filter_entry_intents_keeps_exits():

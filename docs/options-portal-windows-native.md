@@ -62,7 +62,7 @@ Verify: http://127.0.0.1:5173/trades shows paper fills (side/qty/price/IST/reaso
 
 ### Pull soft EOD + market sentiment (stacked)
 
-Soft flatten at **15:20 IST** (close paper equity unless strong same-side `|hybrid|` overnight conviction). Session close stays **15:30** NSE. User monitoring note: **09:15–15:40 IST** — no hard force square-off at 15:40. Optional light NIFTY/BANKNIFTY gate blocks new *opposite* entries only when index hybrid strongly conflicts.
+Soft flatten window **15:20–15:40 IST** (close paper equity unless strong same-side `|hybrid|` overnight conviction). After **15:40** the worker **refuses** new soft_flatten exits (missed window / late restart) — not a hard force square-off. Open positions are evaluated on a **dedicated open-book poll** (~15s; `SOFT_FLATTEN_POLL_SEC`) so soft flatten is not blocked behind a multi-minute full F&O scan. Session close stays **15:30** NSE. Optional light NIFTY/BANKNIFTY gate blocks new *opposite* entries only when index hybrid strongly conflicts.
 
 ```powershell
 cd C:\algo
@@ -75,7 +75,7 @@ git pull origin cursor/soft-eod-market-sentiment-bc84
 .\deploy\windows\native\start-native.ps1 -WithWorker
 ```
 
-Config knobs (non-secret): `trading.session.soft_flatten_ist`, `overnight_hold_min_hybrid_abs`, `trading.market_sentiment.enabled`. Worker logs flatten / overnight-hold / index-block reasons. Still `dry_run` only.
+Config knobs (non-secret): `trading.session.soft_flatten_ist`, `soft_flatten_until_ist`, `soft_flatten_poll_interval_sec`, `overnight_hold_min_hybrid_abs`, `trading.market_sentiment.enabled`. Worker logs flatten / overnight-hold / refused-after-until / index-block reasons. Still `dry_run` only.
 
 ### Pull News scroll + UPDATED date/time + retention (stacked)
 

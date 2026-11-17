@@ -9,8 +9,10 @@ import signal
 import time
 from typing import Any
 
-from options_portal_domain.config import load_config, scan_symbols, watchlist_symbols
-from options_portal_domain.tz import ensure_tzdata
+from options_portal_domain.calendar import is_nse_trading_day
+from options_portal_domain.config import load_config, scan_symbols, trading_mode, watchlist_symbols
+from options_portal_domain.session_gates import SoftEodPolicy
+from options_portal_domain.tz import ensure_tzdata, now_ist
 from options_portal_domain.universe import scan_batch_size
 from options_portal_notify.daily_summary import (
     QUIET_SUMMARY_REASONS,
@@ -54,7 +56,7 @@ async def _run_batch(symbols: list[str], cfg: dict) -> None:
     New equity entries are staged during the scan and admitted afterward by
     strongest |hybrid| into free slots (dynamic floor/ceiling + min |hybrid|
     when enabled; anti-churn: keep existing opens; do not rotate for tiny
-    score edges). Soft flatten / overnight rules unchanged.
+    score edges). Soft flatten also runs on a dedicated open-book poll loop.
     """
     trading = cfg.get("trading", {})
     batch = scan_batch_size(trading)
@@ -92,12 +94,116 @@ async def _run_batch(symbols: list[str], cfg: dict) -> None:
             logger.exception("Entry selection flush failed")
 
 
+async def _tick_open_book_soft_flatten(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Evaluate soft flatten for open paper symbols only (timely path)."""
+    soft_policy = SoftEodPolicy.from_config(cfg)
+    ist_now = now_ist()
+    if not is_nse_trading_day(ist_now.date()):
+        return {"ran": False, "reason": "non_trading_day", "symbols": 0}
+    if not soft_policy.in_soft_flatten_window(ist_now):
+        return {
+            "ran": False,
+            "reason": "outside_soft_flatten_window",
+            "symbols": 0,
+            "window": f"{soft_policy.soft_flatten_ist}-{soft_policy.soft_flatten_until_ist}",
+        }
+
+    mode = trading_mode(cfg)
+    safe_mode = "dry_run" if mode == "live" else mode
+    symbols: list[str] = []
+    try:
+        from options_portal_persistence.paper_trades import PaperTradeStore
+
+        paper = PaperTradeStore()
+        if paper.available:
+            symbols = [str(s).upper() for s in paper.open_symbols(mode=safe_mode)]  # type: ignore[arg-type]
+    except Exception:  # noqa: BLE001
+        logger.exception("soft-flatten open-book: paper ledger unavailable")
+        return {"ran": False, "reason": "paper_unavailable", "symbols": 0}
+
+    if not symbols:
+        return {"ran": True, "reason": "no_open_positions", "symbols": 0}
+
+    # Modest concurrency — open book is small (≤ max_open_symbols).
+    trading = cfg.get("trading", {}) or {}
+    batch = min(scan_batch_size(trading), max(1, len(symbols)))
+    sem = asyncio.Semaphore(batch)
+
+    async def _one(symbol: str) -> None:
+        async with sem:
+            try:
+                # No entry admission — exits / soft flatten only on this path.
+                result = await run_symbol_tick(symbol, cfg, entry_admission=None)
+                soft = result.get("soft_eod") or {}
+                logger.info(
+                    "soft-flatten open-book tick %s -> hybrid=%s soft=%s note=%s",
+                    symbol,
+                    result.get("hybrid_action"),
+                    soft.get("action"),
+                    result.get("note") or soft.get("reason"),
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("soft-flatten open-book tick failed for %s", symbol)
+
+    logger.info(
+        "Soft-flatten open-book pass starting symbols=%d window=%s-%s IST",
+        len(symbols),
+        soft_policy.soft_flatten_ist,
+        soft_policy.soft_flatten_until_ist,
+    )
+    await asyncio.gather(*[_one(s) for s in symbols])
+    return {"ran": True, "reason": "ok", "symbols": len(symbols)}
+
+
+async def soft_flatten_poll_loop(stop_event: asyncio.Event) -> None:
+    """Poll soft flatten on open paper positions (not blocked by full scans).
+
+    Full-universe scans can run many minutes under live MD. Soft flatten used
+    to fire only when each symbol's turn arrived mid-scan, so a slow/hung cycle
+    (or a symbol last seen before 15:20) could exit hours late. This loop ticks
+    the open book on its own cadence inside the soft-flatten window.
+    """
+    cfg = load_config()
+    soft_policy = SoftEodPolicy.from_config(cfg)
+    poll_sec = soft_policy.soft_flatten_poll_interval_sec
+    logger.info(
+        "Soft-flatten open-book loop starting poll=%ss window=%s-%s IST "
+        "(independent of full-universe scan)",
+        poll_sec,
+        soft_policy.soft_flatten_ist,
+        soft_policy.soft_flatten_until_ist,
+    )
+    # Immediate check so a restart inside the window still flattens promptly.
+    try:
+        status = await _tick_open_book_soft_flatten(cfg)
+        if status.get("ran") and status.get("symbols", 0) > 0:
+            logger.info("Soft-flatten open-book pass: %s", status)
+    except Exception:  # noqa: BLE001
+        logger.exception("Soft-flatten open-book pass failed")
+    while not stop_event.is_set():
+        cfg = load_config()
+        soft_policy = SoftEodPolicy.from_config(cfg)
+        poll_sec = soft_policy.soft_flatten_poll_interval_sec
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=poll_sec)
+            break
+        except TimeoutError:
+            try:
+                status = await _tick_open_book_soft_flatten(cfg)
+                if status.get("ran") and int(status.get("symbols") or 0) > 0:
+                    logger.info("Soft-flatten open-book pass: %s", status)
+            except Exception:  # noqa: BLE001
+                logger.exception("Soft-flatten open-book pass failed")
+    logger.info("Soft-flatten open-book loop stopped")
+
+
 async def daily_summary_poll_loop(stop_event: asyncio.Event) -> None:
     """Poll 16:00 IST daily summary on its own cadence (not after full scans).
 
     Full-universe scans can run many minutes (longer under live broker limits).
-    Soft-flatten fill emails fire mid-scan; the daily summary used to wait until
-    ``_run_batch`` returned, so a long/hung cycle after 15:20 could miss 16:00.
+    Soft-flatten open-book + fill emails run on soft_flatten_poll_loop; the
+    daily summary used to wait until ``_run_batch`` returned, so a long/hung
+    cycle after 15:20 could miss 16:00.
     """
     cfg = load_config()
     poll_sec = daily_summary_config(cfg)["poll_interval_sec"]
@@ -160,7 +266,7 @@ async def pipeline_loop() -> None:
             elapsed,
             scan_batch_size(cfg.get("trading", {})),
         )
-        # Daily Gmail summary runs in daily_summary_poll_loop (not gated on scan).
+        # Soft flatten + daily summary run on dedicated loops (not gated on scan).
         try:
             await asyncio.wait_for(_stop.wait(), timeout=interval)
         except TimeoutError:
@@ -169,8 +275,11 @@ async def pipeline_loop() -> None:
 
 
 async def loop() -> None:
-    """Run pipeline + news + daily-summary pollers concurrently until stop."""
+    """Run pipeline + news + soft-flatten + daily-summary pollers until stop."""
     news_task = asyncio.create_task(news_poll_loop(_stop), name="news-poll")
+    soft_flatten_task = asyncio.create_task(
+        soft_flatten_poll_loop(_stop), name="soft-flatten"
+    )
     summary_task = asyncio.create_task(
         daily_summary_poll_loop(_stop), name="daily-summary"
     )
@@ -178,7 +287,7 @@ async def loop() -> None:
         await pipeline_loop()
     finally:
         _stop.set()
-        for task in (news_task, summary_task):
+        for task in (news_task, soft_flatten_task, summary_task):
             try:
                 await asyncio.wait_for(task, timeout=5)
             except (TimeoutError, asyncio.CancelledError):

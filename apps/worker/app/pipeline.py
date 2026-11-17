@@ -202,10 +202,13 @@ async def run_symbol_tick(
     result["trading_day"] = trading_day
     result["session"] = {
         "soft_flatten_ist": soft_policy.soft_flatten_ist,
+        "soft_flatten_until_ist": soft_policy.soft_flatten_until_ist,
         "no_new_entries_after": soft_policy.no_new_entries_after,
         "close_ist": soft_policy.close_ist,
         "user_hours_note": soft_policy.user_hours_note,
         "past_soft_flatten": soft_policy.past_soft_flatten(ist_now),
+        "in_soft_flatten_window": soft_policy.in_soft_flatten_window(ist_now),
+        "past_soft_flatten_until": soft_policy.past_soft_flatten_until(ist_now),
         "past_no_new_entries": soft_policy.past_no_new_entries(ist_now),
         "trading_day": trading_day,
     }

@@ -1,15 +1,19 @@
 """Soft EOD flatten + light index market-sentiment gates (IST).
 
 Product rules (equity dry-run):
-- Soft flatten at soft_flatten_ist (default 15:20 IST): close open paper equity
-  unless |hybrid| meets overnight conviction on the same side.
-- No hard force square-off at 15:40.
+- Soft flatten window [soft_flatten_ist, soft_flatten_until_ist] inclusive by
+  HH:MM (default 15:20–15:40 IST): close open paper equity unless |hybrid|
+  meets overnight conviction on the same side.
+- After soft_flatten_until_ist: refuse new soft_flatten exits (do not invent
+  late-afternoon paper fills on a stuck/restarted worker). Positions left open
+  by a missed window stay open — this is not a hard 15:40 force square-off.
 - Optional light NIFTY/BANKNIFTY gate: block new opposite entries only when
   index hybrid strongly conflicts; skip when noisy/weak.
 """
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import datetime, time
 from typing import Any, Literal, Sequence
@@ -19,6 +23,9 @@ from options_portal_domain.tz import ist, now_ist
 from options_portal_domain.types import SignalAction
 
 IndexBias = Literal["bullish", "bearish", "neutral", "noisy", "unavailable"]
+
+# Worker open-book soft-flatten poll (independent of full-universe scan).
+DEFAULT_SOFT_FLATTEN_POLL_SEC = 15
 
 
 def parse_hhmm(value: str) -> time:
@@ -34,9 +41,29 @@ def _ist_clock(now: datetime | None = None) -> datetime:
     return dt.astimezone(ist())
 
 
+def _hhmm_tuple(value: time | str) -> tuple[int, int]:
+    t = parse_hhmm(value) if isinstance(value, str) else value
+    return (int(t.hour), int(t.minute))
+
+
 def at_or_after_ist(hhmm: str, now: datetime | None = None) -> bool:
     clock = _ist_clock(now)
-    return clock.time() >= parse_hhmm(hhmm)
+    return _hhmm_tuple(clock.time()) >= _hhmm_tuple(hhmm)
+
+
+def hhmm_in_inclusive_window(
+    start_hhmm: str,
+    until_hhmm: str,
+    now: datetime | None = None,
+) -> bool:
+    """True when IST clock HH:MM is in [start, until] inclusive."""
+    clock = _hhmm_tuple(_ist_clock(now).time())
+    start = _hhmm_tuple(start_hhmm)
+    until = _hhmm_tuple(until_hhmm)
+    if start <= until:
+        return start <= clock <= until
+    # Rare wrap across midnight — keep behavior defined.
+    return clock >= start or clock <= until
 
 
 @dataclass(frozen=True)
@@ -47,9 +74,14 @@ class SoftEodPolicy:
     close_ist: str = "15:30"
     no_new_entries_after: str = "15:20"
     soft_flatten_ist: str = "15:20"
+    # Last HH:MM IST minute where soft_flatten exits may still fire (inclusive).
+    soft_flatten_until_ist: str = "15:40"
     overnight_hold_min_hybrid_abs: float = 0.70
+    soft_flatten_poll_interval_sec: int = DEFAULT_SOFT_FLATTEN_POLL_SEC
     # Documented user monitoring window (no hard flatten at end)
-    user_hours_note: str = "09:15–15:40 IST (soft flatten 15:20; no hard 15:40 square-off)"
+    user_hours_note: str = (
+        "09:15–15:40 IST (soft flatten 15:20–15:40; no hard 15:40 square-off)"
+    )
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> SoftEodPolicy:
@@ -64,6 +96,12 @@ class SoftEodPolicy:
                 equity.get("overnight_hold_min_abs_hybrid", 0.70),
             ),
         )
+        poll = session.get(
+            "soft_flatten_poll_interval_sec", DEFAULT_SOFT_FLATTEN_POLL_SEC
+        )
+        env_poll = os.environ.get("SOFT_FLATTEN_POLL_SEC")
+        if env_poll is not None and str(env_poll).strip() != "":
+            poll = env_poll
         return cls(
             open_ist=str(session.get("open", "09:15")),
             close_ist=str(session.get("close", "15:30")),
@@ -71,11 +109,13 @@ class SoftEodPolicy:
             soft_flatten_ist=str(
                 session.get("soft_flatten_ist", session.get("no_new_entries_after", "15:20"))
             ),
+            soft_flatten_until_ist=str(session.get("soft_flatten_until_ist", "15:40")),
             overnight_hold_min_hybrid_abs=float(overnight),
+            soft_flatten_poll_interval_sec=max(5, int(poll)),
             user_hours_note=str(
                 session.get(
                     "user_hours_note",
-                    "09:15–15:40 IST (soft flatten 15:20; no hard 15:40 square-off)",
+                    "09:15–15:40 IST (soft flatten 15:20–15:40; no hard 15:40 square-off)",
                 )
             ),
         )
@@ -85,6 +125,17 @@ class SoftEodPolicy:
 
     def past_soft_flatten(self, now: datetime | None = None) -> bool:
         return at_or_after_ist(self.soft_flatten_ist, now)
+
+    def in_soft_flatten_window(self, now: datetime | None = None) -> bool:
+        """True during the inclusive soft-flatten HH:MM window."""
+        return hhmm_in_inclusive_window(
+            self.soft_flatten_ist, self.soft_flatten_until_ist, now
+        )
+
+    def past_soft_flatten_until(self, now: datetime | None = None) -> bool:
+        """True when IST clock HH:MM is strictly after soft_flatten_until_ist."""
+        clock = _hhmm_tuple(_ist_clock(now).time())
+        return clock > _hhmm_tuple(self.soft_flatten_until_ist)
 
 
 def overnight_hold_allowed(
@@ -124,6 +175,15 @@ def soft_flatten_decision(
             "active": False,
             "action": "none",
             "reason": f"before soft_flatten_ist={policy.soft_flatten_ist}",
+        }
+    if policy.past_soft_flatten_until(now):
+        return {
+            "active": False,
+            "action": "none",
+            "reason": (
+                f"soft_flatten refused: after soft_flatten_until_ist="
+                f"{policy.soft_flatten_until_ist} (missed window; leave open)"
+            ),
         }
     if overnight_hold_allowed(
         open_side, hybrid_score, min_abs=policy.overnight_hold_min_hybrid_abs

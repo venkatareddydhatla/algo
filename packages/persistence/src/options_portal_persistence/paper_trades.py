@@ -239,17 +239,23 @@ class PaperTradeStore:
             ).fetchone()
 
             if intent.action_kind in {"exit", "flip_close"}:
-                if pos:
-                    avg = float(pos["avg_price"])
-                    qty = int(intent.qty)
-                    exit_mark = float(intent.limit_price)
-                    realized = realized_equity_pnl(
-                        str(pos["side"]), avg, exit_mark, qty
-                    )
-                    conn.execute(
-                        "DELETE FROM paper_positions WHERE mode = ? AND symbol = ?",
-                        (mode, intent.symbol),
-                    )
+                # Concurrent soft-flatten / scan ticks can both plan an exit;
+                # only the first may close. Do not invent a second fill/email.
+                if not pos:
+                    return {
+                        "persisted": False,
+                        "reason": "no open position for exit",
+                    }
+                avg = float(pos["avg_price"])
+                qty = int(intent.qty)
+                exit_mark = float(intent.limit_price)
+                realized = realized_equity_pnl(
+                    str(pos["side"]), avg, exit_mark, qty
+                )
+                conn.execute(
+                    "DELETE FROM paper_positions WHERE mode = ? AND symbol = ?",
+                    (mode, intent.symbol),
+                )
                 resulting = None
             else:
                 # entry / flip_open
