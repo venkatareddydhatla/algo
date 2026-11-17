@@ -12,9 +12,11 @@ from options_portal_domain.calendar import is_nse_trading_day
 from options_portal_domain.config import load_config, trading_mode
 from options_portal_domain.equity import plan_equity_intents, resolve_equity_mark
 from options_portal_domain.session_gates import (
+    AtrTrailScaleOutPolicy,
     MarketSentimentPolicy,
     MorningProfitBookPolicy,
     SoftEodPolicy,
+    atr_trail_scale_out_decision,
     compute_index_bias,
     entry_conflicts_with_index,
     filter_entry_intents,
@@ -44,6 +46,9 @@ logger = logging.getLogger(__name__)
 # Last hybrid scores for index symbols — light market_sentiment gate (process-local).
 _INDEX_HYBRID_CACHE: dict[str, float] = {}
 
+# ATR trail extreme / stop per symbol (process-local; re-seeds after worker restart).
+_ATR_TRAIL_STATE: dict[str, dict[str, Any]] = {}
+
 
 def get_index_hybrid_cache() -> dict[str, float]:
     return dict(_INDEX_HYBRID_CACHE)
@@ -51,6 +56,26 @@ def get_index_hybrid_cache() -> dict[str, float]:
 
 def clear_index_hybrid_cache() -> None:
     _INDEX_HYBRID_CACHE.clear()
+
+
+def get_atr_trail_state(symbol: str) -> dict[str, Any]:
+    """Mutable per-symbol trail state (activated / extreme / trail_stop)."""
+    key = symbol.upper()
+    if key not in _ATR_TRAIL_STATE:
+        _ATR_TRAIL_STATE[key] = {
+            "activated": False,
+            "extreme": None,
+            "trail_stop": None,
+        }
+    return _ATR_TRAIL_STATE[key]
+
+
+def clear_atr_trail_state(symbol: str | None = None) -> None:
+    """Clear one symbol (or all) after flat / for tests."""
+    if symbol is None:
+        _ATR_TRAIL_STATE.clear()
+        return
+    _ATR_TRAIL_STATE.pop(symbol.upper(), None)
 
 
 def _remember_index_hybrid(symbol: str, hybrid_score: float, policy: MarketSentimentPolicy) -> None:
@@ -206,6 +231,7 @@ async def run_symbol_tick(
 
     soft_policy = SoftEodPolicy.from_config(cfg)
     morning_policy = MorningProfitBookPolicy.from_config(cfg)
+    atr_trail_policy = AtrTrailScaleOutPolicy.from_config(cfg)
     mkt_policy = MarketSentimentPolicy.from_config(cfg)
     _remember_index_hybrid(symbol, decision.hybrid_score, mkt_policy)
     # Resolve instrument key early for index segment check (NSE_INDEX/BSE_INDEX).
@@ -298,7 +324,23 @@ async def run_symbol_tick(
         }
     result["soft_eod"] = flatten
 
-    if flatten["action"] == "overnight_hold":
+    atr_mgmt_needed = (
+        atr_trail_policy.enabled
+        and not index_underlying
+        and open_qty > 0
+        and open_side is not None
+    )
+    morning_mgmt_needed = (
+        not index_underlying
+        and open_qty > 0
+        and open_side is not None
+        and morning_policy.enabled
+        and morning_policy.in_window(ist_now)
+    )
+
+    # Overnight hold: still fetch mark when ATR/morning may exit (priority >
+    # soft_flatten). Only short-circuit when no exit management can fire.
+    if flatten["action"] == "overnight_hold" and not atr_mgmt_needed and not morning_mgmt_needed:
         logger.info("%s %s", symbol, flatten["reason"])
         intents = []
         result["order"] = None
@@ -319,12 +361,8 @@ async def run_symbol_tick(
         flatten["action"] == "flatten"
         or decision.action != SignalAction.HOLD
         or (open_qty > 0 and open_side is not None)
-        or (
-            not index_underlying
-            and open_qty > 0
-            and morning_policy.enabled
-            and morning_policy.in_window(ist_now)
-        )
+        or atr_mgmt_needed
+        or morning_mgmt_needed
     )
     ltp_px: float | None = None
     quote_instrument_key: str | None = None
@@ -426,19 +464,33 @@ async def run_symbol_tick(
             return result
 
     atr14: float | None = None
-    if (
-        not index_underlying
-        and open_qty > 0
-        and morning_policy.enabled
-        and morning_policy.in_window(ist_now)
-        and candles
-    ):
+    atr_period = (
+        atr_trail_policy.atr_period
+        if atr_mgmt_needed
+        else morning_policy.atr_period
+    )
+    if (atr_mgmt_needed or morning_mgmt_needed) and candles:
         try:
-            atr14 = atr_indicator(candles, morning_policy.atr_period)
+            atr14 = atr_indicator(candles, atr_period)
         except Exception:  # noqa: BLE001
-            logger.exception("%s ATR%d compute failed for morning TP/stop", symbol, morning_policy.atr_period)
+            logger.exception(
+                "%s ATR%d compute failed for open-book exits", symbol, atr_period
+            )
             atr14 = None
     result["atr14"] = atr14
+
+    trail_state = get_atr_trail_state(symbol) if atr_mgmt_needed else None
+    atr_mgmt = atr_trail_scale_out_decision(
+        open_side=open_side,  # type: ignore[arg-type]
+        open_qty=open_qty,
+        entry_avg=entry_avg,
+        mark=fill_price if may_trade else None,
+        policy=atr_trail_policy,
+        atr14=atr14,
+        is_index=index_underlying,
+        trail_state=trail_state,
+    )
+    result["atr_trail"] = atr_mgmt
 
     morning_tp = morning_profit_book_decision(
         open_side=open_side,  # type: ignore[arg-type]
@@ -452,17 +504,28 @@ async def run_symbol_tick(
     )
     result["morning_tp"] = morning_tp
 
-    if flatten["action"] == "flatten":
-        logger.info("%s %s", symbol, flatten["reason"])
+    # Same-tick priority: atr stop/trail > scale/profit > morning > soft_flatten.
+    atr_exit_actions = {
+        "atr_stop",
+        "atr_trail",
+        "profit_book",
+        "profit_scale_out",
+    }
+    if atr_mgmt.get("action") in atr_exit_actions:
+        logger.info("%s %s", symbol, atr_mgmt["reason"])
         intents = plan_equity_intents(
             symbol,
-            SignalAction.HOLD,
+            SignalAction.EXIT,
             open_side=open_side,  # type: ignore[arg-type]
             open_qty=open_qty,
             qty=share_qty,
             price=fill_price,
-            reason=flatten["reason"],
+            reason=str(atr_mgmt["reason"]),
+            exit_qty=int(atr_mgmt.get("exit_qty") or open_qty),
         )
+        # Full flat clears trail memory; partial scale-out keeps extreme.
+        if int(atr_mgmt.get("exit_qty") or 0) >= int(open_qty):
+            clear_atr_trail_state(symbol)
     elif morning_tp.get("action") in {"profit_book", "stop"}:
         logger.info("%s %s", symbol, morning_tp["reason"])
         intents = plan_equity_intents(
@@ -475,6 +538,33 @@ async def run_symbol_tick(
             reason=str(morning_tp["reason"]),
             exit_qty=int(morning_tp.get("exit_qty") or open_qty),
         )
+        if int(morning_tp.get("exit_qty") or 0) >= int(open_qty):
+            clear_atr_trail_state(symbol)
+    elif flatten["action"] == "flatten":
+        logger.info("%s %s", symbol, flatten["reason"])
+        intents = plan_equity_intents(
+            symbol,
+            SignalAction.HOLD,
+            open_side=open_side,  # type: ignore[arg-type]
+            open_qty=open_qty,
+            qty=share_qty,
+            price=fill_price,
+            reason=flatten["reason"],
+        )
+        clear_atr_trail_state(symbol)
+    elif flatten["action"] == "overnight_hold":
+        # ATR/morning did not exit — keep overnight conviction path.
+        logger.info("%s %s", symbol, flatten["reason"])
+        intents = []
+        result["order"] = None
+        result["note"] = flatten["reason"]
+        result["overnight_hold"] = True
+        await notifier.send(
+            f"{symbol} overnight hold",
+            flatten["reason"],
+            {"hybrid_score": decision.hybrid_score, "open_side": open_side},
+        )
+        return result
     elif index_underlying:
         # Defense: never plan stock entry for indices even if earlier gate missed.
         intents = []
@@ -489,6 +579,9 @@ async def run_symbol_tick(
             price=fill_price,
             reason=reason_summary,
         )
+        # Fresh entry / flip_open should start without stale trail state.
+        if any(getattr(i, "action_kind", None) in {"entry", "flip_open"} for i in intents):
+            clear_atr_trail_state(symbol)
 
     # Cash entry window only: [open_ist, no_new_entries_after) on trading days.
     # Nights / pre-open / after soft-flatten start → drop entry/flip_open; exits kept.

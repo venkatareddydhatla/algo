@@ -90,6 +90,21 @@ trading:
     equity_share_qty: 1        # mirror of trading.equity.share_qty (risk gate default)
     max_equity_qty_per_symbol: 1
     require_news_context: false  # if true, skip orders when news pipeline degraded
+    # All-day ATR trail + profit scale-out for open equity (stocks only; ~15s poll).
+    # Priority same tick: atr_stop/atr_trail > profit_book|profit_scale_out > soft_flatten.
+    # qty=1 (current): profit threshold → full exit reason profit_book (locks winners).
+    # qty>1: scale_out_fraction (0.5) → profit_scale_out. Morning TP/stop unchanged.
+    atr_trail_scale_out:
+      enabled: true
+      atr_period: 14
+      stop_atr_mult: 1.5       # initial stop: uPnL ≤ −1.5×ATR → atr_stop
+      stop_pct: 0.8            # ATR missing → −0.8% of entry
+      trail_activate_atr_mult: 1.0  # activate when uPnL ≥ +1.0×ATR
+      trail_activate_pct: 0.5  # ATR missing → +0.5%
+      trail_atr_mult: 1.0      # trail stop = extreme ± 1.0×ATR (never loosen)
+      profit_atr_mult: 1.5     # book when uPnL ≥ +1.5×ATR
+      profit_pct: 0.8          # ATR missing → +0.8%
+      scale_out_fraction: 0.5  # qty>1 only; qty=1 → full profit_book
     # Equity dry-run entry selection (worker full-scan cycle):
     # rank new candidates by |hybrid| into free slots — not CSV/scan first-fill.
     # anti_churn empty_slots_only = keep existing opens; never rotate for a
