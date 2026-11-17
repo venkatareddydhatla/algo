@@ -30,6 +30,11 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
 export type SignalRow = {
   id: string;
   symbol: string;
+  /** Display mark: live LTP when available, else candle close / last-known. */
+  price?: number | null;
+  /** Live LTP only (null when falling back to candle / last-known). */
+  ltp?: number | null;
+  price_source?: "ltp" | "candle_close" | "last_known" | string | null;
   timeframe: string;
   action: string;
   hybrid_score: number;
@@ -181,6 +186,9 @@ export const MOCK = {
       {
         id: "local-nifty",
         symbol: "NIFTY",
+        price: 24500,
+        ltp: null,
+        price_source: "last_known",
         timeframe: "15m",
         action: "BUY_CE_BIAS",
         hybrid_score: 0.62,
@@ -198,6 +206,9 @@ export const MOCK = {
       {
         id: "local-bn",
         symbol: "BANKNIFTY",
+        price: 52000,
+        ltp: null,
+        price_source: "last_known",
         timeframe: "15m",
         action: "HOLD",
         hybrid_score: 0.12,
@@ -214,6 +225,9 @@ export const MOCK = {
       {
         id: "local-rel",
         symbol: "RELIANCE",
+        price: 2920,
+        ltp: null,
+        price_source: "last_known",
         timeframe: "15m",
         action: "BUY_PE_BIAS",
         hybrid_score: -0.55,
@@ -231,6 +245,9 @@ export const MOCK = {
       {
         id: "local-tcs",
         symbol: "TCS",
+        price: 3900,
+        ltp: null,
+        price_source: "last_known",
         timeframe: "15m",
         action: "HOLD",
         hybrid_score: -0.08,

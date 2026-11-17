@@ -25,27 +25,16 @@ async def _live_marks_for_symbols(symbols: list[str]) -> dict[str, float]:
     Keys are uppercased tradingsymbols. ``get_ltp`` / ``get_ltp_map`` match each
     instrument_key in the response — never reuse one quote across symbols.
     """
-    uniq = sorted({str(s).upper() for s in symbols if s})
-    if not uniq:
-        return {}
-    try:
-        from options_portal_broker.adapter import UpstoxAdapter
+    from app.marks import live_ltp_map
 
-        broker = UpstoxAdapter()
-        try:
-            marks = await broker.get_ltp_map(uniq)
-        finally:
-            await broker.aclose()
-        missing = [s for s in uniq if s not in marks]
-        for sym in missing:
-            logger.warning(
-                "trades uPnL: no LTP for %s — leaving uPnL 0",
-                sym,
-            )
-        return marks
-    except Exception:  # noqa: BLE001
-        logger.exception("trades uPnL mark enrichment unavailable")
-        return {}
+    marks = await live_ltp_map(symbols)
+    missing = sorted({str(s).upper() for s in symbols if s} - set(marks))
+    for sym in missing:
+        logger.warning(
+            "trades uPnL: no LTP for %s — leaving uPnL 0",
+            sym,
+        )
+    return marks
 
 
 @router.get("/trades")
