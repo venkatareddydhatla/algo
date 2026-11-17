@@ -5,7 +5,7 @@ Email alerts for equity **dry-run** paper fills and a once-daily summary.
 | Event | When | Content |
 |-------|------|---------|
 | Fill | Each simulated paper fill persisted by the worker (entry/exit only) on **NSE trading days** | Compact HTML key/value table + plain-text fallback |
-| Daily summary | **16:00 IST** once per **NSE trading day** (not Sat/Sun/holiday stub) | HTML tables: summary fields, Open positions, Today's fills (Time IST, Side, Qty, Symbol, Price, PnL, Reason) + plain-text multipart fallback |
+| Daily summary | **16:00 IST** once per **NSE trading day** (not Sat/Sun/holiday stub) | HTML tables: summary fields, Open positions, Today's trades (round-trip rows: Symbol, Side LONG/SHORT, Entry IST, Exit IST, Entry px, Exit px, PnL, Reason — Backtest Fills layout; Bars omitted) + plain-text multipart fallback |
 
 **Not emailed:** HOLD / neutral / overnight-hold scan ticks (console only). **No fill or daily emails on weekends** (and stub holidays via `IndiaMarketCalendar` / `is_nse_trading_day`). Soft-flatten and equity dry-run order placement are also skipped on non-trading days so weekend “fills” are not created. Use `scripts/send_daily_summary.py --force` to test-send on any day.
 
@@ -46,8 +46,8 @@ cd C:\algo
 Set-ExecutionPolicy -Scope Process Bypass
 .\deploy\windows\native\stop-native.ps1
 git fetch origin
-git checkout cursor/skip-non-trading-day-notify-b97d
-git pull origin cursor/skip-non-trading-day-notify-b97d
+git checkout cursor/summary-round-trip-trades-6717
+git pull origin cursor/summary-round-trip-trades-6717
 .\deploy\windows\native\setup-native.ps1
 ```
 
@@ -57,7 +57,7 @@ Edit `C:\algo\.env` — set `GMAIL_APP_PASSWORD` (and optional `GMAIL_USER` / `N
 # SMTP connectivity smoke test
 .\.venv\Scripts\python.exe scripts\send_test_email.py
 
-# Force-send today's daily summary (HTML tables) — bypasses 16:00 + non-trading-day gates.
+# Force-send today's daily summary (HTML round-trip trade table) — bypasses 16:00 + non-trading-day gates.
 # Does NOT write the dedup marker, so the next scheduled trading-day 16:00 send can still run.
 .\.venv\Scripts\python.exe scripts\send_daily_summary.py --force
 

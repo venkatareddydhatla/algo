@@ -104,10 +104,7 @@ def main() -> int:
 
     from options_portal_domain.config import load_config
     from options_portal_domain.tz import now_ist
-    from options_portal_notify.daily_summary import (
-        fills_for_ist_day,
-        maybe_send_daily_summary,
-    )
+    from options_portal_notify.daily_summary import maybe_send_daily_summary
     from options_portal_notify.gmail import format_daily_summary_email, gmail_settings
 
     cfg = load_config()
@@ -115,7 +112,7 @@ def main() -> int:
     if args.dry_run_print:
         mode = "dry_run"
         positions: list = []
-        fills_today: list = []
+        recent_fills: list = []
         day_realized = 0.0
         try:
             from options_portal_persistence.paper_trades import PaperTradeStore
@@ -125,10 +122,8 @@ def main() -> int:
                 snap = store.portfolio_snapshot(mode=mode)
                 positions = list(snap.get("positions") or [])
                 day_realized = float(snap.get("day_realized_pnl") or 0.0)
-                fills_today = fills_for_ist_day(
-                    store.list_fills(mode=mode, limit=200, offset=0),
-                    now_ist().date(),
-                )
+                # Full recent history for entry/exit pairing (not day-filtered)
+                recent_fills = store.list_fills(mode=mode, limit=200, offset=0)
         except Exception as exc:  # noqa: BLE001
             print(f"(paper store unavailable: {exc})", file=sys.stderr)
 
@@ -137,7 +132,7 @@ def main() -> int:
             day_ist=day,
             day_realized=day_realized,
             positions=positions,
-            fills_today=fills_today,
+            fills=recent_fills,
             mode=mode,
         )
         print(f"Subject: {subject}")
