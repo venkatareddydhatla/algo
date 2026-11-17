@@ -17,6 +17,7 @@ from options_portal_domain.session_gates import (
     compute_index_bias,
     entry_conflicts_with_index,
     filter_entry_intents,
+    is_trading_session,
     soft_flatten_decision,
 )
 from options_portal_domain.tz import now_ist
@@ -200,7 +201,11 @@ async def run_symbol_tick(
     ist_now = now_ist()
     trading_day = is_nse_trading_day(ist_now.date())
     result["trading_day"] = trading_day
+    entry_session = is_trading_session(
+        ist_now, policy=soft_policy, trading_day=trading_day
+    )
     result["session"] = {
+        "open_ist": soft_policy.open_ist,
         "soft_flatten_ist": soft_policy.soft_flatten_ist,
         "soft_flatten_until_ist": soft_policy.soft_flatten_until_ist,
         "no_new_entries_after": soft_policy.no_new_entries_after,
@@ -210,6 +215,9 @@ async def run_symbol_tick(
         "in_soft_flatten_window": soft_policy.in_soft_flatten_window(ist_now),
         "past_soft_flatten_until": soft_policy.past_soft_flatten_until(ist_now),
         "past_no_new_entries": soft_policy.past_no_new_entries(ist_now),
+        "before_session_open": soft_policy.before_session_open(ist_now),
+        "allow_new_entries": soft_policy.allow_new_entries(ist_now),
+        "is_trading_session": entry_session,
         "trading_day": trading_day,
     }
 
@@ -386,26 +394,29 @@ async def run_symbol_tick(
             reason=reason_summary,
         )
 
-    # Soft cut-off: no new entries after configured IST time (exits still allowed)
-    if soft_policy.past_no_new_entries(ist_now):
+    # Cash entry window only: [open_ist, no_new_entries_after) on trading days.
+    # Nights / pre-open / after soft-flatten start → drop entry/flip_open; exits kept.
+    # Soft flatten + overnight hold use separate gates above (unchanged).
+    if not entry_session:
         before = len(intents)
         intents = filter_entry_intents(intents, allow_entries=False)
-        if before and not intents:
-            logger.info(
-                "%s no_new_entries_after=%s — blocked entry intents",
-                symbol,
-                soft_policy.no_new_entries_after,
+        if soft_policy.before_session_open(ist_now):
+            gate_note = (
+                f"outside_entry_session: before open_ist={soft_policy.open_ist} IST"
             )
-            result["order"] = None
-            result["note"] = (
+        elif soft_policy.past_no_new_entries(ist_now):
+            gate_note = (
                 f"no_new_entries_after={soft_policy.no_new_entries_after} IST"
             )
+        else:
+            gate_note = "outside_entry_session"
+        if before and not intents:
+            logger.info("%s %s — blocked entry intents", symbol, gate_note)
+            result["order"] = None
+            result["note"] = gate_note
             return result
         if len(intents) < before:
-            result["note"] = (
-                f"no_new_entries_after={soft_policy.no_new_entries_after} "
-                "— entry legs dropped; exits kept"
-            )
+            result["note"] = f"{gate_note} — entry legs dropped; exits kept"
 
     # Light index gate: block new opposite entries when NIFTY/BANKNIFTY strongly conflict
     if mkt_policy.enabled and any(

@@ -1,14 +1,21 @@
 """Soft EOD flatten + light index market-sentiment gates (IST).
 
 Product rules (equity dry-run):
+- **New entries (open/add / flip_open)** only on NSE trading days inside the
+  cash entry window [open_ist, no_new_entries_after) IST (default 09:15–15:20).
+  Use ``is_trading_session`` / ``SoftEodPolicy.allow_new_entries`` — nights,
+  pre-open, and post-cutoff must not persist entry fills or send entry Gmail.
 - Soft flatten window [soft_flatten_ist, soft_flatten_until_ist] inclusive by
   HH:MM (default 15:20–15:40 IST): close open paper equity unless |hybrid|
-  meets overnight conviction on the same side.
+  meets overnight conviction on the same side. Separate from the entry window.
 - After soft_flatten_until_ist: refuse new soft_flatten exits (do not invent
   late-afternoon paper fills on a stuck/restarted worker). Positions left open
   by a missed window stay open — this is not a hard 15:40 force square-off.
+- Daily summary (16:00 IST) is also a separate schedule gate.
 - Optional light NIFTY/BANKNIFTY gate: block new opposite entries only when
   index hybrid strongly conflicts; skip when noisy/weak.
+- Worker may keep scanning overnight for news/TA refresh; orders/fills for
+  Action entry must not.
 """
 
 from __future__ import annotations
@@ -122,6 +129,23 @@ class SoftEodPolicy:
 
     def past_no_new_entries(self, now: datetime | None = None) -> bool:
         return at_or_after_ist(self.no_new_entries_after, now)
+
+    def before_session_open(self, now: datetime | None = None) -> bool:
+        """True when IST clock HH:MM is strictly before open_ist (e.g. night/pre-open)."""
+        clock = _hhmm_tuple(_ist_clock(now).time())
+        return clock < _hhmm_tuple(self.open_ist)
+
+    def allow_new_entries(self, now: datetime | None = None) -> bool:
+        """True when IST clock is in [open_ist, no_new_entries_after).
+
+        Clock-only — callers that also need an NSE trading day should use
+        ``is_trading_session``. Aligns with soft_flatten start so no new
+        entries after the flatten window begins (default 15:20).
+        """
+        return (
+            not self.before_session_open(now)
+            and not self.past_no_new_entries(now)
+        )
 
     def past_soft_flatten(self, now: datetime | None = None) -> bool:
         return at_or_after_ist(self.soft_flatten_ist, now)
@@ -315,12 +339,39 @@ def entry_conflicts_with_index(
 _ENTRY_KINDS: set[EquityActionKind] = {"entry", "flip_open"}
 
 
+def is_trading_session(
+    now: datetime | None = None,
+    *,
+    policy: SoftEodPolicy | None = None,
+    trading_day: bool | None = None,
+) -> bool:
+    """True when new equity entries may open/add.
+
+    Requires an NSE trading day and IST clock in
+    ``[policy.open_ist, policy.no_new_entries_after)`` (default 09:15–15:20).
+
+    Soft flatten (``in_soft_flatten_window`` / ``soft_flatten_decision``) and
+    the 16:00 IST daily summary use separate gates — they intentionally run
+    outside this entry window. Exits / overnight hold are not gated here.
+    """
+    pol = policy or SoftEodPolicy()
+    clock = _ist_clock(now)
+    if trading_day is None:
+        # Local import avoids any calendar ↔ session_gates cycle risk.
+        from options_portal_domain.calendar import is_nse_trading_day
+
+        trading_day = is_nse_trading_day(clock.date())
+    if not trading_day:
+        return False
+    return pol.allow_new_entries(clock)
+
+
 def filter_entry_intents(
     intents: list[Any],
     *,
     allow_entries: bool,
 ) -> list[Any]:
-    """Drop entry/flip_open intents when no_new_entries window is active."""
+    """Drop entry/flip_open intents outside the cash entry session window."""
     if allow_entries:
         return list(intents)
     return [i for i in intents if getattr(i, "action_kind", None) not in _ENTRY_KINDS]

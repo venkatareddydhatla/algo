@@ -98,11 +98,22 @@ async def test_pipeline_ioc_entry_uses_ioc_ltp_not_360one(
 
     monkeypatch.setattr(pipeline_mod, "UpstoxAdapter", FakeBroker)
     monkeypatch.setattr(pipeline_mod, "is_nse_trading_day", lambda _d: True)
-    # Keep soft-EOD / no-new-entries from blocking based on wall-clock IST
+    # Keep soft-EOD / entry-session gates from blocking based on wall-clock IST
+    monkeypatch.setattr(pipeline_mod, "is_trading_session", lambda *a, **k: True)
     monkeypatch.setattr(
         pipeline_mod.SoftEodPolicy,
         "past_no_new_entries",
         lambda self, now=None: False,
+    )
+    monkeypatch.setattr(
+        pipeline_mod.SoftEodPolicy,
+        "before_session_open",
+        lambda self, now=None: False,
+    )
+    monkeypatch.setattr(
+        pipeline_mod.SoftEodPolicy,
+        "allow_new_entries",
+        lambda self, now=None: True,
     )
     monkeypatch.setattr(
         pipeline_mod.SoftEodPolicy,
@@ -193,6 +204,12 @@ async def test_pipeline_refuses_synthetic_mark_when_token_set(
 
     monkeypatch.setattr(pipeline_mod, "UpstoxAdapter", FakeBroker)
     monkeypatch.setattr(pipeline_mod, "is_nse_trading_day", lambda _d: True)
+    monkeypatch.setattr(pipeline_mod, "is_trading_session", lambda *a, **k: True)
+    monkeypatch.setattr(
+        pipeline_mod.SoftEodPolicy,
+        "past_soft_flatten",
+        lambda self, now=None: False,
+    )
     monkeypatch.setattr(
         pipeline_mod,
         "resolve_instrument_key",

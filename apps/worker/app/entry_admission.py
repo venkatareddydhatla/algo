@@ -19,6 +19,8 @@ from options_portal_domain.entry_selection import (
     select_entries_for_empty_slots,
 )
 from options_portal_domain.equity import EquityOrderIntent
+from options_portal_domain.session_gates import SoftEodPolicy, is_trading_session
+from options_portal_domain.tz import now_ist
 from options_portal_notify.factory import build_gmail_notifier
 from options_portal_risk.order_router import SafeOrderRouter
 
@@ -97,7 +99,11 @@ class EntryCycleAdmission:
         ]
 
     async def flush(self, cfg: dict[str, Any]) -> dict[str, Any]:
-        """Admit top |hybrid| into free slots and execute paper fills."""
+        """Admit top |hybrid| into free slots and execute paper fills.
+
+        Re-checks ``is_trading_session`` at flush time so a long overnight scan
+        cannot admit/persist entry fills (or send entry Gmail) after hours.
+        """
         async with self._lock:
             pending = dict(self._pending)
             self._pending.clear()
@@ -110,6 +116,26 @@ class EntryCycleAdmission:
                 "slots": 0,
                 "target_open": 0,
                 "dynamic": self.dynamic_enabled,
+            }
+
+        soft_policy = SoftEodPolicy.from_config(cfg)
+        ist_now = now_ist()
+        if not is_trading_session(ist_now, policy=soft_policy):
+            skipped = sorted(pending)
+            reason = (
+                f"outside_entry_session open={soft_policy.open_ist} "
+                f"no_new_entries_after={soft_policy.no_new_entries_after} IST "
+                f"(dropped {len(skipped)} deferred entries)"
+            )
+            logger.info("Entry selection flush skipped: %s", reason)
+            return {
+                "admitted": [],
+                "skipped": skipped,
+                "open_before": [],
+                "slots": 0,
+                "target_open": 0,
+                "dynamic": self.dynamic_enabled,
+                "reason": reason,
             }
 
         open_symbols: list[str] = []

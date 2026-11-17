@@ -40,6 +40,7 @@ trading:
   # longer with live broker ratelimit_rpm. Keep batch size modest to avoid hangs.
   session:
     # NSE equity/F&O regular session (IST); calendar holidays applied in code.
+    # New entries only on trading days in [open, no_new_entries_after) IST.
     # Soft flatten window 15:20–15:40 IST; refuse new soft_flatten after until.
     open: "09:15"
     close: "15:30"
