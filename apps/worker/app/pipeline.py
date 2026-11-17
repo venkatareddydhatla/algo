@@ -29,7 +29,13 @@ from options_portal_hybrid.scorer import WeightedHybridScorer
 from options_portal_notify.factory import build_gmail_notifier, build_notifier
 from options_portal_risk.order_router import SafeOrderRouter
 from options_portal_sentiment.vader_scorer import VaderScorer
-from options_portal_ta.indicators import EMAPlugin, RSIPlugin, SupertrendPlugin, VWAPPlugin
+from options_portal_ta.indicators import (
+    EMAPlugin,
+    RSIPlugin,
+    SupertrendPlugin,
+    VWAPPlugin,
+    atr as atr_indicator,
+)
 from options_portal_ta.registry import IndicatorRegistry
 from options_portal_ta.signal_generator import ConfluenceSignalGenerator
 
@@ -419,6 +425,21 @@ async def run_symbol_tick(
             result["note"] = note
             return result
 
+    atr14: float | None = None
+    if (
+        not index_underlying
+        and open_qty > 0
+        and morning_policy.enabled
+        and morning_policy.in_window(ist_now)
+        and candles
+    ):
+        try:
+            atr14 = atr_indicator(candles, morning_policy.atr_period)
+        except Exception:  # noqa: BLE001
+            logger.exception("%s ATR%d compute failed for morning TP/stop", symbol, morning_policy.atr_period)
+            atr14 = None
+    result["atr14"] = atr14
+
     morning_tp = morning_profit_book_decision(
         open_side=open_side,  # type: ignore[arg-type]
         open_qty=open_qty,
@@ -427,6 +448,7 @@ async def run_symbol_tick(
         policy=morning_policy,
         now=ist_now,
         is_index=index_underlying,
+        atr14=atr14,
     )
     result["morning_tp"] = morning_tp
 
@@ -441,7 +463,7 @@ async def run_symbol_tick(
             price=fill_price,
             reason=flatten["reason"],
         )
-    elif morning_tp.get("action") == "profit_book":
+    elif morning_tp.get("action") in {"profit_book", "stop"}:
         logger.info("%s %s", symbol, morning_tp["reason"])
         intents = plan_equity_intents(
             symbol,

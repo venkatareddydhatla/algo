@@ -7,11 +7,12 @@ Product rules (equity dry-run):
   pre-open, and post-cutoff must not persist entry fills or send entry Gmail.
 - **Index underlyings** (NIFTY, BANKNIFTY, … / NSE_INDEX|BSE_INDEX) never use
   stock hybrid entry; open index paper is soft-closed with ``index_not_equity``.
-- **Morning profit book** [morning_tp_ist, morning_tp_until_ist] inclusive by
-  HH:MM (default 09:15–10:15 IST): for open **equity** (not indices), if
-  unrealized PnL ≥ +0.4% of entry → full-qty exit with reason
-  ``morning_profit_book``. Evaluated on the open-book poll (~15s) like soft
-  flatten. Rule is percent-of-entry (ATR trail deferred).
+- **Morning dynamic TP/stop** [morning_tp_ist, morning_tp_until_ist] inclusive
+  by HH:MM (default **09:15–10:00 IST**), stocks only (not indices), on the
+  ~15s open-book poll:
+  - Profit: uPnL ≥ max(0.3% entry, 0.5×ATR14) → ``morning_profit_book``
+  - Stop: uPnL ≤ −max(0.5% entry, 0.75×ATR14) → ``morning_stop``
+  - If ATR14 unavailable → percent floors only. After 10:00: no morning exits.
 - Soft flatten window [soft_flatten_ist, soft_flatten_until_ist] inclusive by
   HH:MM (default 15:20–15:40 IST): close open paper equity unless |hybrid|
   meets overnight conviction on the same side. Separate from the entry window.
@@ -46,9 +47,13 @@ IndexBias = Literal["bullish", "bearish", "neutral", "noisy", "unavailable"]
 # Worker open-book soft-flatten / morning-TP poll (independent of full-universe scan).
 DEFAULT_SOFT_FLATTEN_POLL_SEC = 15
 DEFAULT_MORNING_TP_IST = "09:15"
-DEFAULT_MORNING_TP_UNTIL_IST = "10:15"
-# Percent-of-entry threshold (not ATR) — cheap on the ~15s open-book path.
-DEFAULT_MORNING_TP_MIN_UNREALIZED_PCT = 0.4
+DEFAULT_MORNING_TP_UNTIL_IST = "10:00"
+# Dynamic morning thresholds (ATR-aware; % floors when ATR missing).
+DEFAULT_MORNING_TP_MIN_PCT = 0.3  # book ≥ max(0.3% entry, 0.5×ATR14)
+DEFAULT_MORNING_TP_ATR_MULT = 0.5
+DEFAULT_MORNING_STOP_MIN_PCT = 0.5  # stop ≤ −max(0.5% entry, 0.75×ATR14)
+DEFAULT_MORNING_STOP_ATR_MULT = 0.75
+DEFAULT_MORNING_ATR_PERIOD = 14
 
 
 def parse_hhmm(value: str) -> time:
@@ -105,7 +110,7 @@ class SoftEodPolicy:
     morning_tp_until_ist: str = DEFAULT_MORNING_TP_UNTIL_IST
     # Documented user monitoring window (no hard flatten at end)
     user_hours_note: str = (
-        "09:15–15:40 IST (morning TP 09:15–10:15; soft flatten 15:20–15:40; "
+        "09:15–15:40 IST (morning TP/stop 09:15–10:00; soft flatten 15:20–15:40; "
         "no hard 15:40 square-off)"
     )
 
@@ -154,7 +159,7 @@ class SoftEodPolicy:
             user_hours_note=str(
                 session.get(
                     "user_hours_note",
-                    "09:15–15:40 IST (morning TP 09:15–10:15; soft flatten 15:20–15:40; "
+                    "09:15–15:40 IST (morning TP/stop 09:15–10:00; soft flatten 15:20–15:40; "
                     "no hard 15:40 square-off)",
                 )
             ),
@@ -285,17 +290,25 @@ def soft_flatten_decision(
 
 @dataclass(frozen=True)
 class MorningProfitBookPolicy:
-    """First-hour profit booking for open equity (stocks only, not indices).
+    """First-hour dynamic profit book / stop for open equity (stocks only).
 
-    Threshold rule (chosen for open-book poll cheapness): unrealized PnL
-    ≥ ``min_unrealized_pct`` percent of entry (default **+0.4%**). ATR(14)
-    trail is deferred — do not mix rules on the ~15s path.
+    Window default **09:15–10:00 IST**. Thresholds (per-share vs entry):
+
+    - **TP** ``morning_profit_book``: uPnL ≥ max(tp_min_pct% of entry,
+      tp_atr_mult × ATR14)
+    - **Stop** ``morning_stop``: uPnL ≤ −max(stop_min_pct% of entry,
+      stop_atr_mult × ATR14)
+    - If ATR14 unavailable → percent floors only.
     """
 
     enabled: bool = True
     start_ist: str = DEFAULT_MORNING_TP_IST
     until_ist: str = DEFAULT_MORNING_TP_UNTIL_IST
-    min_unrealized_pct: float = DEFAULT_MORNING_TP_MIN_UNREALIZED_PCT
+    tp_min_pct: float = DEFAULT_MORNING_TP_MIN_PCT
+    tp_atr_mult: float = DEFAULT_MORNING_TP_ATR_MULT
+    stop_min_pct: float = DEFAULT_MORNING_STOP_MIN_PCT
+    stop_atr_mult: float = DEFAULT_MORNING_STOP_ATR_MULT
+    atr_period: int = DEFAULT_MORNING_ATR_PERIOD
     # 1.0 = full exit (qty is 1 today); set 0.5 later for 50% scale-out.
     exit_fraction: float = 1.0
 
@@ -310,21 +323,55 @@ class MorningProfitBookPolicy:
             or {}
         )
         soft = SoftEodPolicy.from_config(config)
+        # Legacy key min_unrealized_pct → tp_min_pct if present.
+        tp_pct = raw.get("tp_min_pct", raw.get("min_unrealized_pct", DEFAULT_MORNING_TP_MIN_PCT))
         return cls(
             enabled=bool(raw.get("enabled", True)),
             start_ist=str(raw.get("start_ist", soft.morning_tp_ist)),
             until_ist=str(raw.get("until_ist", soft.morning_tp_until_ist)),
-            min_unrealized_pct=float(
-                raw.get(
-                    "min_unrealized_pct",
-                    DEFAULT_MORNING_TP_MIN_UNREALIZED_PCT,
-                )
+            tp_min_pct=float(tp_pct),
+            tp_atr_mult=float(raw.get("tp_atr_mult", DEFAULT_MORNING_TP_ATR_MULT)),
+            stop_min_pct=float(
+                raw.get("stop_min_pct", DEFAULT_MORNING_STOP_MIN_PCT)
             ),
+            stop_atr_mult=float(
+                raw.get("stop_atr_mult", DEFAULT_MORNING_STOP_ATR_MULT)
+            ),
+            atr_period=int(raw.get("atr_period", DEFAULT_MORNING_ATR_PERIOD)),
             exit_fraction=float(raw.get("exit_fraction", 1.0)),
         )
 
     def in_window(self, now: datetime | None = None) -> bool:
         return hhmm_in_inclusive_window(self.start_ist, self.until_ist, now)
+
+    def thresholds_rupees(
+        self, entry_avg: float, atr14: float | None
+    ) -> dict[str, Any]:
+        """Per-share TP/stop distance in ₹ (vs entry).
+
+        ATR path: max(% floor × entry, atr_mult × ATR).
+        No ATR: % floor × entry only.
+        """
+        entry = float(entry_avg)
+        tp_pct_leg = abs(float(self.tp_min_pct)) / 100.0 * entry
+        stop_pct_leg = abs(float(self.stop_min_pct)) / 100.0 * entry
+        atr_val = float(atr14) if atr14 is not None and float(atr14) > 0 else None
+        if atr_val is not None:
+            tp = max(tp_pct_leg, float(self.tp_atr_mult) * atr_val)
+            stop = max(stop_pct_leg, float(self.stop_atr_mult) * atr_val)
+            mode = "atr"
+        else:
+            tp = tp_pct_leg
+            stop = stop_pct_leg
+            mode = "pct_only"
+        return {
+            "tp_rupees": tp,
+            "stop_rupees": stop,
+            "tp_pct_equiv": (tp / entry * 100.0) if entry > 0 else 0.0,
+            "stop_pct_equiv": (stop / entry * 100.0) if entry > 0 else 0.0,
+            "mode": mode,
+            "atr": atr_val,
+        }
 
 
 def morning_profit_book_decision(
@@ -336,35 +383,39 @@ def morning_profit_book_decision(
     policy: MorningProfitBookPolicy,
     now: datetime | None = None,
     is_index: bool = False,
+    atr14: float | None = None,
 ) -> dict[str, Any]:
-    """Evaluate morning first-hour profit booking for an open equity position.
+    """Evaluate morning dynamic TP/stop for an open equity position.
 
-    Returns keys: active, action ('profit_book'|'none'), reason, exit_qty,
-    unrealized_pct (when computable).
+    Returns keys: active, action ('profit_book'|'stop'|'none'), reason,
+    exit_qty, unrealized_pct, unrealized_rupees, thresholds (when computable).
     """
+    empty = {
+        "exit_qty": 0,
+        "unrealized_pct": None,
+        "unrealized_rupees": None,
+        "thresholds": None,
+    }
     if is_index:
         return {
             "active": False,
             "action": "none",
-            "reason": "index_not_equity — morning TP stocks only",
-            "exit_qty": 0,
-            "unrealized_pct": None,
+            "reason": "index_not_equity — morning TP/stop stocks only",
+            **empty,
         }
     if not policy.enabled:
         return {
             "active": False,
             "action": "none",
             "reason": "morning_profit_book disabled",
-            "exit_qty": 0,
-            "unrealized_pct": None,
+            **empty,
         }
     if open_side is None or int(open_qty) <= 0:
         return {
             "active": False,
             "action": "none",
             "reason": "no open position",
-            "exit_qty": 0,
-            "unrealized_pct": None,
+            **empty,
         }
     if not policy.in_window(now):
         return {
@@ -374,40 +425,73 @@ def morning_profit_book_decision(
                 f"outside morning_profit_book window "
                 f"{policy.start_ist}-{policy.until_ist} IST"
             ),
-            "exit_qty": 0,
-            "unrealized_pct": None,
+            **empty,
         }
     if entry_avg is None or float(entry_avg) <= 0 or mark is None or float(mark) <= 0:
         return {
             "active": True,
             "action": "none",
-            "reason": "morning window: missing entry_avg/mark for TP check",
-            "exit_qty": 0,
-            "unrealized_pct": None,
+            "reason": "morning window: missing entry_avg/mark for TP/stop check",
+            **empty,
         }
 
-    pct = unrealized_pnl_pct(open_side, float(entry_avg), float(mark))
-    threshold = float(policy.min_unrealized_pct)
-    if pct >= threshold:
-        qty = profit_book_exit_qty(int(open_qty), fraction=policy.exit_fraction)
+    entry = float(entry_avg)
+    pct = unrealized_pnl_pct(open_side, entry, float(mark))
+    # Per-share signed uPnL in ₹ (long: mark−entry; short: entry−mark).
+    upnl_rs = pct / 100.0 * entry
+    thr = policy.thresholds_rupees(entry, atr14)
+    qty = profit_book_exit_qty(int(open_qty), fraction=policy.exit_fraction)
+    mode = thr["mode"]
+    atr_note = (
+        f"ATR{policy.atr_period}={thr['atr']:.4f}"
+        if thr["atr"] is not None
+        else f"ATR{policy.atr_period}=unavailable→pct_only"
+    )
+
+    if upnl_rs >= float(thr["tp_rupees"]):
         return {
             "active": True,
             "action": "profit_book",
             "reason": (
-                f"morning_profit_book: uPnL={pct:.3f}% ≥ {threshold}% of entry "
-                f"({policy.start_ist}-{policy.until_ist} IST); exit_qty={qty}"
+                f"morning_profit_book: uPnL={pct:.3f}% ({upnl_rs:.4f}/sh) ≥ "
+                f"max({policy.tp_min_pct}% entry, {policy.tp_atr_mult}×ATR)="
+                f"{thr['tp_pct_equiv']:.3f}% / {thr['tp_rupees']:.4f} "
+                f"[{mode}; {atr_note}; {policy.start_ist}-{policy.until_ist} IST]; "
+                f"exit_qty={qty}"
             ),
             "exit_qty": qty,
             "unrealized_pct": pct,
+            "unrealized_rupees": upnl_rs,
+            "thresholds": thr,
+        }
+    if upnl_rs <= -float(thr["stop_rupees"]):
+        return {
+            "active": True,
+            "action": "stop",
+            "reason": (
+                f"morning_stop: uPnL={pct:.3f}% ({upnl_rs:.4f}/sh) ≤ "
+                f"-max({policy.stop_min_pct}% entry, {policy.stop_atr_mult}×ATR)="
+                f"-{thr['stop_pct_equiv']:.3f}% / -{thr['stop_rupees']:.4f} "
+                f"[{mode}; {atr_note}; {policy.start_ist}-{policy.until_ist} IST]; "
+                f"exit_qty={qty}"
+            ),
+            "exit_qty": qty,
+            "unrealized_pct": pct,
+            "unrealized_rupees": upnl_rs,
+            "thresholds": thr,
         }
     return {
         "active": True,
         "action": "none",
         "reason": (
-            f"morning window: uPnL={pct:.3f}% < {threshold}% of entry — hold"
+            f"morning window: uPnL={pct:.3f}% between "
+            f"-{thr['stop_pct_equiv']:.3f}% and +{thr['tp_pct_equiv']:.3f}% "
+            f"[{mode}; {atr_note}] — hold"
         ),
         "exit_qty": 0,
         "unrealized_pct": pct,
+        "unrealized_rupees": upnl_rs,
+        "thresholds": thr,
     }
 
 

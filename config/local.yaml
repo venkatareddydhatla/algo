@@ -52,10 +52,14 @@ trading:
     morning_profit_book:
       enabled: true
       start_ist: "09:15"
-      until_ist: "10:15"
-      min_unrealized_pct: 0.4
+      until_ist: "10:00"
+      tp_min_pct: 0.3
+      tp_atr_mult: 0.5
+      stop_min_pct: 0.5
+      stop_atr_mult: 0.75
+      atr_period: 14
       exit_fraction: 1.0
-    user_hours_note: "09:15–15:40 IST (morning TP 09:15–10:15; soft flatten 15:20–15:40; no hard 15:40 square-off)"
+    user_hours_note: "09:15–15:40 IST (morning TP/stop 09:15–10:00; soft flatten 15:20–15:40; no hard 15:40 square-off)"
   market_sentiment:
     enabled: true
     symbols:
