@@ -55,7 +55,7 @@ trading:
     avoid_expiry_after_ist: "15:00"  # same-day expiry cut-off unless overridden
   risk:
     max_lots_per_symbol: 2
-    max_open_symbols: 15       # hard ceiling (risk gate); manage via YAML as needed
+    max_open_symbols: 8        # hard ceiling; prefer fewer higher-conviction trades
     max_day_loss_inr: 25000
     max_premium_spread_pct: 2.0
     min_option_oi: 50000
@@ -76,15 +76,22 @@ trading:
       scale_out_fraction: 0.5
     # Rank by |hybrid|; dynamic floor/ceiling; empty_slots_only anti-churn.
     # Soft flatten / overnight |hybrid| ≥ 0.70 unchanged (session_gates).
+    # 90m same-session re-entry cooloff; afternoon floor 0.70 after 12:00 IST.
     entry_selection:
       enabled: true
       rank_by: abs_hybrid
       anti_churn: empty_slots_only
+      reentry_cooloff:
+        enabled: true
+        minutes: 90
+        same_session_only: true
       dynamic_capacity:
         enabled: true
-        floor: 4                 # min target when enough qualify (ops: 3–5)
-        ceiling: 15              # ≤ max_open_symbols
-        min_hybrid_abs: 0.55     # admit only |hybrid| ≥ this
+        floor: 4                 # min target when enough qualify (ops: 3–4)
+        ceiling: 8               # ≤ max_open_symbols
+        min_hybrid_abs: 0.65     # admit only |hybrid| ≥ this
+        afternoon_after_ist: "12:00"
+        afternoon_min_hybrid_abs: 0.70
 
 hybrid:
   weights:

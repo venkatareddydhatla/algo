@@ -70,6 +70,7 @@ async def _run_batch(symbols: list[str], cfg: dict) -> None:
         logger.info(
             "Entry selection enabled anti_churn=%s dynamic=%s floor=%d "
             "ceiling=%d min_|hybrid|=%.2f hard_cap=%d "
+            "cooloff=%s/%dm afternoon_after=%s afternoon_min=%.2f "
             "(rank by |hybrid|; empty_slots_only)",
             admission.anti_churn,
             admission.dynamic_enabled,
@@ -77,6 +78,10 @@ async def _run_batch(symbols: list[str], cfg: dict) -> None:
             admission.ceiling,
             admission.min_hybrid_abs,
             admission.max_open_symbols,
+            admission.cooloff_enabled,
+            admission.cooloff_minutes,
+            admission.afternoon_after_ist or "off",
+            float(admission.afternoon_min_hybrid_abs or admission.min_hybrid_abs),
         )
 
     async def _one(symbol: str) -> None:

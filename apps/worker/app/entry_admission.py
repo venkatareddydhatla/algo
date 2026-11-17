@@ -4,6 +4,8 @@ During a full-universe scan, new ``entry`` intents are staged instead of
 first-fill by CSV/scan order. After the batch, strongest |hybrid| candidates
 fill free slots under a dynamic target (floor/ceiling + min |hybrid|).
 Existing opens are kept (anti-churn ``empty_slots_only``).
+Re-entry cooloff blocks same-symbol entries for N minutes after a close
+(same IST session). Afternoon may raise the |hybrid| floor.
 """
 
 from __future__ import annotations
@@ -13,10 +15,14 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from options_portal_domain.calendar import pnl_ist_day
 from options_portal_domain.entry_selection import (
     EntryCandidate,
+    effective_min_hybrid_abs,
     entry_selection_config,
+    last_exit_times_from_fills,
     select_entries_for_empty_slots,
+    symbols_in_reentry_cooloff,
 )
 from options_portal_domain.equity import EquityOrderIntent
 from options_portal_domain.session_gates import SoftEodPolicy, is_trading_session
@@ -50,8 +56,13 @@ class EntryCycleAdmission:
     anti_churn: str = "empty_slots_only"
     dynamic_enabled: bool = False
     floor: int = 4
-    ceiling: int = 15
-    min_hybrid_abs: float = 0.55
+    ceiling: int = 8
+    min_hybrid_abs: float = 0.65
+    afternoon_after_ist: str | None = "12:00"
+    afternoon_min_hybrid_abs: float | None = 0.70
+    cooloff_enabled: bool = True
+    cooloff_minutes: int = 90
+    cooloff_same_session: bool = True
     _pending: dict[str, PendingEntry] = field(default_factory=dict)
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
@@ -61,8 +72,11 @@ class EntryCycleAdmission:
         if not sel["enabled"]:
             return None
         dyn = dict(sel.get("dynamic_capacity") or {})
+        cool = dict(sel.get("reentry_cooloff") or {})
         hard = int(sel["max_open_symbols"])
         ceiling = int(dyn.get("ceiling", hard))
+        aft_after = dyn.get("afternoon_after_ist")
+        aft_min = dyn.get("afternoon_min_hybrid_abs")
         return cls(
             max_open_symbols=hard,
             enabled=True,
@@ -70,7 +84,14 @@ class EntryCycleAdmission:
             dynamic_enabled=bool(dyn.get("enabled", False)),
             floor=int(dyn.get("floor", 4)),
             ceiling=ceiling,
-            min_hybrid_abs=float(dyn.get("min_hybrid_abs", 0.55)),
+            min_hybrid_abs=float(dyn.get("min_hybrid_abs", 0.65)),
+            afternoon_after_ist=str(aft_after) if aft_after else None,
+            afternoon_min_hybrid_abs=(
+                float(aft_min) if aft_min is not None else None
+            ),
+            cooloff_enabled=bool(cool.get("enabled", True)),
+            cooloff_minutes=int(cool.get("minutes", 90)),
+            cooloff_same_session=bool(cool.get("same_session_only", True)),
         )
 
     async def stage(self, pending: PendingEntry) -> None:
@@ -108,6 +129,14 @@ class EntryCycleAdmission:
             )
             for p in self._pending.values()
         ]
+
+    def _effective_min_hybrid(self, ist_now: Any) -> float:
+        return effective_min_hybrid_abs(
+            self.min_hybrid_abs,
+            now=ist_now,
+            afternoon_after_ist=self.afternoon_after_ist,
+            afternoon_min_hybrid_abs=self.afternoon_min_hybrid_abs,
+        )
 
     async def flush(self, cfg: dict[str, Any]) -> dict[str, Any]:
         """Admit top |hybrid| into free slots and execute paper fills.
@@ -169,6 +198,7 @@ class EntryCycleAdmission:
             }
 
         open_symbols: list[str] = []
+        cooloff_blocked: set[str] = set()
         paper = None
         try:
             from options_portal_persistence.paper_trades import PaperTradeStore
@@ -178,8 +208,38 @@ class EntryCycleAdmission:
                 # Prefer dry_run ledger mode (same as pipeline)
                 snap = paper.portfolio_snapshot(mode="dry_run")
                 open_symbols = list(snap.get("open_symbols") or [])
+                if self.cooloff_enabled and self.cooloff_minutes > 0:
+                    fills = paper.list_all_fills(mode="dry_run")
+                    last_exits = last_exit_times_from_fills(fills)
+                    cooloff_blocked = symbols_in_reentry_cooloff(
+                        last_exits,
+                        now=ist_now,
+                        cooloff_minutes=self.cooloff_minutes,
+                        same_session_only=self.cooloff_same_session,
+                        session_day=pnl_ist_day(ist_now),
+                    )
         except Exception:  # noqa: BLE001
             logger.exception("entry admission: paper ledger unavailable at flush")
+
+        # Drop cooloff symbols from pending before selection (still listed skipped).
+        cooloff_skipped = sorted(s for s in pending if s in cooloff_blocked)
+        for sym in cooloff_skipped:
+            pending.pop(sym, None)
+
+        eff_min = self._effective_min_hybrid(ist_now)
+
+        if not pending:
+            return {
+                "admitted": [],
+                "skipped": sorted(set(index_skipped) | set(cooloff_skipped)),
+                "open_before": open_symbols,
+                "slots": 0,
+                "target_open": len(open_symbols),
+                "dynamic": self.dynamic_enabled,
+                "cooloff_blocked": cooloff_skipped,
+                "min_hybrid_abs_effective": eff_min,
+                "reason": "reentry_cooloff — all deferred entries blocked",
+            }
 
         selected = select_entries_for_empty_slots(
             [
@@ -188,14 +248,17 @@ class EntryCycleAdmission:
             ],
             open_symbols=open_symbols,
             max_open_symbols=self.max_open_symbols,
-            min_hybrid_abs=self.min_hybrid_abs,
+            min_hybrid_abs=eff_min,
             floor=self.floor,
             ceiling=self.ceiling,
             dynamic=self.dynamic_enabled,
+            cooloff_symbols=cooloff_blocked,
         )
         admitted_syms = {c.symbol.upper() for c in selected}
         skipped = sorted(
-            set(index_skipped) | {s for s in pending if s not in admitted_syms}
+            set(index_skipped)
+            | set(cooloff_skipped)
+            | {s for s in pending if s not in admitted_syms}
         )
         slots = max(0, self.max_open_symbols - len(open_symbols))
         if self.dynamic_enabled:
@@ -204,26 +267,36 @@ class EntryCycleAdmission:
 
         logger.info(
             "Entry selection anti_churn=%s dynamic=%s floor=%d ceiling=%d "
-            "min_|hybrid|=%.2f hard_cap=%d open=%d candidates=%d admitted=%s skipped=%d",
+            "min_|hybrid|=%.2f (base=%.2f) hard_cap=%d cooloff=%s/%dm "
+            "open=%d candidates=%d admitted=%s skipped=%d cooloff_blocked=%d",
             self.anti_churn,
             self.dynamic_enabled,
             self.floor,
             self.ceiling,
+            eff_min,
             self.min_hybrid_abs,
             self.max_open_symbols,
+            self.cooloff_enabled,
+            self.cooloff_minutes,
             len(open_symbols),
-            len(pending),
+            len(pending) + len(cooloff_skipped),
             [c.symbol for c in selected],
             len(skipped),
+            len(cooloff_skipped),
         )
         if skipped:
             logger.info(
-                "Entry selection skipped (index / below |hybrid| / weaker / no slots): %s",
+                "Entry selection skipped "
+                "(index / cooloff / below |hybrid| / weaker / no slots): %s",
                 ", ".join(
                     (
                         f"{s}|index"
                         if s in index_skipped
-                        else f"{s}|h|={abs(pending[s].hybrid_score):.3f}"
+                        else (
+                            f"{s}|cooloff"
+                            if s in cooloff_skipped
+                            else f"{s}|h|={abs(pending[s].hybrid_score):.3f}"
+                        )
                     )
                     for s in skipped[:30]
                 )
@@ -263,6 +336,8 @@ class EntryCycleAdmission:
             "floor": self.floor,
             "ceiling": self.ceiling,
             "min_hybrid_abs": self.min_hybrid_abs,
+            "min_hybrid_abs_effective": eff_min,
+            "cooloff_blocked": cooloff_skipped,
             "anti_churn": self.anti_churn,
         }
 
