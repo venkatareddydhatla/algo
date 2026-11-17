@@ -8,6 +8,7 @@ Optional:
 
 from __future__ import annotations
 
+import html
 import logging
 import os
 import smtplib
@@ -20,6 +21,9 @@ logger = logging.getLogger(__name__)
 DEFAULT_NOTIFY_EMAIL_TO = "venkatareddy.dhatla@gmail.com"
 GMAIL_SMTP_HOST = "smtp.gmail.com"
 GMAIL_SMTP_PORT = 587
+
+# Soften long reason strings in table cells; full text kept via HTML title + plain appendix.
+REASON_DISPLAY_MAX = 72
 
 
 @dataclass(frozen=True)
@@ -60,10 +64,14 @@ def send_gmail_message(
     *,
     subject: str,
     body: str,
+    html_body: str | None = None,
     settings: GmailSettings | None = None,
     smtp_factory: Any = None,
 ) -> bool:
-    """Send a plain-text email via Gmail SMTP. Returns True on success.
+    """Send email via Gmail SMTP. Returns True on success.
+
+    Always includes a plain-text part (``body``). When ``html_body`` is set,
+    adds an ``text/html`` alternative (multipart/alternative).
 
     ``smtp_factory`` is injectable for tests (defaults to ``smtplib.SMTP``).
     """
@@ -81,6 +89,8 @@ def send_gmail_message(
     msg["From"] = cfg.user
     msg["To"] = cfg.to_addr
     msg.set_content(body)
+    if html_body:
+        msg.add_alternative(html_body, subtype="html")
 
     factory = smtp_factory or smtplib.SMTP
     try:
@@ -97,6 +107,115 @@ def send_gmail_message(
     return True
 
 
+def soften_reason(reason: str | None, *, max_len: int = REASON_DISPLAY_MAX) -> str:
+    """Truncate a reason for table display; empty → em dash."""
+    text = (reason or "").strip() or "—"
+    if len(text) <= max_len:
+        return text
+    if max_len <= 1:
+        return "…"
+    return text[: max_len - 1].rstrip() + "…"
+
+
+def _esc(value: Any) -> str:
+    return html.escape(str(value if value is not None else ""), quote=True)
+
+
+def _fmt_price(value: Any) -> str:
+    try:
+        return f"{float(value or 0):.2f}"
+    except (TypeError, ValueError):
+        return "0.00"
+
+
+def _fmt_pnl(value: Any) -> str:
+    if value is None:
+        return "—"
+    try:
+        return f"{float(value):.2f}"
+    except (TypeError, ValueError):
+        return "—"
+
+
+def _html_shell(title: str, body_inner: str) -> str:
+    return (
+        "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
+        f"<title>{_esc(title)}</title></head>"
+        "<body style=\"margin:0;padding:16px;font-family:Segoe UI,Helvetica,Arial,sans-serif;"
+        "font-size:14px;line-height:1.45;color:#1a1a1a;background:#ffffff;\">"
+        f"{body_inner}"
+        "</body></html>"
+    )
+
+
+def _html_kv_table(rows: list[tuple[str, str]]) -> str:
+    cells = "".join(
+        "<tr>"
+        f"<td style=\"padding:4px 12px 4px 0;color:#555;white-space:nowrap;vertical-align:top;\">{_esc(k)}</td>"
+        f"<td style=\"padding:4px 0;vertical-align:top;\"><strong>{_esc(v)}</strong></td>"
+        "</tr>"
+        for k, v in rows
+    )
+    return (
+        "<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" "
+        f"style=\"border-collapse:collapse;margin:0 0 16px;\">{cells}</table>"
+    )
+
+
+def _html_data_table(headers: list[str], rows: list[list[tuple[str, str | None]]]) -> str:
+    """Build a bordered data table. Each cell is (display, title_or_None)."""
+    th = "".join(
+        f"<th style=\"padding:8px 10px;text-align:left;background:#f3f4f6;border:1px solid #d1d5db;"
+        f"font-weight:600;white-space:nowrap;\">{_esc(h)}</th>"
+        for h in headers
+    )
+    body_rows: list[str] = []
+    if not rows:
+        body_rows.append(
+            f"<tr><td colspan=\"{len(headers)}\" style=\"padding:10px;border:1px solid #d1d5db;"
+            "color:#666;\">(none)</td></tr>"
+        )
+    else:
+        for row in rows:
+            tds = []
+            for display, title in row:
+                title_attr = f" title=\"{_esc(title)}\"" if title else ""
+                tds.append(
+                    f"<td style=\"padding:8px 10px;border:1px solid #d1d5db;vertical-align:top;"
+                    f"max-width:280px;word-wrap:break-word;overflow-wrap:anywhere;\"{title_attr}>"
+                    f"{_esc(display)}</td>"
+                )
+            body_rows.append("<tr>" + "".join(tds) + "</tr>")
+    return (
+        "<table role=\"table\" cellpadding=\"0\" cellspacing=\"0\" "
+        "style=\"border-collapse:collapse;width:100%;max-width:920px;margin:0 0 20px;\">"
+        f"<thead><tr>{th}</tr></thead>"
+        f"<tbody>{''.join(body_rows)}</tbody></table>"
+    )
+
+
+def _plain_kv(rows: list[tuple[str, str]]) -> list[str]:
+    width = max((len(k) for k, _ in rows), default=0)
+    return [f"{k + ':':<{width + 1}}  {v}" for k, v in rows]
+
+
+def _plain_table(headers: list[str], rows: list[list[str]]) -> list[str]:
+    """Fixed-width-ish plain-text table (pipe separated for scanability)."""
+    if not rows:
+        return ["  (none)"]
+    widths = [len(h) for h in headers]
+    for row in rows:
+        for i, cell in enumerate(row):
+            widths[i] = max(widths[i], len(cell))
+    sep = " | "
+    header_line = sep.join(h.ljust(widths[i]) for i, h in enumerate(headers))
+    rule = "-+-".join("-" * w for w in widths)
+    out = [f"  {header_line}", f"  {rule}"]
+    for row in rows:
+        out.append("  " + sep.join(row[i].ljust(widths[i]) for i in range(len(headers))))
+    return out
+
+
 def format_fill_email(
     *,
     symbol: str,
@@ -107,25 +226,56 @@ def format_fill_email(
     ts_ist_display: str | None,
     action_kind: str | None = None,
     mode: str = "dry_run",
-) -> tuple[str, str]:
-    """Return (subject, body) for a paper/dry-run fill notification."""
+) -> tuple[str, str, str]:
+    """Return (subject, plain_body, html_body) for a paper/dry-run fill notification."""
     subject = f"[dry-run] Fill {side} {qty} {symbol} @ {price:.2f}"
-    lines = [
+    reason_full = (reason or "").strip() or "—"
+    reason_short = soften_reason(reason_full)
+    kv = [
+        ("Symbol", symbol or "—"),
+        ("Side", side or "—"),
+        ("Qty", str(qty)),
+        ("Price", f"{price:.2f}"),
+        ("Action", action_kind or "—"),
+        ("Reason", reason_short),
+        ("Time (IST)", ts_ist_display or "—"),
+        ("Mode", mode),
+        ("Execution", "dry_run (no live broker order)"),
+    ]
+    plain_lines = [
         "Options Portal — equity dry-run paper fill",
         "",
-        f"Symbol:      {symbol}",
-        f"Side:        {side}",
-        f"Qty:         {qty}",
-        f"Price:       {price:.2f}",
-        f"Action:      {action_kind or '—'}",
-        f"Reason:      {reason or '—'}",
-        f"Time (IST):  {ts_ist_display or '—'}",
-        f"Mode:        {mode}",
-        "Execution:   dry_run (no live broker order)",
+        *_plain_kv(kv),
         "",
-        "This is a simulated fill for the dry-run review week.",
     ]
-    return subject, "\n".join(lines)
+    if reason_short != reason_full:
+        plain_lines.extend([f"Full reason:  {reason_full}", ""])
+    plain_lines.append("This is a simulated fill for the dry-run review week.")
+    plain = "\n".join(plain_lines)
+
+    reason_cell = (
+        f"<span title=\"{_esc(reason_full)}\">{_esc(reason_short)}</span>"
+        if reason_short != reason_full
+        else _esc(reason_short)
+    )
+    # Rebuild HTML kv with reason allowing title hover (bypass _html_kv for that cell)
+    html_rows = "".join(
+        "<tr>"
+        f"<td style=\"padding:4px 12px 4px 0;color:#555;white-space:nowrap;vertical-align:top;\">{_esc(k)}</td>"
+        f"<td style=\"padding:4px 0;vertical-align:top;\"><strong>"
+        f"{reason_cell if k == 'Reason' else _esc(v)}"
+        f"</strong></td></tr>"
+        for k, v in kv
+    )
+    html_inner = (
+        "<h2 style=\"margin:0 0 12px;font-size:18px;\">Options Portal — equity dry-run paper fill</h2>"
+        "<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" "
+        f"style=\"border-collapse:collapse;margin:0 0 16px;\">{html_rows}</table>"
+        "<p style=\"margin:0;color:#555;font-size:13px;\">"
+        "This is a simulated fill for the dry-run review week. "
+        "Execution remains dry_run — no live Upstox orders.</p>"
+    )
+    return subject, plain, _html_shell(subject, html_inner)
 
 
 def format_daily_summary_email(
@@ -135,50 +285,93 @@ def format_daily_summary_email(
     positions: list[dict[str, Any]],
     fills_today: list[dict[str, Any]],
     mode: str = "dry_run",
-) -> tuple[str, str]:
-    """Return (subject, body) for the 16:00 IST daily dry-run summary."""
+) -> tuple[str, str, str]:
+    """Return (subject, plain_body, html_body) for the 16:00 IST daily dry-run summary."""
     subject = f"[dry-run] Daily summary {day_ist} ({len(fills_today)} fills)"
-    pos_lines: list[str] = []
-    if positions:
-        for p in positions:
-            pos_lines.append(
-                f"  - {p.get('symbol')} {p.get('side')} qty={p.get('qty')} "
-                f"avg={float(p.get('avg_price') or 0):.2f}"
-            )
-    else:
-        pos_lines.append("  (none)")
 
-    fill_lines: list[str] = []
-    if fills_today:
-        for f in fills_today:
-            pnl = f.get("realized_pnl")
-            pnl_s = f" pnl={float(pnl):.2f}" if pnl is not None else ""
-            fill_lines.append(
-                f"  - {f.get('ts_ist_display', '—')} {f.get('side')} "
-                f"{f.get('qty')} {f.get('symbol')} @ {float(f.get('price') or 0):.2f}"
-                f"{pnl_s} ({f.get('reason') or '—'})"
-            )
-    else:
-        fill_lines.append("  (no fills today)")
+    summary_kv = [
+        ("Date (IST)", day_ist),
+        ("Sent around", "16:00 IST"),
+        ("Mode", mode),
+        ("Day realized", f"{day_realized:.2f}"),
+        ("Open symbols", str(len(positions))),
+        ("Fills today", str(len(fills_today))),
+    ]
 
-    lines = [
+    pos_headers = ["Symbol", "Side", "Qty", "Avg price"]
+    pos_plain_rows: list[list[str]] = []
+    pos_html_rows: list[list[tuple[str, str | None]]] = []
+    for p in positions:
+        symbol = str(p.get("symbol") or "—")
+        side = str(p.get("side") or "—")
+        qty = str(p.get("qty") if p.get("qty") is not None else "—")
+        avg = _fmt_price(p.get("avg_price"))
+        pos_plain_rows.append([symbol, side, qty, avg])
+        pos_html_rows.append(
+            [(symbol, None), (side, None), (qty, None), (avg, None)]
+        )
+
+    fill_headers = ["Time (IST)", "Side", "Qty", "Symbol", "Price", "PnL", "Reason"]
+    fill_plain_rows: list[list[str]] = []
+    fill_html_rows: list[list[tuple[str, str | None]]] = []
+    full_reasons: list[tuple[str, str]] = []
+    for f in fills_today:
+        ts = str(f.get("ts_ist_display") or "—")
+        side = str(f.get("side") or "—")
+        qty = str(f.get("qty") if f.get("qty") is not None else "—")
+        symbol = str(f.get("symbol") or "—")
+        price = _fmt_price(f.get("price"))
+        pnl = _fmt_pnl(f.get("realized_pnl"))
+        reason_full = str(f.get("reason") or "").strip() or "—"
+        reason_short = soften_reason(reason_full)
+        fill_plain_rows.append([ts, side, qty, symbol, price, pnl, reason_short])
+        title = reason_full if reason_short != reason_full else None
+        fill_html_rows.append(
+            [
+                (ts, None),
+                (side, None),
+                (qty, None),
+                (symbol, None),
+                (price, None),
+                (pnl, None),
+                (reason_short, title),
+            ]
+        )
+        if title:
+            full_reasons.append((f"{ts} {side} {symbol}", reason_full))
+
+    plain_lines = [
         "Options Portal — equity dry-run daily summary",
-        f"Date (IST):     {day_ist}",
-        f"Sent around:    16:00 IST",
-        f"Mode:           {mode}",
-        f"Day realized:   {day_realized:.2f}",
-        f"Open symbols:   {len(positions)}",
-        f"Fills today:    {len(fills_today)}",
+        "",
+        *_plain_kv(summary_kv),
         "",
         "Open positions:",
-        *pos_lines,
+        *_plain_table(pos_headers, pos_plain_rows),
         "",
         "Today's fills:",
-        *fill_lines,
+        *_plain_table(fill_headers, fill_plain_rows),
         "",
-        "Execution remains dry_run — no live Upstox orders.",
     ]
-    return subject, "\n".join(lines)
+    if full_reasons:
+        plain_lines.append("Full reasons (truncated above):")
+        for label, reason in full_reasons:
+            plain_lines.append(f"  - {label}: {reason}")
+        plain_lines.append("")
+    plain_lines.append("Execution remains dry_run — no live Upstox orders.")
+    plain = "\n".join(plain_lines)
+
+    html_inner = (
+        "<h2 style=\"margin:0 0 12px;font-size:18px;\">Options Portal — equity dry-run daily summary</h2>"
+        + _html_kv_table(summary_kv)
+        + "<h3 style=\"margin:0 0 8px;font-size:15px;\">Open positions</h3>"
+        + _html_data_table(pos_headers, pos_html_rows)
+        + "<h3 style=\"margin:0 0 8px;font-size:15px;\">Today's fills</h3>"
+        + _html_data_table(fill_headers, fill_html_rows)
+        + "<p style=\"margin:0;color:#555;font-size:13px;\">"
+        "Execution remains dry_run — no live Upstox orders. "
+        "Hover a truncated Reason cell for the full text.</p>"
+    )
+    return subject, plain, _html_shell(subject, html_inner)
 
 
 class GmailSMTPNotifier:
@@ -212,7 +405,7 @@ class GmailSMTPNotifier:
         """Synchronous fill email (used from pipeline after paper persist)."""
         if not self.enabled:
             return False
-        subject, body = format_fill_email(
+        subject, body, html_body = format_fill_email(
             symbol=str(fill.get("symbol") or ""),
             side=str(fill.get("side") or ""),
             qty=int(fill.get("qty") or 0),
@@ -225,6 +418,7 @@ class GmailSMTPNotifier:
         return send_gmail_message(
             subject=subject,
             body=body,
+            html_body=html_body,
             settings=self._settings,
             smtp_factory=self._smtp_factory,
         )
@@ -240,7 +434,7 @@ class GmailSMTPNotifier:
     ) -> bool:
         if not self.enabled:
             return False
-        subject, body = format_daily_summary_email(
+        subject, body, html_body = format_daily_summary_email(
             day_ist=day_ist,
             day_realized=day_realized,
             positions=positions,
@@ -250,6 +444,7 @@ class GmailSMTPNotifier:
         return send_gmail_message(
             subject=subject,
             body=body,
+            html_body=html_body,
             settings=self._settings,
             smtp_factory=self._smtp_factory,
         )

@@ -99,8 +99,15 @@ def maybe_send_daily_summary(
     now: datetime | None = None,
     state_file: Path | None = None,
     force: bool = False,
+    mark_sent: bool | None = None,
 ) -> dict[str, Any]:
     """Send the daily summary if due. Safe no-op when password missing or too early.
+
+    ``force=True`` bypasses the 16:00 IST / once-per-day gate (for local test
+    resends). By default a forced send does **not** write the dedup marker so the
+    scheduled 16:00 email can still go out; pass ``mark_sent=True`` to record it.
+    Scheduled sends always mark when SMTP succeeds (``mark_sent`` defaults to
+    ``not force``).
 
     Returns a small status dict for logging / tests.
     """
@@ -125,6 +132,7 @@ def maybe_send_daily_summary(
     today = current.date()
     path = state_file or state_path()
     last = load_last_sent_day(path)
+    should_mark = (not force) if mark_sent is None else bool(mark_sent)
 
     if not force and not should_send_daily_summary(
         current,
@@ -173,7 +181,7 @@ def maybe_send_daily_summary(
         fills_today=fills_today,
         mode=mode,
     )
-    if ok:
+    if ok and should_mark:
         save_last_sent_day(today, path)
     return {
         "sent": ok,
@@ -181,5 +189,6 @@ def maybe_send_daily_summary(
         "fills_today": len(fills_today),
         "open_positions": len(positions),
         "day_realized": day_realized,
+        "marked_sent": bool(ok and should_mark),
         "reason": "ok" if ok else "smtp_failed",
     }
