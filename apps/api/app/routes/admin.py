@@ -28,6 +28,7 @@ class PaperLedgerPurge(BaseModel):
     confirm: bool = False
     archive: bool = True
     clear_positions: bool = True
+    closed_only: bool = False
     mode: str = Field(default="dry_run", pattern="^(dry_run|demo)$")
 
 
@@ -93,9 +94,12 @@ async def set_halt(halt: bool = True) -> dict:
 async def purge_paper_ledger(body: PaperLedgerPurge) -> dict:
     """Archive + clear dry-run paper fills/positions — only when starting live.
 
-    During the dry-run review week do **not** call this. Fills are kept for
-    analysis. See docs/options-portal-paper-retention.md and
-    ``scripts/purge_paper_ledger.py``.
+    Set ``closed_only=true`` to drop completed round-trip fill legs while
+    keeping open positions (and unpaired open entry fills). Prefer
+    ``scripts/purge_closed_trades.py --confirm`` on Windows native.
+
+    During the dry-run review week prefer closed-only if clearing bad history;
+    full wipe is for starting live. See docs/options-portal-paper-retention.md.
     """
     retention = paper_retention_config()
     if not retention.get("allow_purge_before_live", True):
@@ -125,14 +129,22 @@ async def purge_paper_ledger(body: PaperLedgerPurge) -> dict:
         mode=body.mode,  # type: ignore[arg-type]
         confirm=True,
         archive=body.archive,
-        clear_positions=body.clear_positions,
+        clear_positions=False if body.closed_only else body.clear_positions,
+        closed_only=body.closed_only,
     )
+    if body.closed_only:
+        message = (
+            "Closed round-trip fills purged; open positions kept. "
+            "Old bad exits (e.g. shared ₹996.96) are gone from Trades history."
+        )
+    else:
+        message = (
+            "Paper ledger purged. Review archive table / SQLite backup if needed, "
+            "then proceed toward live only after Project unlock."
+        )
     return {
         **result,
         "trading_mode": trading_mode(),
         "retention": retention,
-        "message": (
-            "Paper ledger purged. Review archive table / SQLite backup if needed, "
-            "then proceed toward live only after Project unlock."
-        ),
+        "message": message,
     }

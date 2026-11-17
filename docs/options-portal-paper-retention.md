@@ -27,7 +27,51 @@ trading:
 `auto_purge: false` is the dry-run default. Do not enable scheduled deletion of
 paper fills while reviewing the dry-run week.
 
-## Purge / archive before live
+## Purge closed trades only (keep open positions)
+
+Use this when you want to clear **completed round-trip / closed fill history**
+(e.g. old bad shared ₹996.96 exit prints) **without** deleting open positions
+or their unpaired entry fills. Does **not** require a full ledger wipe.
+
+### Preferred script
+
+```powershell
+cd C:\algo
+# Preview: closed_trades / fills_to_delete / open_positions
+.\.venv\Scripts\python.exe scripts\purge_closed_trades.py
+
+# Archive closed legs, then delete them — open book stays
+.\.venv\Scripts\python.exe scripts\purge_closed_trades.py --confirm
+```
+
+```bash
+python scripts/purge_closed_trades.py            # preview
+python scripts/purge_closed_trades.py --confirm  # purge closed only
+```
+
+After `--confirm`, Trades closed history is empty; Open positions rows remain.
+Warn: purged closed exits (including bad 996.96 rows) are gone from live
+`paper_fills` (optionally copied to `paper_fills_archive` unless `--no-archive`).
+
+### API (closed-only)
+
+```http
+POST /api/v1/admin/paper-ledger/purge
+Content-Type: application/json
+
+{
+  "confirm": true,
+  "archive": true,
+  "closed_only": true,
+  "mode": "dry_run"
+}
+```
+
+`closed_only: true` forces positions to stay (`clear_positions` ignored).
+
+Equivalent full-wipe script flag: `python scripts/purge_paper_ledger.py --yes --closed-only`.
+
+## Purge / archive before live (full wipe)
 
 ### API
 
@@ -39,12 +83,14 @@ Content-Type: application/json
   "confirm": true,
   "archive": true,
   "clear_positions": true,
+  "closed_only": false,
   "mode": "dry_run"
 }
 ```
 
 - Requires `confirm: true` and `allow_purge_before_live: true`.
 - With `archive: true`, rows are copied to `paper_fills_archive` then removed from `paper_fills`.
+- Full wipe deletes **all** fills and (when `clear_positions: true`) open positions.
 - Does **not** unlock live Upstox placement (still gated in v1).
 
 ### Script (Windows native / CLI)
@@ -55,13 +101,13 @@ From repo root (`C:\algo` or Linux):
 # Preview counts only
 .\.venv\Scripts\python.exe scripts\purge_paper_ledger.py
 
-# Archive + purge when starting live
+# Archive + purge when starting live (full wipe)
 .\.venv\Scripts\python.exe scripts\purge_paper_ledger.py --yes
 ```
 
 ```bash
 python scripts/purge_paper_ledger.py          # preview
-python scripts/purge_paper_ledger.py --yes    # archive + purge
+python scripts/purge_paper_ledger.py --yes    # archive + purge (full)
 ```
 
 ## Live retention (≥90 days)
