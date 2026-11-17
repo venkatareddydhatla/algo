@@ -19,6 +19,10 @@ from pathlib import Path
 from typing import Any
 
 from options_portal_domain.equity import EquityOrderIntent, PositionSide
+from options_portal_domain.round_trips import (
+    pair_round_trip_trades,
+    sort_closed_trades_newest_first,
+)
 from options_portal_domain.tz import ist
 from options_portal_domain.types import OrderResult, TradingMode
 from options_portal_persistence.db import _sqlite_path_from_url, database_url, is_local_profile
@@ -305,6 +309,29 @@ class PaperTradeStore:
             ).fetchall()
         return [_row_to_fill(row) for row in rows]
 
+    def list_all_fills(
+        self,
+        *,
+        mode: TradingMode = "dry_run",
+        max_rows: int = 10_000,
+    ) -> list[dict[str, Any]]:
+        """Load fills for round-trip pairing (oldest→newest batches via DESC pages)."""
+        if not self.available:
+            return []
+        cap = max(1, min(int(max_rows), 50_000))
+        out: list[dict[str, Any]] = []
+        batch = 500
+        offset = 0
+        while offset < cap:
+            page = self.list_fills(mode=mode, limit=batch, offset=offset)
+            if not page:
+                break
+            out.extend(page)
+            if len(page) < batch:
+                break
+            offset += batch
+        return out[:cap]
+
     def summary(
         self,
         *,
@@ -312,9 +339,20 @@ class PaperTradeStore:
         fills_limit: int = 50,
         fills_offset: int = 0,
     ) -> dict[str, Any]:
+        """Portfolio snapshot with **closed round-trip** rows as primary ``fills``.
+
+        ``fills`` / ``fills_total`` are Backtest-style paired trades (entry+exit).
+        Still-open legs appear only under ``positions``. Raw leg count is
+        ``raw_fills_total``. Pairing uses ``pair_round_trip_trades`` (shared with
+        the daily summary email).
+        """
         positions_raw = self.list_positions(mode=mode)
-        total_fills = self.count_fills(mode=mode)
-        fills = self.list_fills(mode=mode, limit=fills_limit, offset=fills_offset)
+        raw_fills_total = self.count_fills(mode=mode)
+        all_fills = self.list_all_fills(mode=mode)
+        closed = sort_closed_trades_newest_first(pair_round_trip_trades(all_fills))
+        lim = max(1, min(int(fills_limit), 500))
+        off = max(0, int(fills_offset))
+        page = closed[off : off + lim]
         day_realized = self.day_realized_pnl(mode=mode)
         positions = [
             {
@@ -327,8 +365,6 @@ class PaperTradeStore:
             }
             for p in positions_raw
         ]
-        lim = max(1, min(int(fills_limit), 500))
-        off = max(0, int(fills_offset))
         return {
             "mode": mode,
             "instrument": "equity",
@@ -336,10 +372,14 @@ class PaperTradeStore:
             "dry_run": True,
             "source": "paper_ledger",
             "positions": positions,
-            "fills": fills,
-            "fills_total": total_fills,
+            "fills": page,
+            "fills_kind": "round_trip",
+            "fills_total": len(closed),
             "fills_offset": off,
             "fills_limit": lim,
+            "closed_trades": page,
+            "closed_trades_total": len(closed),
+            "raw_fills_total": raw_fills_total,
             "day_realized": day_realized,
             "day_unrealized": 0.0,
             "fees_est": 0.0,
@@ -349,7 +389,8 @@ class PaperTradeStore:
                 "history_scope": "all_fills",
                 "note": (
                     "Dry-run fills are retained until an explicit purge/archive "
-                    "before live. Trades UI paginates full history (not today-only)."
+                    "before live. Trades UI shows closed round-trips (paginated; "
+                    "not today-only). Open legs stay under Open positions."
                 ),
             },
         }

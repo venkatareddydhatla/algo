@@ -113,7 +113,7 @@ Verify: `config\local.yaml` (and `default.yaml`) show `risk.max_open_symbols: 5`
 
 ### Pull paper / dry-run trade retention (stacked)
 
-Keep **all** dry-run paper fills through the review week (no auto-delete). Trades UI paginates full history (not today-only). Before real orders, purge/archive explicitly via admin API or `scripts\purge_paper_ledger.py`. After live, prefer ≥90 days fill retention. Policy: [`docs/options-portal-paper-retention.md`](./options-portal-paper-retention.md).
+Keep **all** dry-run paper fills through the review week (no auto-delete). Trades UI shows **closed round-trips** (paginated; not today-only) — same entry/exit pairing as Backtest Fills and the daily summary email. Before real orders, purge/archive explicitly via admin API or `scripts\purge_paper_ledger.py`. After live, prefer ≥90 days fill retention. Policy: [`docs/options-portal-paper-retention.md`](./options-portal-paper-retention.md).
 
 ```powershell
 cd C:\algo
@@ -155,6 +155,23 @@ git pull origin cursor/summary-round-trip-trades-6717
 ```
 
 Still `dry_run` only — no live orders.
+
+### Pull Trades page round-trip closed trades (stacked on summary PR)
+
+Trades & P&L **Closed trades** table matches Backtest / daily summary (one row per entry+exit). Shared pairing: `options_portal_domain.round_trips`.
+
+```powershell
+cd C:\algo
+Set-ExecutionPolicy -Scope Process Bypass
+.\deploy\windows\native\stop-native.ps1
+git fetch origin
+git checkout cursor/trades-page-round-trips-cb5e
+git pull origin cursor/trades-page-round-trips-cb5e
+.\deploy\windows\native\setup-native.ps1
+.\deploy\windows\native\start-native.ps1 -WithWorker
+```
+
+Open http://127.0.0.1:5173/trades — Open positions unchanged; Closed trades show Symbol, Side LONG/SHORT, Entry/Exit IST, Entry/Exit px, PnL, Reason, dry_run.
 
 If the API fails with `ZoneInfoNotFoundError: 'No time zone found with key Asia/Kolkata'`, install tzdata and restart:
 

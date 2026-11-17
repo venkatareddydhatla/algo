@@ -263,12 +263,20 @@ def test_paper_ledger_long_then_exit(paper_env: Path):
     summary = store.summary()
     assert summary["instrument"] == "equity"
     assert summary["dry_run"] is True
-    assert len(summary["fills"]) == 2
-    fill = summary["fills"][0]
-    assert fill["dry_run"] is True
-    assert fill["ts_ist_display"].endswith("IST")
-    assert fill["side"] in {"BUY", "SELL"}
-    assert "reason" in fill
+    assert summary["fills_kind"] == "round_trip"
+    assert summary["raw_fills_total"] == 2
+    assert len(summary["fills"]) == 1
+    assert len(summary["closed_trades"]) == 1
+    trade = summary["fills"][0]
+    assert trade["dry_run"] is True
+    assert trade["side"] == "LONG"
+    assert trade["symbol"] == "RELIANCE"
+    assert trade["entry_ts_ist_display"].endswith("IST")
+    assert trade["exit_ts_ist_display"].endswith("IST")
+    assert trade["entry_price"] == pytest.approx(100.0)
+    assert trade["exit_price"] == pytest.approx(110.0)
+    assert trade["pnl"] == pytest.approx(10.0)
+    assert "reason" in trade
 
 
 def test_paper_ledger_short_cover_pnl(paper_env: Path):
@@ -323,5 +331,9 @@ async def test_trades_api_reads_paper_ledger(paper_env: Path):
     assert payload["source"] == "paper_ledger"
     assert payload["instrument"] == "equity"
     assert payload["dry_run"] is True
-    assert any(f["symbol"] == "RELIANCE" for f in payload["fills"])
-    assert any(f.get("dry_run") for f in payload["fills"])
+    assert payload["fills_kind"] == "round_trip"
+    # Entry-only: open leg under positions, not closed trades
+    assert any(p["symbol"] == "RELIANCE" for p in payload["positions"])
+    assert payload["fills_total"] == 0
+    assert payload["raw_fills_total"] >= 1
+    assert payload["closed_trades"] == []

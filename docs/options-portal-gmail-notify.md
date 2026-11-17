@@ -75,6 +75,7 @@ Still `dry_run` only — no live Upstox orders.
 
 ## Package
 
-- `packages/notify` — `GmailSMTPNotifier`, `build_notifier`, `maybe_send_daily_summary`, HTML multipart formatters
+- `packages/domain` — `round_trips.pair_round_trip_trades` (shared with Trades UI / `GET /api/v1/trades`)
+- `packages/notify` — `GmailSMTPNotifier`, `build_notifier`, `maybe_send_daily_summary`, HTML multipart formatters (re-exports pairing helpers)
 - Worker: fill email in `apps/worker/app/pipeline.py`; daily check after each full scan in `apps/worker/app/main.py`
 - Test CLIs: `scripts/send_test_email.py`, `scripts/send_daily_summary.py --force`

@@ -95,10 +95,13 @@ def test_list_fills_paginates_full_history(paper_env: Path):
     assert {f["id"] for f in page0}.isdisjoint({f["id"] for f in page1})
 
     summary = store.summary(mode="dry_run", fills_limit=2, fills_offset=0)
-    assert summary["fills_total"] == 5
+    # Five entry-only fills → no closed round-trips yet
+    assert summary["raw_fills_total"] == 5
+    assert summary["fills_kind"] == "round_trip"
+    assert summary["fills_total"] == 0
     assert summary["fills_limit"] == 2
     assert summary["fills_offset"] == 0
-    assert len(summary["fills"]) == 2
+    assert len(summary["fills"]) == 0
     assert summary["retention"]["auto_purge"] is False
 
 
@@ -126,18 +129,69 @@ def test_live_retention_keeps_at_least_90_days(paper_env: Path):
     assert store.count_fills(mode="live") == 0
 
 
+def _sim_round_trip(
+    store: PaperTradeStore,
+    symbol: str,
+    client_prefix: str,
+    entry_px: float,
+    exit_px: float,
+):
+    entry = plan_equity_intents(
+        symbol,
+        SignalAction.BUY_CE_BIAS,
+        open_side=None,
+        open_qty=0,
+        qty=1,
+        price=entry_px,
+        reason="retention-entry",
+    )[0]
+    store.record_simulated_fill(
+        entry,
+        OrderResult(
+            f"{client_prefix}-e",
+            "simulated",
+            "dry_run",
+            f"SIM-{client_prefix}-e",
+            None,
+        ),
+    )
+    exit_i = plan_equity_intents(
+        symbol,
+        SignalAction.HOLD,
+        open_side="long",
+        open_qty=1,
+        qty=1,
+        price=exit_px,
+        reason="retention-exit",
+    )[0]
+    store.record_simulated_fill(
+        exit_i,
+        OrderResult(
+            f"{client_prefix}-x",
+            "simulated",
+            "dry_run",
+            f"SIM-{client_prefix}-x",
+            None,
+        ),
+    )
+
+
 @pytest.mark.asyncio
 async def test_trades_api_pagination_and_admin_purge(paper_env: Path):
     store = PaperTradeStore()
     for i in range(3):
-        _sim_fill(store, "RELIANCE", f"api-{i}", price=90.0 + i)
+        _sim_round_trip(store, f"SYM{i}", f"api-{i}", 90.0 + i, 95.0 + i)
 
     from app.routes.trades import trades_summary
 
     page = await trades_summary(offset=0, limit=2)
     assert page["source"] == "paper_ledger"
+    assert page["fills_kind"] == "round_trip"
     assert page["fills_total"] == 3
+    assert page["raw_fills_total"] == 6
     assert len(page["fills"]) == 2
+    assert page["fills"][0]["side"] == "LONG"
+    assert "entry_ts_ist_display" in page["fills"][0]
     assert page["retention"]["auto_purge"] is False
 
     from fastapi import HTTPException

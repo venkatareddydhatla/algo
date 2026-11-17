@@ -11,7 +11,7 @@ Policy for the equity **paper ledger** (`paper_fills` / `paper_positions`) under
 | **Before real orders** | **Explicit purge/archive** only (API or script + config flag). Clean the ledger when you decide to start live — not during the review week. |
 | **After live** | Prefer retain fills **≥ 90 days** for analysis (`live_min_retain_days`). Auto-retention never runs in `dry_run` / `demo`. |
 
-Trades UI / `GET /api/v1/trades` show **full fill history** (paginated), not today-only.
+Trades UI / `GET /api/v1/trades` show **closed round-trips** (paginated entry+exit rows: Symbol, Side LONG/SHORT, Entry/Exit IST+px, PnL, Reason — same pairing as Backtest Fills / daily summary). Open legs stay under Open positions. Raw fill legs remain in the SQLite ledger (`raw_fills_total`); history is not today-only.
 
 ## Config
 
