@@ -265,6 +265,23 @@ git pull origin cursor/hybrid-rank-entry-selection-ecf7
 
 Verify worker log: `Entry selection enabled anti_churn=empty_slots_only` and after a scan `Entry selection flush`. Still `dry_run` only.
 
+### Pull dynamic open-symbol capacity (stacked)
+
+Equity dry-run **open count is dynamic by `|hybrid|` strength**: hard ceiling **15**, floor **4**, admit only candidates with `|hybrid| ≥ 0.55`, fill empty slots strongest-first. **Anti-churn** stays `empty_slots_only`. Soft flatten / overnight `|hybrid| ≥ 0.70` unchanged. Manage knobs in `trading.risk` / `entry_selection.dynamic_capacity`.
+
+```powershell
+cd C:\algo
+Set-ExecutionPolicy -Scope Process Bypass
+.\deploy\windows\native\stop-native.ps1
+git fetch origin
+git checkout cursor/dynamic-open-symbol-capacity-53b7
+git pull origin cursor/dynamic-open-symbol-capacity-53b7
+.\deploy\windows\native\setup-native.ps1
+.\deploy\windows\native\start-native.ps1 -WithWorker
+```
+
+Verify worker log: `Entry selection enabled ... dynamic=True floor=4 ceiling=15` and `Entry selection flush`. Still `dry_run` only.
+
 If the API fails with `ZoneInfoNotFoundError: 'No time zone found with key Asia/Kolkata'`, install tzdata and restart:
 
 ```powershell

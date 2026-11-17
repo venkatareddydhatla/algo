@@ -1,8 +1,9 @@
-"""Cycle-scoped equity entry admission — rank by |hybrid|, fill empty slots.
+"""Cycle-scoped equity entry admission — |hybrid| rank + dynamic capacity.
 
 During a full-universe scan, new ``entry`` intents are staged instead of
 first-fill by CSV/scan order. After the batch, strongest |hybrid| candidates
-fill free ``max_open_symbols`` slots. Existing opens are kept (anti-churn).
+fill free slots under a dynamic target (floor/ceiling + min |hybrid|).
+Existing opens are kept (anti-churn ``empty_slots_only``).
 """
 
 from __future__ import annotations
@@ -44,6 +45,10 @@ class EntryCycleAdmission:
     max_open_symbols: int
     enabled: bool = True
     anti_churn: str = "empty_slots_only"
+    dynamic_enabled: bool = False
+    floor: int = 4
+    ceiling: int = 15
+    min_hybrid_abs: float = 0.55
     _pending: dict[str, PendingEntry] = field(default_factory=dict)
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
@@ -52,10 +57,17 @@ class EntryCycleAdmission:
         sel = entry_selection_config(cfg)
         if not sel["enabled"]:
             return None
+        dyn = dict(sel.get("dynamic_capacity") or {})
+        hard = int(sel["max_open_symbols"])
+        ceiling = int(dyn.get("ceiling", hard))
         return cls(
-            max_open_symbols=int(sel["max_open_symbols"]),
+            max_open_symbols=hard,
             enabled=True,
             anti_churn=str(sel["anti_churn"]),
+            dynamic_enabled=bool(dyn.get("enabled", False)),
+            floor=int(dyn.get("floor", 4)),
+            ceiling=ceiling,
+            min_hybrid_abs=float(dyn.get("min_hybrid_abs", 0.55)),
         )
 
     async def stage(self, pending: PendingEntry) -> None:
@@ -91,7 +103,14 @@ class EntryCycleAdmission:
             self._pending.clear()
 
         if not pending:
-            return {"admitted": [], "skipped": [], "open_before": [], "slots": 0}
+            return {
+                "admitted": [],
+                "skipped": [],
+                "open_before": [],
+                "slots": 0,
+                "target_open": 0,
+                "dynamic": self.dynamic_enabled,
+            }
 
         open_symbols: list[str] = []
         paper = None
@@ -113,14 +132,26 @@ class EntryCycleAdmission:
             ],
             open_symbols=open_symbols,
             max_open_symbols=self.max_open_symbols,
+            min_hybrid_abs=self.min_hybrid_abs,
+            floor=self.floor,
+            ceiling=self.ceiling,
+            dynamic=self.dynamic_enabled,
         )
         admitted_syms = {c.symbol.upper() for c in selected}
         skipped = sorted(s for s in pending if s not in admitted_syms)
+        slots = max(0, self.max_open_symbols - len(open_symbols))
+        if self.dynamic_enabled:
+            # Effective free slots used this cycle (may be < hard-cap free).
+            slots = len(selected)
 
         logger.info(
-            "Entry selection anti_churn=%s max_open=%d open=%d candidates=%d "
-            "admitted=%s skipped=%d",
+            "Entry selection anti_churn=%s dynamic=%s floor=%d ceiling=%d "
+            "min_|hybrid|=%.2f hard_cap=%d open=%d candidates=%d admitted=%s skipped=%d",
             self.anti_churn,
+            self.dynamic_enabled,
+            self.floor,
+            self.ceiling,
+            self.min_hybrid_abs,
             self.max_open_symbols,
             len(open_symbols),
             len(pending),
@@ -129,7 +160,7 @@ class EntryCycleAdmission:
         )
         if skipped:
             logger.info(
-                "Entry selection skipped (weaker |hybrid| or no free slots): %s",
+                "Entry selection skipped (below |hybrid| threshold, weaker, or no slots): %s",
                 ", ".join(
                     f"{s}|h|={abs(pending[s].hybrid_score):.3f}" for s in skipped[:30]
                 )
@@ -142,6 +173,18 @@ class EntryCycleAdmission:
 
         for cand in selected:
             row = pending[cand.symbol.upper()]
+            # Ensure risk gate hard-cap matches ceiling during deferred fill.
+            row_limits = dict(row.limits)
+            row_limits["max_open_symbols"] = self.max_open_symbols
+            row = PendingEntry(
+                symbol=row.symbol,
+                hybrid_score=row.hybrid_score,
+                confidence=row.confidence,
+                intents=row.intents,
+                safe_mode=row.safe_mode,
+                limits=row_limits,
+                recommendation=row.recommendation,
+            )
             ok = await _execute_pending_entry(
                 row, paper=paper, router=router, gmail=gmail
             )
@@ -152,7 +195,11 @@ class EntryCycleAdmission:
             "admitted": executed,
             "skipped": skipped,
             "open_before": open_symbols,
-            "slots": max(0, self.max_open_symbols - len(open_symbols)),
+            "slots": slots,
+            "dynamic": self.dynamic_enabled,
+            "floor": self.floor,
+            "ceiling": self.ceiling,
+            "min_hybrid_abs": self.min_hybrid_abs,
             "anti_churn": self.anti_churn,
         }
 

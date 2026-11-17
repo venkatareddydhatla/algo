@@ -60,18 +60,23 @@ trading:
     avoid_expiry_after_ist: "15:00"  # same-day expiry cut-off unless overridden
   risk:
     max_lots_per_symbol: 2
-    max_open_symbols: 10       # hard cap; still required (do not remove)
+    max_open_symbols: 15       # hard ceiling (risk gate); manage via YAML as needed
     max_day_loss_inr: 25000
     max_premium_spread_pct: 2.0
     min_option_oi: 50000
     equity_share_qty: 1
     max_equity_qty_per_symbol: 1
     require_news_context: false  # if true, skip orders when news pipeline degraded
-    # Rank new equity entries by |hybrid|; fill empty slots only (anti-churn).
+    # Rank by |hybrid|; dynamic floor/ceiling; empty_slots_only anti-churn.
     entry_selection:
       enabled: true
       rank_by: abs_hybrid
       anti_churn: empty_slots_only
+      dynamic_capacity:
+        enabled: true
+        floor: 4
+        ceiling: 15
+        min_hybrid_abs: 0.55
 
 hybrid:
   weights:
