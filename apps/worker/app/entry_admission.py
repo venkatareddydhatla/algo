@@ -1,13 +1,13 @@
-"""Cycle-scoped equity entry admission — |hybrid| rank + dual-session capacity.
+"""Cycle-scoped equity entry admission — |hybrid| rank + high-conviction capacity.
 
 During a full-universe scan, new ``entry`` intents are staged instead of
 first-fill by CSV/scan order. After the batch, strongest |hybrid| candidates
 fill free slots under a dynamic target (floor/ceiling + min |hybrid|).
 
-**Morning session** (default 09:15–10:00 IST): higher |hybrid| floor + hard
-max-new-entries budget (not perpetual refill). **Rest of day** until entry
-cutoff (default 11:30): base |hybrid| floor, cooloff, empty_slots_only.
-Existing opens are kept (anti-churn ``empty_slots_only``).
+Multi-factor filters (MTF/RVOL/ATR/proximity/news) run in the pipeline before
+staging. This module ranks admits, applies cooloff / WR-based max-open, and
+uses time-of-day |hybrid| floors from ``high_conviction`` (+ adaptive delta).
+Anti-churn: ``empty_slots_only``.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from options_portal_domain.adaptive_hybrid import load_adaptive_delta
 from options_portal_domain.calendar import pnl_ist_day
 from options_portal_domain.entry_selection import (
     EntryCandidate,
@@ -24,12 +25,19 @@ from options_portal_domain.entry_selection import (
     effective_min_hybrid_abs,
     entry_selection_config,
     in_morning_entry_window,
-    last_exit_times_from_fills,
     morning_entry_slots_remaining,
     select_entries_for_empty_slots,
     symbols_in_reentry_cooloff,
 )
 from options_portal_domain.equity import EquityOrderIntent
+from options_portal_domain.high_conviction import (
+    effective_max_open_symbols,
+    high_conviction_config,
+    last_trade_times_from_fills,
+    rolling_equity_win_rate,
+    session_min_hybrid_abs,
+    skip_entry_log,
+)
 from options_portal_domain.session_gates import SoftEodPolicy, is_trading_session
 from options_portal_domain.tz import now_ist
 from options_portal_domain.universe import is_index_underlying
@@ -144,7 +152,26 @@ class EntryCycleAdmission:
             for p in self._pending.values()
         ]
 
-    def _effective_min_hybrid(self, ist_now: Any, *, open_ist: str = "09:15") -> float:
+    def _effective_min_hybrid(
+        self,
+        ist_now: Any,
+        *,
+        open_ist: str = "09:15",
+        cfg: dict[str, Any] | None = None,
+        adaptive_delta: float = 0.0,
+    ) -> float:
+        """Prefer high-conviction time floors (+ adaptive); fall back to dual-session."""
+        hc = high_conviction_config(cfg)
+        if hc.get("enabled", True):
+            return session_min_hybrid_abs(
+                ist_now,
+                before_12=float(hc["min_hybrid_before_12"]),
+                after_12=float(hc["min_hybrid_after_12"]),
+                after_1420=float(hc["min_hybrid_after_1420"]),
+                afternoon_after_ist=str(hc["afternoon_after_ist"]),
+                late_after_ist=str(hc["late_after_ist"]),
+                adaptive_delta=adaptive_delta,
+            )
         return effective_min_hybrid_abs(
             self.min_hybrid_abs,
             now=ist_now,
@@ -221,6 +248,7 @@ class EntryCycleAdmission:
         open_symbols: list[str] = []
         cooloff_blocked: set[str] = set()
         morning_entries_used = 0
+        fills: list[dict[str, Any]] = []
         paper = None
         try:
             from options_portal_persistence.paper_trades import PaperTradeStore
@@ -230,11 +258,12 @@ class EntryCycleAdmission:
                 # Prefer dry_run ledger mode (same as pipeline)
                 snap = paper.portfolio_snapshot(mode="dry_run")
                 open_symbols = list(snap.get("open_symbols") or [])
-                fills = paper.list_all_fills(mode="dry_run")
+                fills = list(paper.list_all_fills(mode="dry_run"))
                 if self.cooloff_enabled and self.cooloff_minutes > 0:
-                    last_exits = last_exit_times_from_fills(fills)
+                    # Cooloff after **any** trade (entry or exit) on the symbol.
+                    last_trades = last_trade_times_from_fills(fills)
                     cooloff_blocked = symbols_in_reentry_cooloff(
-                        last_exits,
+                        last_trades,
                         now=ist_now,
                         cooloff_minutes=self.cooloff_minutes,
                         same_session_only=self.cooloff_same_session,
@@ -251,12 +280,39 @@ class EntryCycleAdmission:
         except Exception:  # noqa: BLE001
             logger.exception("entry admission: paper ledger unavailable at flush")
 
+        hc = high_conviction_config(cfg)
+        adaptive_delta = 0.0
+        try:
+            adaptive_delta = load_adaptive_delta(cfg=cfg)
+        except Exception:  # noqa: BLE001
+            logger.exception("entry admission: adaptive delta load failed")
+
+        wr, wr_wins, wr_n = rolling_equity_win_rate(
+            fills, window_trips=int(hc.get("wr_window_trips", 20))
+        )
+        hard_cap = effective_max_open_symbols(
+            wr,
+            max_open=int(hc.get("max_open", self.max_open_symbols)),
+            max_open_low_wr=int(hc.get("max_open_low_wr", 4)),
+            wr_threshold=float(hc.get("wr_threshold", 0.50)),
+            min_trips_for_wr=int(hc.get("wr_min_trips", 5)),
+            trip_count=wr_n,
+        )
+        # Never exceed YAML / admission hard cap.
+        hard_cap = min(hard_cap, max(0, int(self.max_open_symbols)))
+        ceiling = min(int(self.ceiling), hard_cap) if hard_cap > 0 else int(self.ceiling)
+
         # Drop cooloff symbols from pending before selection (still listed skipped).
         cooloff_skipped = sorted(s for s in pending if s in cooloff_blocked)
         for sym in cooloff_skipped:
             pending.pop(sym, None)
 
-        eff_min = self._effective_min_hybrid(ist_now, open_ist=soft_policy.open_ist)
+        eff_min = self._effective_min_hybrid(
+            ist_now,
+            open_ist=soft_policy.open_ist,
+            cfg=cfg,
+            adaptive_delta=adaptive_delta,
+        )
         in_morning = self.morning_enabled and in_morning_entry_window(
             ist_now,
             open_ist=soft_policy.open_ist,
@@ -279,9 +335,13 @@ class EntryCycleAdmission:
                 "dynamic": self.dynamic_enabled,
                 "cooloff_blocked": cooloff_skipped,
                 "min_hybrid_abs_effective": eff_min,
+                "adaptive_delta": adaptive_delta,
+                "rolling_wr": wr,
+                "max_open_effective": hard_cap,
                 "morning_session": in_morning,
                 "morning_entries_used": morning_entries_used,
                 "morning_remaining": morning_remaining,
+                "skip_log": skip_entry_log().snapshot(),
                 "reason": "reentry_cooloff — all deferred entries blocked",
             }
 
@@ -303,9 +363,13 @@ class EntryCycleAdmission:
                 "dynamic": self.dynamic_enabled,
                 "cooloff_blocked": cooloff_skipped,
                 "min_hybrid_abs_effective": eff_min,
+                "adaptive_delta": adaptive_delta,
+                "rolling_wr": wr,
+                "max_open_effective": hard_cap,
                 "morning_session": True,
                 "morning_entries_used": morning_entries_used,
                 "morning_remaining": 0,
+                "skip_log": skip_entry_log().snapshot(),
                 "reason": reason,
             }
 
@@ -315,10 +379,10 @@ class EntryCycleAdmission:
                 for p in pending.values()
             ],
             open_symbols=open_symbols,
-            max_open_symbols=self.max_open_symbols,
+            max_open_symbols=hard_cap,
             min_hybrid_abs=eff_min,
             floor=self.floor,
-            ceiling=self.ceiling,
+            ceiling=ceiling,
             dynamic=self.dynamic_enabled,
             cooloff_symbols=cooloff_blocked,
             max_new_entries=morning_remaining,
@@ -329,23 +393,25 @@ class EntryCycleAdmission:
             | set(cooloff_skipped)
             | {s for s in pending if s not in admitted_syms}
         )
-        slots = max(0, self.max_open_symbols - len(open_symbols))
+        slots = max(0, hard_cap - len(open_symbols))
         if self.dynamic_enabled:
             # Effective free slots used this cycle (may be < hard-cap free).
             slots = len(selected)
 
         logger.info(
             "Entry selection anti_churn=%s dynamic=%s floor=%d ceiling=%d "
-            "min_|hybrid|=%.2f (base=%.2f) hard_cap=%d cooloff=%s/%dm "
-            "morning=%s used=%d remaining=%s open=%d candidates=%d "
-            "admitted=%s skipped=%d cooloff_blocked=%d",
+            "min_|hybrid|=%.2f (base=%.2f Δ=%.2f) hard_cap=%d wr=%s "
+            "cooloff=%s/%dm morning=%s used=%d remaining=%s open=%d "
+            "candidates=%d admitted=%s skipped=%d cooloff_blocked=%d",
             self.anti_churn,
             self.dynamic_enabled,
             self.floor,
-            self.ceiling,
+            ceiling,
             eff_min,
             self.min_hybrid_abs,
-            self.max_open_symbols,
+            adaptive_delta,
+            hard_cap,
+            f"{wr:.0%}({wr_wins}/{wr_n})" if wr is not None else "n/a",
             self.cooloff_enabled,
             self.cooloff_minutes,
             in_morning,
@@ -382,9 +448,9 @@ class EntryCycleAdmission:
 
         for cand in selected:
             row = pending[cand.symbol.upper()]
-            # Ensure risk gate hard-cap matches ceiling during deferred fill.
+            # Ensure risk gate hard-cap matches WR-aware ceiling during deferred fill.
             row_limits = dict(row.limits)
-            row_limits["max_open_symbols"] = self.max_open_symbols
+            row_limits["max_open_symbols"] = hard_cap
             row = PendingEntry(
                 symbol=row.symbol,
                 hybrid_score=row.hybrid_score,
@@ -407,14 +473,19 @@ class EntryCycleAdmission:
             "slots": slots,
             "dynamic": self.dynamic_enabled,
             "floor": self.floor,
-            "ceiling": self.ceiling,
+            "ceiling": ceiling,
             "min_hybrid_abs": self.min_hybrid_abs,
             "min_hybrid_abs_effective": eff_min,
+            "adaptive_delta": adaptive_delta,
+            "rolling_wr": wr,
+            "rolling_wr_trips": wr_n,
+            "max_open_effective": hard_cap,
             "cooloff_blocked": cooloff_skipped,
             "morning_session": in_morning,
             "morning_entries_used": morning_entries_used,
             "morning_remaining": morning_remaining,
             "anti_churn": self.anti_churn,
+            "skip_log": skip_entry_log().snapshot(),
         }
 
 

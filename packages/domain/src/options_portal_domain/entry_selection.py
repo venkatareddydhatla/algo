@@ -1,31 +1,22 @@
 """Equity dry-run entry selection: rank by |hybrid|, dynamic capacity, anti-churn.
 
-Policy (dual-session high conviction)
--------------------------------------
+Policy (high-conviction multi-factor — supersedes dual-session entry floors)
+---------------------------------------------------------------------------
 - Rank **new** entry candidates by ``|hybrid_score|`` (strongest first).
-- **Morning session** [open, morning_until_ist) (default **09:15–10:00 IST**):
-  admit only ``|hybrid| ≥ morning_min_hybrid_abs`` (default **0.75**);
-  **max_new_entries** total for the morning window (default **3**) — not a
-  perpetual refill when names exit.
-- **Rest of day** until ``no_new_entries_after`` (default **11:30 IST**):
-  admit ``|hybrid| ≥ min_hybrid_abs`` (default **0.72**); empty_slots_only;
-  cooloff **180m**.
-- **Dynamic capacity**: target open-book size scales with how many fresh
-  candidates clear the effective |hybrid| floor, clamped to ``[floor, ceiling]``
-  (default floor **3**, ceiling **12**). Conviction floors + entry cutoffs +
-  cooloff + higher exit thresholds do the work — do **not** use a tiny hard
-  open-cap as the main filter.
-- Fill only **empty** slots under the effective target — never rotate an
-  existing open for a tiny / modest score edge (brokerage / churn control).
-- **Re-entry cooloff:** after closing a symbol (any reason), block new entry
-  on the same symbol for ``reentry_cooloff.minutes`` within the same IST
-  NSE session day.
-- Soft flatten and overnight ``|hybrid| >= 0.70`` stay in session_gates;
-  this module does not change exit / overnight rules.
-- ``max_open_symbols`` / dynamic ``ceiling`` is the hard risk cap.
+- Time-of-day |hybrid| floors (see ``high_conviction``): ≥0.75 before 12:00,
+  ≥0.80 after 12:00, ≥0.85 after 14:20 (+ adaptive ±0.05, clamp [0.70, 0.90]).
+- Entry window **09:15–15:20 IST**; multi-factor filters applied in the worker
+  before staging (MTF, RVOL, ATR%, proximity, news 1h, cooloff).
+- **Max open 6** (4 when rolling WR < 50% over last 20 closed trips).
+- Fill only **empty** slots — never rotate an existing open (anti-churn
+  ``empty_slots_only``).
+- **Cooloff:** after **any** trade on a symbol, block re-entry for **120m**
+  within the same IST NSE session day.
+- Soft flatten **15:28** / overnight ``|hybrid| ≥ 0.85`` + trend — session_gates.
+- Legacy morning_session budget remains available but is **disabled** by
+  default under the multi-factor tip (YAML ``morning_session.enabled: false``).
 
 Anti-churn choice: ``empty_slots_only`` (not margin-based replacement).
-Documented so ops can revisit later without guessing scan-order behavior.
 """
 
 from __future__ import annotations
@@ -40,17 +31,16 @@ from options_portal_domain.tz import ist
 AntiChurnMode = Literal["empty_slots_only"]
 RankBy = Literal["abs_hybrid"]
 
-# Dual-session defaults: conviction floors + entry cutoffs do the work;
-# open-book ceiling restored so best symbols are not blocked (was Day3 hard 5).
-DEFAULT_CEILING = 12
-DEFAULT_FLOOR = 3
-DEFAULT_MIN_HYBRID_ABS = 0.72
+# High-conviction multi-factor defaults (supersede dual-session 12/0.72/180m).
+DEFAULT_CEILING = 6
+DEFAULT_FLOOR = 2
+DEFAULT_MIN_HYBRID_ABS = 0.75
 DEFAULT_MORNING_UNTIL_IST = "10:00"
 DEFAULT_MORNING_MIN_HYBRID_ABS = 0.75
 DEFAULT_MORNING_MAX_NEW_ENTRIES = 3
-DEFAULT_AFTERNOON_MIN_HYBRID_ABS = 0.75
+DEFAULT_AFTERNOON_MIN_HYBRID_ABS = 0.80
 DEFAULT_AFTERNOON_AFTER_IST = "12:00"
-DEFAULT_REENTRY_COOLOFF_MINUTES = 180
+DEFAULT_REENTRY_COOLOFF_MINUTES = 120
 
 
 @dataclass(frozen=True)
@@ -480,13 +470,14 @@ def entry_selection_config(cfg: dict[str, Any] | None) -> dict[str, Any]:
         morn_raw = dyn.get("morning_session")
     morn: dict[str, Any] = dict(morn_raw) if isinstance(morn_raw, dict) else {}
     if morn_raw is None:
-        # Defaults on when omitted — dual-session model.
-        morning_enabled = True
+        # Multi-factor tip: morning budget off by default (time floors in
+        # high_conviction supersede dual-session morning max-new).
+        morning_enabled = False
         morning_until = DEFAULT_MORNING_UNTIL_IST
         morning_min = DEFAULT_MORNING_MIN_HYBRID_ABS
         morning_max_new = DEFAULT_MORNING_MAX_NEW_ENTRIES
     else:
-        morning_enabled = bool(morn.get("enabled", True))
+        morning_enabled = bool(morn.get("enabled", False))
         morning_until = str(
             morn.get("until_ist", DEFAULT_MORNING_UNTIL_IST)
         ).strip() or DEFAULT_MORNING_UNTIL_IST
@@ -498,21 +489,20 @@ def entry_selection_config(cfg: dict[str, Any] | None) -> dict[str, Any]:
         )
 
     aft_raw = dyn.get("afternoon_after_ist")
-    # Dual-session tip: afternoon raise optional; omit / null disables.
-    # Keep explicit YAML values when set (belt if entry window extended).
-    if "afternoon_after_ist" not in dyn and "afternoon_min_hybrid_abs" not in dyn:
-        # No afternoon keys → disabled (entries cut at 11:30; morning owns raise).
-        afternoon_after_ist: str | None = None
-        afternoon_min: float | None = None
-    else:
+    # Afternoon raise: default on at 12:00 → 0.80 when keys omitted (multi-factor).
+    # Explicit null / empty disables. Late 14:20 floor lives in high_conviction.
+    if "afternoon_after_ist" in dyn or "afternoon_min_hybrid_abs" in dyn:
         aft_hhmm = str(aft_raw).strip() if aft_raw is not None else ""
         aft_min_raw = dyn.get("afternoon_min_hybrid_abs", DEFAULT_AFTERNOON_MIN_HYBRID_ABS)
         if aft_hhmm and aft_min_raw is not None:
-            afternoon_after_ist = aft_hhmm
-            afternoon_min = float(aft_min_raw)
+            afternoon_after_ist: str | None = aft_hhmm
+            afternoon_min: float | None = float(aft_min_raw)
         else:
             afternoon_after_ist = None
             afternoon_min = None
+    else:
+        afternoon_after_ist = DEFAULT_AFTERNOON_AFTER_IST
+        afternoon_min = DEFAULT_AFTERNOON_MIN_HYBRID_ABS
 
     cool_raw = sel.get("reentry_cooloff")
     cool: dict[str, Any] = dict(cool_raw) if isinstance(cool_raw, dict) else {}

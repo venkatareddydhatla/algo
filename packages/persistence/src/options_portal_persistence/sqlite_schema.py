@@ -131,6 +131,16 @@ CREATE INDEX IF NOT EXISTS paper_fills_archive_ts_idx
 """
 
 
+# Adaptive / config overrides (no secrets) — host.kv-style.
+KV_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS kv_store (
+  key         TEXT PRIMARY KEY,
+  value       TEXT NOT NULL,
+  updated_at  TEXT NOT NULL
+);
+"""
+
+
 def apply_news_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(NEWS_SCHEMA_SQL)
     conn.commit()
@@ -138,4 +148,9 @@ def apply_news_schema(conn: sqlite3.Connection) -> None:
 
 def apply_paper_ledger_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(PAPER_LEDGER_SCHEMA_SQL)
+    conn.commit()
+
+
+def apply_kv_schema(conn: sqlite3.Connection) -> None:
+    conn.executescript(KV_SCHEMA_SQL)
     conn.commit()

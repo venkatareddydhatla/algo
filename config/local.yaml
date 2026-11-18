@@ -39,16 +39,14 @@ trading:
   # Expected cycle: ~2-5 min full dry-run pass on one Windows machine (synthetic MD);
   # longer with live broker ratelimit_rpm. Keep batch size modest to avoid hangs.
   session:
-    # NSE equity/F&O regular session (IST); calendar holidays applied in code.
-    # Dual-session entries [open, no_new_entries_after) IST (09:15–11:30).
-    # Risk exits / soft flatten still all session.
+    # High-conviction multi-factor: entries 09:15–15:20; soft flatten 15:28.
     open: "09:15"
     close: "15:30"
-    no_new_entries_after: "11:30"
-    soft_flatten_ist: "15:20"
+    no_new_entries_after: "15:20"
+    soft_flatten_ist: "15:28"
     soft_flatten_until_ist: "15:40"
     soft_flatten_poll_interval_sec: 15
-    overnight_hold_min_hybrid_abs: 0.70
+    overnight_hold_min_hybrid_abs: 0.85
     morning_profit_book:
       enabled: true
       start_ist: "09:15"
@@ -59,7 +57,7 @@ trading:
       stop_atr_mult: 1.25
       atr_period: 14
       exit_fraction: 1.0
-    user_hours_note: "09:15–15:40 IST (entries 09:15–11:30; morning session 09:15–10:00; soft flatten 15:20–15:40; no hard 15:40 square-off)"
+    user_hours_note: "09:15–15:40 IST (entries 09:15–15:20; soft flatten 15:28–15:40; overnight |h|≥0.85 + trend; no hard 15:40 square-off)"
   market_sentiment:
     enabled: true
     symbols:
@@ -73,14 +71,13 @@ trading:
     avoid_expiry_after_ist: "15:00"  # same-day expiry cut-off unless overridden
   risk:
     max_lots_per_symbol: 2
-    max_open_symbols: 12       # hard ceiling restored — conviction floors choke, not tiny cap
+    max_open_symbols: 6
     max_day_loss_inr: 25000
     max_premium_spread_pct: 2.0
     min_option_oi: 50000
     equity_share_qty: 1
     max_equity_qty_per_symbol: 1
     require_news_context: false  # if true, skip orders when news pipeline degraded
-    # All-day ATR trail + profit scale-out (stocks); wider dual-session knobs.
     atr_trail_scale_out:
       enabled: true
       atr_period: 14
@@ -92,26 +89,64 @@ trading:
       profit_atr_mult: 2.5
       profit_pct: 1.2
       scale_out_fraction: 0.5
-    # Rank by |hybrid|; dual-session morning vs rest; empty_slots_only anti-churn.
-    # 180m same-session re-entry cooloff; morning |h|≥0.75 / max 3; rest ≥0.72.
+      min_rrr: 1.2
+    high_conviction:
+      enabled: true
+      hybrid_floors:
+        before_12_ist: 0.75
+        after_12_ist: 0.80
+        after_1420_ist: 0.85
+        afternoon_after_ist: "12:00"
+        late_after_ist: "14:20"
+      relative_volume:
+        mult: 1.5
+        lookback_bars: 20
+      atr:
+        period: 14
+        min_pct_of_price: 1.2
+      proximity:
+        atr_mult: 0.2
+      news:
+        lookback_minutes: 60
+      cooloff:
+        minutes: 120
+        same_session_only: true
+      capacity:
+        max_open: 6
+        max_open_low_wr: 4
+      win_rate:
+        threshold: 0.50
+        window_trips: 20
+        min_trips: 5
+      adaptive:
+        enabled: true
+        week_wr_threshold: 0.55
+        step: 0.05
+        clamp_lo: 0.70
+        clamp_hi: 0.90
+        lookback_trading_days: 5
+      exit:
+        min_rrr: 1.2
     entry_selection:
       enabled: true
       rank_by: abs_hybrid
       anti_churn: empty_slots_only
       reentry_cooloff:
         enabled: true
-        minutes: 180
+        minutes: 120
         same_session_only: true
       morning_session:
-        enabled: true
+        enabled: false
         until_ist: "10:00"
         min_hybrid_abs: 0.75
         max_new_entries: 3
       dynamic_capacity:
         enabled: true
-        floor: 3
-        ceiling: 12
-        min_hybrid_abs: 0.72
+        floor: 2
+        ceiling: 6
+        min_hybrid_abs: 0.75
+        afternoon_after_ist: "12:00"
+        afternoon_min_hybrid_abs: 0.80
 
 hybrid:
   weights:

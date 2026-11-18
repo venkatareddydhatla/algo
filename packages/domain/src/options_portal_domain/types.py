@@ -8,7 +8,8 @@ from enum import Enum
 from typing import Any, Literal
 
 TradingMode = Literal["dry_run", "demo", "live"]
-Timeframe = Literal["5m", "15m", "1d"]
+# ``1h`` is for aggregated bars (15m→1h); broker fetch still uses 5m/15m/1d.
+Timeframe = Literal["5m", "15m", "1h", "1d"]
 
 
 class SignalAction(str, Enum):
