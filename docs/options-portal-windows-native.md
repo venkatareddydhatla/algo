@@ -299,9 +299,26 @@ git pull origin cursor/fewer-high-conviction-entries-4334
 
 Verify worker log: `Entry selection enabled ... ceiling=8 min_|hybrid|=0.65 cooloff=True/90m afternoon_after=12:00` and flush lines with `cooloff_blocked`. Still `dry_run` only.
 
+### Pull stricter fewer trades Day3 (stacked) — tip
+
+Day3 still too many morning round-trips. Tip: **`|hybrid| ≥ 0.72`** (after **12:00 → 0.75**), hard ceiling **5**, **180 min** cooloff, **no new entries after 10:30 IST**, morning TP **max(0.6% entry, 1.0×ATR)**. Risk exits / soft flatten / ATR trail / stocks-only / after-hours gates unchanged. Stacked on `cursor/after-hours-risk-exits-1f31` (PR #39).
+
+```powershell
+cd C:\algo
+Set-ExecutionPolicy -Scope Process Bypass
+.\deploy\windows\native\stop-native.ps1
+git fetch origin
+git checkout cursor/stricter-fewer-trades-day3-ffcc
+git pull origin cursor/stricter-fewer-trades-day3-ffcc
+.\deploy\windows\native\setup-native.ps1
+.\deploy\windows\native\start-native.ps1 -WithWorker
+```
+
+Verify worker log: `Entry selection enabled ... ceiling=5 min_|hybrid|=0.72 cooloff=True/180m` and session `no_new_entries_after=10:30`. Still `dry_run` only.
+
 ### Pull after-hours entry gate (stacked)
 
-**New equity entries** (open/add / flip_open + entry Gmail) only on NSE trading days inside **`[09:15, 15:20)` IST** (`trading.session.open` → `no_new_entries_after`, aligned with soft-flatten start). Nights, pre-open, and post-15:20 no longer persist Action entry fills. Soft flatten / exits / overnight hold and news/TA scans are unchanged. Shared helper: `is_trading_session` in `session_gates`.
+**New equity entries** (open/add / flip_open + entry Gmail) only on NSE trading days inside the configured entry window (`trading.session.open` → `no_new_entries_after`; Day3 tip **`[09:15, 10:30)` IST**). Nights, pre-open, and post-cutoff no longer persist Action entry fills. Soft flatten / risk exits / overnight hold and news/TA scans are unchanged. Shared helper: `is_trading_session` in `session_gates`.
 
 ```powershell
 cd C:\algo
