@@ -1,22 +1,26 @@
 """High-conviction multi-factor equity F&O stock entry gate (indices excluded).
 
-Venkata rule card (supersedes looser dual-session entry thresholds):
+Venkata rule card (afternoon floors relax — no min-trade quota):
 
 **Universe:** NSE F&O **stocks** only; no index trades.
 **Entry window:** 09:15–15:20 IST (``no_new_entries_after=15:20``).
 
 **Entry — ALL must pass**
-1. ``|hybrid|`` floors (IST): ≥0.75 before 12:00; ≥0.80 after 12:00;
-   ≥0.85 after 14:20. Adaptive ±0.05 from baseline (week WR), clamp [0.70, 0.90].
+1. ``|hybrid|`` floors (IST): ≥0.75 before 12:00 **and** after 12:00 until 14:20
+   (no midday raise to 0.80). After 14:20: ≥0.85 when rolling WR < 55%;
+   **base** path ≥0.75 when rolling WR ≥ 55% (last 20 closed equity trips).
+   Score filter OR: top **10%** of scan ``|hybrid|`` may admit under the fixed
+   floor (other factors still required). Adaptive ±0.05, clamp [0.70, 0.90].
 2. Multi-timeframe: 15m and 1h same direction (bullish/bearish).
-3. Relative volume: last 15m vol ≥ 1.5× mean of prior 20 bars.
-4. ATR(14) > 1.2% of price.
+3. Relative volume: last 15m vol ≥ 1.2× mean of prior 20 bars.
+4. ATR(14) > 1.0% of price.
 5. Proximity block: no entry within 0.2×ATR of major daily high/low.
 6. News/sentiment: block if last 1h news sentiment conflicts with signal.
 7. Same-symbol cooloff **120 minutes** per session after **any** trade.
 8. Max open **6**; if rolling WR < 50% → max open **4**.
    WR window: **last 20 closed equity round-trips** (documented).
 9. Rank by ``|hybrid|`` strongest-first; ``empty_slots_only`` anti-churn.
+   Never force trades for quota / fill slots with weak names.
 
 **Exit / soft flatten**
 - ATR stop + trail; discretionary profit requires min RRR ≥ 1.2.
@@ -51,15 +55,17 @@ DEFAULT_SOFT_FLATTEN_UNTIL_IST = "15:40"
 DEFAULT_OVERNIGHT_HOLD_MIN_HYBRID = 0.85
 
 DEFAULT_MIN_HYBRID_BEFORE_12 = 0.75
-DEFAULT_MIN_HYBRID_AFTER_12 = 0.80
-DEFAULT_MIN_HYBRID_AFTER_1420 = 0.85
+DEFAULT_MIN_HYBRID_AFTER_12 = 0.75  # same as morning (no midday raise to 0.80)
+DEFAULT_MIN_HYBRID_AFTER_1420 = 0.85  # strict late when rolling WR weak
+DEFAULT_LATE_BASE_MIN_HYBRID = 0.75  # late base path when rolling WR strong
+DEFAULT_LATE_BASE_WR_THRESHOLD = 0.55
 DEFAULT_AFTERNOON_AFTER_IST = "12:00"
 DEFAULT_LATE_ENTRY_AFTER_IST = "14:20"
 
-DEFAULT_RVOL_MULT = 1.5
+DEFAULT_RVOL_MULT = 1.2
 DEFAULT_RVOL_LOOKBACK = 20
 DEFAULT_ATR_PERIOD = 14
-DEFAULT_ATR_MIN_PCT_OF_PRICE = 1.2
+DEFAULT_ATR_MIN_PCT_OF_PRICE = 1.0
 DEFAULT_PROXIMITY_ATR_MULT = 0.2
 DEFAULT_NEWS_CONFLICT_LOOKBACK_MIN = 60
 DEFAULT_COOLOFF_MINUTES = 120
@@ -77,6 +83,9 @@ DEFAULT_ADAPTIVE_CLAMP_HI = 0.90
 DEFAULT_ADAPTIVE_LOOKBACK_TRADING_DAYS = 5
 
 DEFAULT_MIN_RRR = 1.2
+# Score-filter OR: top fraction of scan |hybrid| may pass under the fixed floor.
+DEFAULT_TOP_PCT_OF_SCAN = 0.10
+DEFAULT_TOP_PCT_ENABLED = True
 
 KV_KEY_ADAPTIVE_DELTA = "high_conviction.adaptive_min_hybrid_delta"
 KV_KEY_ADAPTIVE_BASELINE = "high_conviction.adaptive_baseline_min_hybrid"
@@ -168,16 +177,63 @@ def session_min_hybrid_abs(
     afternoon_after_ist: str = DEFAULT_AFTERNOON_AFTER_IST,
     late_after_ist: str = DEFAULT_LATE_ENTRY_AFTER_IST,
     adaptive_delta: float = 0.0,
+    rolling_wr: float | None = None,
+    late_base_min: float = DEFAULT_LATE_BASE_MIN_HYBRID,
+    late_base_wr_threshold: float = DEFAULT_LATE_BASE_WR_THRESHOLD,
 ) -> float:
-    """Time-of-day |hybrid| floor + adaptive delta, clamped to [0.70, 0.90]."""
+    """Time-of-day |hybrid| floor + adaptive delta, clamped to [0.70, 0.90].
+
+    After ``late_after_ist`` (14:20): use ``late_base_min`` (0.75) when
+    ``rolling_wr ≥ late_base_wr_threshold`` (55%); otherwise keep strict
+    ``after_1420`` (0.85). Unknown WR stays strict.
+    """
     delta = clamp_adaptive_delta(adaptive_delta)
     if at_or_after_hhmm(late_after_ist, now):
-        base = float(after_1420)
+        if (
+            rolling_wr is not None
+            and float(rolling_wr) + 1e-12 >= float(late_base_wr_threshold)
+        ):
+            base = float(late_base_min)
+        else:
+            base = float(after_1420)
     elif at_or_after_hhmm(afternoon_after_ist, now):
         base = float(after_12)
     else:
         base = float(before_12)
     return clamp_min_hybrid(base + delta)
+
+
+def top_pct_cutoff_count(n: int, *, top_pct: float = DEFAULT_TOP_PCT_OF_SCAN) -> int:
+    """How many ranks count as top ``top_pct`` of ``n`` scores (at least 1 when n>0)."""
+    if n <= 0:
+        return 0
+    pct = max(0.0, min(1.0, float(top_pct)))
+    if pct <= 0:
+        return 0
+    # ceil(n * pct) without importing math
+    raw = n * pct
+    k = int(raw) if raw == int(raw) else int(raw) + 1
+    return max(1, min(n, k))
+
+
+def is_top_pct_of_scan(
+    hybrid_abs: float,
+    scan_abs_scores: Sequence[float],
+    *,
+    top_pct: float = DEFAULT_TOP_PCT_OF_SCAN,
+) -> bool:
+    """True when ``hybrid_abs`` ranks in the top ``top_pct`` of scan |hybrid| scores.
+
+    Ties at the cutoff are included. Empty scan → False.
+    """
+    scores = [abs(float(s)) for s in scan_abs_scores]
+    n = len(scores)
+    k = top_pct_cutoff_count(n, top_pct=top_pct)
+    if k <= 0:
+        return False
+    ranked = sorted(scores, reverse=True)
+    cutoff = ranked[k - 1]
+    return abs(float(hybrid_abs)) + 1e-12 >= cutoff
 
 
 def check_hybrid_floor(
@@ -188,20 +244,58 @@ def check_hybrid_floor(
     before_12: float = DEFAULT_MIN_HYBRID_BEFORE_12,
     after_12: float = DEFAULT_MIN_HYBRID_AFTER_12,
     after_1420: float = DEFAULT_MIN_HYBRID_AFTER_1420,
+    afternoon_after_ist: str = DEFAULT_AFTERNOON_AFTER_IST,
+    late_after_ist: str = DEFAULT_LATE_ENTRY_AFTER_IST,
+    rolling_wr: float | None = None,
+    late_base_min: float = DEFAULT_LATE_BASE_MIN_HYBRID,
+    late_base_wr_threshold: float = DEFAULT_LATE_BASE_WR_THRESHOLD,
+    scan_abs_scores: Sequence[float] | None = None,
+    top_pct: float = DEFAULT_TOP_PCT_OF_SCAN,
+    top_pct_enabled: bool = DEFAULT_TOP_PCT_ENABLED,
 ) -> FactorResult:
+    """Fixed time floor, OR top-``top_pct`` of scan |hybrid| (score filter only)."""
     floor = session_min_hybrid_abs(
         now,
         before_12=before_12,
         after_12=after_12,
         after_1420=after_1420,
+        afternoon_after_ist=afternoon_after_ist,
+        late_after_ist=late_after_ist,
         adaptive_delta=adaptive_delta,
+        rolling_wr=rolling_wr,
+        late_base_min=late_base_min,
+        late_base_wr_threshold=late_base_wr_threshold,
     )
     habs = abs(float(hybrid_score))
-    ok = habs + 1e-12 >= floor
+    if habs + 1e-12 >= floor:
+        return FactorResult(
+            name="hybrid_floor",
+            passed=True,
+            detail=f"|h|={habs:.3f} floor={floor:.2f} path=fixed_floor",
+        )
+    if top_pct_enabled and scan_abs_scores:
+        pct_label = int(round(float(top_pct) * 100))
+        if is_top_pct_of_scan(habs, scan_abs_scores, top_pct=top_pct):
+            return FactorResult(
+                name="hybrid_floor",
+                passed=True,
+                detail=(
+                    f"|h|={habs:.3f} floor={floor:.2f} "
+                    f"path=top{pct_label}pct"
+                ),
+            )
+        return FactorResult(
+            name="hybrid_floor",
+            passed=False,
+            detail=(
+                f"|h|={habs:.3f} floor={floor:.2f} "
+                f"path=neither_fixed_nor_top{pct_label}pct"
+            ),
+        )
     return FactorResult(
         name="hybrid_floor",
-        passed=ok,
-        detail=f"|h|={habs:.3f} floor={floor:.2f}",
+        passed=False,
+        detail=f"|h|={habs:.3f} floor={floor:.2f} path=fixed_floor",
     )
 
 
@@ -287,7 +381,8 @@ def check_atr_pct(
     if px <= 0:
         return FactorResult(name="atr_pct", passed=False, detail="price≤0")
     pct = float(atr14) / px * 100.0
-    ok = pct + 1e-12 > float(min_pct)
+    # Strict greater-than (ATR must exceed min_pct% of price).
+    ok = pct > float(min_pct) + 1e-12
     return FactorResult(
         name="atr_pct",
         passed=ok,
@@ -654,6 +749,8 @@ def evaluate_entry_gate(
     is_index: bool = False,
     in_entry_window: bool = True,
     adaptive_delta: float = 0.0,
+    rolling_wr: float | None = None,
+    scan_abs_scores: Sequence[float] | None = None,
     cfg: Mapping[str, Any] | None = None,
 ) -> GateResult:
     """Run all high-conviction entry factors; admit only if every factor passes."""
@@ -700,6 +797,14 @@ def evaluate_entry_gate(
         before_12=float(hc["min_hybrid_before_12"]),
         after_12=float(hc["min_hybrid_after_12"]),
         after_1420=float(hc["min_hybrid_after_1420"]),
+        afternoon_after_ist=str(hc["afternoon_after_ist"]),
+        late_after_ist=str(hc["late_after_ist"]),
+        rolling_wr=rolling_wr,
+        late_base_min=float(hc["late_base_min_hybrid"]),
+        late_base_wr_threshold=float(hc["late_base_wr_threshold"]),
+        scan_abs_scores=scan_abs_scores,
+        top_pct=float(hc["top_pct_of_scan"]),
+        top_pct_enabled=bool(hc["top_pct_enabled"]),
     )
     factors.append(hybrid_f)
     floor = session_min_hybrid_abs(
@@ -707,7 +812,12 @@ def evaluate_entry_gate(
         before_12=float(hc["min_hybrid_before_12"]),
         after_12=float(hc["min_hybrid_after_12"]),
         after_1420=float(hc["min_hybrid_after_1420"]),
+        afternoon_after_ist=str(hc["afternoon_after_ist"]),
+        late_after_ist=str(hc["late_after_ist"]),
         adaptive_delta=adaptive_delta,
+        rolling_wr=rolling_wr,
+        late_base_min=float(hc["late_base_min_hybrid"]),
+        late_base_wr_threshold=float(hc["late_base_wr_threshold"]),
     )
 
     factors.append(
@@ -792,6 +902,7 @@ def high_conviction_config(cfg: dict[str, Any] | None) -> dict[str, Any]:
     wr = dict(raw.get("win_rate") or {})
     adaptive = dict(raw.get("adaptive") or {})
     exit_cfg = dict(raw.get("exit") or {})
+    top_pct_raw = dict(raw.get("top_pct_scan") or {})
 
     return {
         "enabled": bool(raw.get("enabled", True)),
@@ -803,6 +914,14 @@ def high_conviction_config(cfg: dict[str, Any] | None) -> dict[str, Any]:
         ),
         "min_hybrid_after_1420": float(
             floors.get("after_1420_ist", DEFAULT_MIN_HYBRID_AFTER_1420)
+        ),
+        "late_base_min_hybrid": float(
+            floors.get("late_base_min_hybrid_abs", DEFAULT_LATE_BASE_MIN_HYBRID)
+        ),
+        "late_base_wr_threshold": float(
+            floors.get(
+                "late_base_wr_threshold", DEFAULT_LATE_BASE_WR_THRESHOLD
+            )
         ),
         "afternoon_after_ist": str(
             floors.get("afternoon_after_ist", DEFAULT_AFTERNOON_AFTER_IST)
@@ -829,6 +948,12 @@ def high_conviction_config(cfg: dict[str, Any] | None) -> dict[str, Any]:
         "wr_threshold": float(wr.get("threshold", DEFAULT_WR_THRESHOLD)),
         "wr_window_trips": int(wr.get("window_trips", DEFAULT_WR_WINDOW_TRIPS)),
         "wr_min_trips": int(wr.get("min_trips", 5)),
+        "top_pct_enabled": bool(
+            top_pct_raw.get("enabled", DEFAULT_TOP_PCT_ENABLED)
+        ),
+        "top_pct_of_scan": float(
+            top_pct_raw.get("pct", DEFAULT_TOP_PCT_OF_SCAN)
+        ),
         "adaptive_enabled": bool(adaptive.get("enabled", True)),
         "adaptive_week_wr_threshold": float(
             adaptive.get("week_wr_threshold", DEFAULT_ADAPTIVE_WEEK_WR_THRESHOLD)

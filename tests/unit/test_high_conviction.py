@@ -28,9 +28,11 @@ from options_portal_domain.high_conviction import (
     effective_max_open_symbols,
     evaluate_entry_gate,
     high_conviction_config,
+    is_top_pct_of_scan,
     min_profit_for_rrr,
     news_sentiment_1h,
     session_min_hybrid_abs,
+    top_pct_cutoff_count,
     trend_confirmed_for_overnight,
 )
 from options_portal_domain.tz import ist
@@ -82,22 +84,59 @@ def _rising_15m(n: int = 24, *, base_vol: int = 1000) -> list[Candle]:
 def test_session_min_hybrid_before_after_late():
     z = ist()
     assert session_min_hybrid_abs(datetime(2026, 11, 18, 10, 0, tzinfo=z)) == 0.75
-    assert session_min_hybrid_abs(datetime(2026, 11, 18, 12, 0, tzinfo=z)) == 0.80
+    # Afternoon keeps 0.75 (no midday raise to 0.80)
+    assert session_min_hybrid_abs(datetime(2026, 11, 18, 12, 0, tzinfo=z)) == 0.75
+    # Late strict when WR unknown / weak
     assert session_min_hybrid_abs(datetime(2026, 11, 18, 14, 20, tzinfo=z)) == 0.85
     assert session_min_hybrid_abs(datetime(2026, 11, 18, 15, 0, tzinfo=z)) == 0.85
+    # Late base path when rolling WR ≥ 55%
+    assert (
+        session_min_hybrid_abs(
+            datetime(2026, 11, 18, 14, 30, tzinfo=z), rolling_wr=0.55
+        )
+        == 0.75
+    )
+    assert (
+        session_min_hybrid_abs(
+            datetime(2026, 11, 18, 14, 30, tzinfo=z), rolling_wr=0.54
+        )
+        == 0.85
+    )
 
 
-def test_late_entry_1420_requires_085():
+def test_late_entry_1420_requires_085_when_wr_weak():
     z = ist()
     now = datetime(2026, 11, 18, 14, 30, tzinfo=z)
-    fail = check_hybrid_floor(0.82, now)
+    fail = check_hybrid_floor(0.82, now, rolling_wr=0.40)
     assert fail.passed is False
-    ok = check_hybrid_floor(0.85, now)
+    ok = check_hybrid_floor(0.85, now, rolling_wr=0.40)
     assert ok.passed is True
-    # Before 14:20 afternoon floor is 0.80
+    # Strong WR → late base 0.75
+    assert check_hybrid_floor(0.75, now, rolling_wr=0.60).passed is True
+    assert check_hybrid_floor(0.74, now, rolling_wr=0.60).passed is False
+    # Before 14:20 afternoon floor is 0.75 (same as morning)
     noonish = datetime(2026, 11, 18, 13, 0, tzinfo=z)
-    assert check_hybrid_floor(0.80, noonish).passed is True
-    assert check_hybrid_floor(0.79, noonish).passed is False
+    assert check_hybrid_floor(0.75, noonish).passed is True
+    assert check_hybrid_floor(0.74, noonish).passed is False
+    assert "path=fixed_floor" in check_hybrid_floor(0.75, noonish).detail
+
+
+def test_hybrid_floor_top_pct_or_path():
+    z = ist()
+    noonish = datetime(2026, 11, 18, 13, 0, tzinfo=z)
+    # Under floor 0.75 but #1 of a weak scan → admit via top10pct
+    scores = [0.70, 0.60, 0.55, 0.50, 0.45, 0.40, 0.35, 0.30, 0.25, 0.20]
+    top = check_hybrid_floor(
+        0.70, noonish, scan_abs_scores=scores, top_pct=0.10
+    )
+    assert top.passed is True
+    assert "path=top10pct" in top.detail
+    weak = check_hybrid_floor(
+        0.40, noonish, scan_abs_scores=scores, top_pct=0.10
+    )
+    assert weak.passed is False
+    assert is_top_pct_of_scan(0.70, scores, top_pct=0.10) is True
+    assert top_pct_cutoff_count(10, top_pct=0.10) == 1
 
 
 def test_hybrid_floor_with_adaptive_delta():
@@ -164,9 +203,10 @@ def test_mtf_fails_when_directions_disagree():
     assert mtf.passed is False
 
 
-def test_relative_volume_1_5x():
+def test_relative_volume_1_2x():
     candles = _rising_15m(25, base_vol=1000)
-    ok = check_relative_volume(candles, mult=1.5, lookback=20)
+    # last vol = 3× base → passes 1.2×
+    ok = check_relative_volume(candles, mult=1.2, lookback=20)
     assert ok.passed is True
     # Flatten volumes → fail
     flat = [
@@ -178,12 +218,13 @@ def test_relative_volume_1_5x():
         )
         for i in range(25)
     ]
-    assert check_relative_volume(flat, mult=1.5, lookback=20).passed is False
+    assert check_relative_volume(flat, mult=1.2, lookback=20).passed is False
 
 
-def test_atr_pct_above_1_2():
-    assert check_atr_pct(2.0, 100.0, min_pct=1.2).passed is True  # 2%
-    assert check_atr_pct(1.0, 100.0, min_pct=1.2).passed is False  # 1%
+def test_atr_pct_above_1_0():
+    assert check_atr_pct(2.0, 100.0, min_pct=1.0).passed is True  # 2%
+    assert check_atr_pct(1.0, 100.0, min_pct=1.0).passed is False  # 1% not >
+    assert check_atr_pct(1.01, 100.0, min_pct=1.0).passed is True
     assert check_atr_pct(None, 100.0).passed is False
 
 
@@ -342,8 +383,14 @@ def test_evaluate_entry_gate_blocks_index():
 def test_high_conviction_config_from_yaml_defaults():
     cfg = high_conviction_config(None)
     assert cfg["min_hybrid_before_12"] == 0.75
-    assert cfg["min_hybrid_after_12"] == 0.80
+    assert cfg["min_hybrid_after_12"] == 0.75
     assert cfg["min_hybrid_after_1420"] == 0.85
+    assert cfg["late_base_min_hybrid"] == 0.75
+    assert cfg["late_base_wr_threshold"] == 0.55
+    assert cfg["rvol_mult"] == 1.2
+    assert cfg["atr_min_pct_of_price"] == 1.0
+    assert cfg["top_pct_enabled"] is True
+    assert cfg["top_pct_of_scan"] == 0.10
     assert cfg["cooloff_minutes"] == 120
     assert cfg["max_open"] == 6
     assert cfg["min_rrr"] == 1.2

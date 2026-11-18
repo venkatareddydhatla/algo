@@ -1,15 +1,16 @@
 """Equity dry-run entry selection: rank by |hybrid|, dynamic capacity, anti-churn.
 
-Policy (high-conviction multi-factor — supersedes dual-session entry floors)
+Policy (high-conviction multi-factor — afternoon floors relax)
 ---------------------------------------------------------------------------
 - Rank **new** entry candidates by ``|hybrid_score|`` (strongest first).
-- Time-of-day |hybrid| floors (see ``high_conviction``): ≥0.75 before 12:00,
-  ≥0.80 after 12:00, ≥0.85 after 14:20 (+ adaptive ±0.05, clamp [0.70, 0.90]).
+- Time-of-day |hybrid| floors (see ``high_conviction``): ≥0.75 before 12:00
+  **and** after 12:00 until 14:20; after 14:20 ≥0.85 when rolling WR < 55%,
+  else base ≥0.75. Score OR: top 10% of scan |hybrid|. Adaptive ±0.05.
 - Entry window **09:15–15:20 IST**; multi-factor filters applied in the worker
-  before staging (MTF, RVOL, ATR%, proximity, news 1h, cooloff).
+  before staging (MTF, RVOL≥1.2×, ATR%>1.0%, proximity, news 1h, cooloff).
 - **Max open 6** (4 when rolling WR < 50% over last 20 closed trips).
 - Fill only **empty** slots — never rotate an existing open (anti-churn
-  ``empty_slots_only``).
+  ``empty_slots_only``). Never invent weak trades to hit a quota.
 - **Cooloff:** after **any** trade on a symbol, block re-entry for **120m**
   within the same IST NSE session day.
 - Soft flatten **15:28** / overnight ``|hybrid| ≥ 0.85`` + trend — session_gates.
@@ -38,9 +39,10 @@ DEFAULT_MIN_HYBRID_ABS = 0.75
 DEFAULT_MORNING_UNTIL_IST = "10:00"
 DEFAULT_MORNING_MIN_HYBRID_ABS = 0.75
 DEFAULT_MORNING_MAX_NEW_ENTRIES = 3
-DEFAULT_AFTERNOON_MIN_HYBRID_ABS = 0.80
+DEFAULT_AFTERNOON_MIN_HYBRID_ABS = 0.75  # same as morning (relaxed midday)
 DEFAULT_AFTERNOON_AFTER_IST = "12:00"
 DEFAULT_REENTRY_COOLOFF_MINUTES = 120
+DEFAULT_ADMIT_TOP_PCT = 0.10
 
 
 @dataclass(frozen=True)
@@ -374,6 +376,7 @@ def select_entries_for_empty_slots(
     dynamic: bool = False,
     cooloff_symbols: Collection[str] | None = None,
     max_new_entries: int | None = None,
+    admit_top_pct: float | None = None,
 ) -> list[EntryCandidate]:
     """Admit strongest |hybrid| candidates into free slots only (anti-churn).
 
@@ -386,8 +389,12 @@ def select_entries_for_empty_slots(
     ``max_new_entries`` (optional): hard cap on how many may be admitted this
     call — used for morning budget remaining (not perpetual refill).
 
+    ``admit_top_pct`` (optional): OR with the fixed |hybrid| floor — symbols in
+    the top fraction of this candidate set's |hybrid| also qualify (score
+    filter only; does not invent trades to fill a quota).
+
     When ``dynamic`` is True:
-    - drop candidates with ``|hybrid| < min_hybrid_abs``;
+    - drop candidates with ``|hybrid| < min_hybrid_abs`` (unless top-pct OR);
     - target book = ``dynamic_target_open(...)`` using floor/ceiling;
     - hard cap remains ``max(ceiling, max_open_symbols)`` (risk gate).
     """
@@ -412,7 +419,20 @@ def select_entries_for_empty_slots(
             ceiling_n = min(max(0, ceiling_n), hard_cap)
         else:
             ceiling_n = max(0, ceiling_n)
-        qualifying = [c for c in fresh if c.hybrid_abs >= thr]
+        if admit_top_pct is not None and float(admit_top_pct) > 0:
+            from options_portal_domain.high_conviction import is_top_pct_of_scan
+
+            abs_scores = [c.hybrid_abs for c in fresh]
+            qualifying = [
+                c
+                for c in fresh
+                if c.hybrid_abs + 1e-12 >= thr
+                or is_top_pct_of_scan(
+                    c.hybrid_abs, abs_scores, top_pct=float(admit_top_pct)
+                )
+            ]
+        else:
+            qualifying = [c for c in fresh if c.hybrid_abs >= thr]
         target = dynamic_target_open(
             open_count=len(open_set),
             qualifying_new=len(qualifying),
@@ -489,7 +509,7 @@ def entry_selection_config(cfg: dict[str, Any] | None) -> dict[str, Any]:
         )
 
     aft_raw = dyn.get("afternoon_after_ist")
-    # Afternoon raise: default on at 12:00 → 0.80 when keys omitted (multi-factor).
+    # Afternoon belt: default on at 12:00 → 0.75 when keys omitted (relaxed).
     # Explicit null / empty disables. Late 14:20 floor lives in high_conviction.
     if "afternoon_after_ist" in dyn or "afternoon_min_hybrid_abs" in dyn:
         aft_hhmm = str(aft_raw).strip() if aft_raw is not None else ""

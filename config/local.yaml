@@ -94,16 +94,21 @@ trading:
       enabled: true
       hybrid_floors:
         before_12_ist: 0.75
-        after_12_ist: 0.80
+        after_12_ist: 0.75
         after_1420_ist: 0.85
+        late_base_min_hybrid_abs: 0.75
+        late_base_wr_threshold: 0.55
         afternoon_after_ist: "12:00"
         late_after_ist: "14:20"
+      top_pct_scan:
+        enabled: true
+        pct: 0.10
       relative_volume:
-        mult: 1.5
+        mult: 1.2
         lookback_bars: 20
       atr:
         period: 14
-        min_pct_of_price: 1.2
+        min_pct_of_price: 1.0
       proximity:
         atr_mult: 0.2
       news:
@@ -146,7 +151,7 @@ trading:
         ceiling: 6
         min_hybrid_abs: 0.75
         afternoon_after_ist: "12:00"
-        afternoon_min_hybrid_abs: 0.80
+        afternoon_min_hybrid_abs: 0.75
 
 hybrid:
   weights:
