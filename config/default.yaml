@@ -42,33 +42,35 @@ trading:
   # longer with live broker ratelimit_rpm. Keep batch size modest to avoid hangs.
   session:
     # NSE equity/F&O regular session (IST); calendar holidays applied in code.
-    # New equity entries only on trading days in [open, no_new_entries_after)
-    # IST (default 09:15–10:30) via is_trading_session — first-hour-ish only.
+    # Dual-session entries on trading days in [open, no_new_entries_after)
+    # IST (default 09:15–11:30) via is_trading_session.
+    # Morning 09:15–10:00 vs rest-of-day admission/exits — see entry_selection.
     # Risk exits / soft flatten still run all cash session (to soft_flatten_until).
     # Soft flatten window 15:20–15:40 IST (inclusive HH:MM). After until: refuse
     # new soft_flatten exits (missed window / late restart). Not a hard force close.
     open: "09:15"
     close: "15:30"                 # NSE regular close
-    no_new_entries_after: "10:30"  # no new opens after first-hour-ish window
+    no_new_entries_after: "11:30"  # quality over quantity — no new opens after midday-ish
     soft_flatten_ist: "15:20"      # window start: close unless overnight conviction
     soft_flatten_until_ist: "15:40"  # inclusive end; refuse soft_flatten after this HH:MM
     soft_flatten_poll_interval_sec: 15  # open-book loop; independent of full scan
     overnight_hold_min_hybrid_abs: 0.70  # |hybrid| ≥ this + same-side → allow overnight
     # Morning first-hour dynamic TP/stop (stocks only; indices blocked separately).
     # Window 09:15–10:00 IST. ATR-aware; % floors if ATR14 unavailable.
-    # TP:  uPnL ≥ max(0.6% entry, 1.0×ATR14) → morning_profit_book
-    # Stop: uPnL ≤ −max(0.5% entry, 0.75×ATR14) → morning_stop
+    # Prefer hold through noise: raised vs Day3 scalp thresholds.
+    # TP:  uPnL ≥ max(1.0% entry, 1.5×ATR14) → morning_profit_book
+    # Stop: uPnL ≤ −max(1.0% entry, 1.25×ATR14) → morning_stop
     morning_profit_book:
       enabled: true
       start_ist: "09:15"
       until_ist: "10:00"           # inclusive HH:MM; after 10:00 no morning TP/stop
-      tp_min_pct: 0.6
-      tp_atr_mult: 1.0
-      stop_min_pct: 0.5
-      stop_atr_mult: 0.75
+      tp_min_pct: 1.0
+      tp_atr_mult: 1.5
+      stop_min_pct: 1.0
+      stop_atr_mult: 1.25
       atr_period: 14
       exit_fraction: 1.0           # 1.0 full exit; 0.5 later for scale-out when qty>1
-    user_hours_note: "09:15–15:40 IST (entries 09:15–10:30; morning TP/stop 09:15–10:00; soft flatten 15:20–15:40; no hard 15:40 square-off)"
+    user_hours_note: "09:15–15:40 IST (entries 09:15–11:30; morning session 09:15–10:00; soft flatten 15:20–15:40; no hard 15:40 square-off)"
   # Light broader-market gate (optional). Blocks new opposite entries only when
   # NIFTY/BANKNIFTY hybrid strongly conflicts; skips when scores missing or disagree.
   market_sentiment:
@@ -84,7 +86,7 @@ trading:
     avoid_expiry_after_ist: "15:00"  # same-day expiry cut-off unless overridden
   risk:
     max_lots_per_symbol: 2
-    max_open_symbols: 5        # hard ceiling (risk gate); far fewer Day3 trades
+    max_open_symbols: 12       # hard ceiling restored — conviction floors choke, not tiny cap
     max_day_loss_inr: 25000
     max_premium_spread_pct: 2.0
     min_option_oi: 50000
@@ -93,28 +95,29 @@ trading:
     require_news_context: false  # if true, skip orders when news pipeline degraded
     # All-day ATR trail + profit scale-out for open equity (stocks only; ~15s poll).
     # Priority same tick: atr_stop/atr_trail > profit_book|profit_scale_out > soft_flatten.
+    # Wider stops + higher profit_book so tiny scalp books stop firing.
     # qty=1 (current): profit threshold → full exit reason profit_book (locks winners).
-    # qty>1: scale_out_fraction (0.5) → profit_scale_out. Morning TP/stop unchanged.
+    # qty>1: scale_out_fraction (0.5) → profit_scale_out. Morning TP/stop separate.
     atr_trail_scale_out:
       enabled: true
       atr_period: 14
-      stop_atr_mult: 1.5       # initial stop: uPnL ≤ −1.5×ATR → atr_stop
-      stop_pct: 0.8            # ATR missing → −0.8% of entry
-      trail_activate_atr_mult: 1.0  # activate when uPnL ≥ +1.0×ATR
-      trail_activate_pct: 0.5  # ATR missing → +0.5%
-      trail_atr_mult: 1.0      # trail stop = extreme ± 1.0×ATR (never loosen)
-      profit_atr_mult: 1.5     # book when uPnL ≥ +1.5×ATR
-      profit_pct: 0.8          # ATR missing → +0.8%
+      stop_atr_mult: 2.0       # initial stop: uPnL ≤ −2.0×ATR → atr_stop
+      stop_pct: 1.2            # ATR missing → −1.2% of entry
+      trail_activate_atr_mult: 1.5  # activate when uPnL ≥ +1.5×ATR
+      trail_activate_pct: 0.8  # ATR missing → +0.8%
+      trail_atr_mult: 1.2      # trail stop = extreme ± 1.2×ATR (never loosen)
+      profit_atr_mult: 2.5     # book when uPnL ≥ +2.5×ATR (fewer tiny books)
+      profit_pct: 1.2          # ATR missing → +1.2%
       scale_out_fraction: 0.5  # qty>1 only; qty=1 → full profit_book
     # Equity dry-run entry selection (worker full-scan cycle):
     # rank new candidates by |hybrid| into free slots — not CSV/scan first-fill.
+    # Dual-session: morning 09:15–10:00 |h|≥0.75 + max 3 new; rest |h|≥0.72.
     # anti_churn empty_slots_only = keep existing opens; never rotate for a
     # tiny score edge (brokerage-friendly). Soft flatten / overnight |h|≥0.70 unchanged.
     # reentry_cooloff: after any close, block same-symbol re-entry for N minutes
     # (same IST NSE session day only). Cuts morning scalp re-entry churn.
     # dynamic_capacity: target book scales with how many candidates clear
     # min_hybrid_abs, clamped to [floor, ceiling]; ceiling ≤ max_open_symbols.
-    # afternoon_*: after 12:00 IST raise admit floor (belt if entry window extended).
     entry_selection:
       enabled: true
       rank_by: abs_hybrid
@@ -123,13 +126,16 @@ trading:
         enabled: true
         minutes: 180             # block re-entry after close (any reason)
         same_session_only: true  # IST NSE session day via pnl_ist_day
+      morning_session:
+        enabled: true
+        until_ist: "10:00"       # [open, until) morning knobs
+        min_hybrid_abs: 0.75     # admit only |hybrid| ≥ this in morning
+        max_new_entries: 3       # total for morning window — not perpetual refill
       dynamic_capacity:
         enabled: true
         floor: 3                 # min target when enough qualify
-        ceiling: 5               # mirrors max_open_symbols hard ceiling
-        min_hybrid_abs: 0.72     # admit only |hybrid| ≥ this
-        afternoon_after_ist: "12:00"
-        afternoon_min_hybrid_abs: 0.75  # after noon IST only
+        ceiling: 12              # mirrors max_open_symbols; best symbols not blocked
+        min_hybrid_abs: 0.72     # rest-of-day admit floor
 
 hybrid:
   weights:

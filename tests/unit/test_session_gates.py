@@ -40,7 +40,7 @@ def test_at_or_after_ist_boundary():
 
 def test_allow_new_entries_blocks_night_and_preopen():
     """Regression: past_no_new_entries alone allowed 00:01 IST entries."""
-    policy = SoftEodPolicy(open_ist="09:15", no_new_entries_after="10:30")
+    policy = SoftEodPolicy(open_ist="09:15", no_new_entries_after="11:30")
     # Monday 2026-11-16 — trading day; midnight must NOT allow entries
     midnight = datetime(2026, 11, 17, 0, 1, 0)  # Tue 00:01 IST (MUTHOOTFIN bug)
     assert policy.past_no_new_entries(midnight) is False  # old bug path
@@ -56,11 +56,16 @@ def test_allow_new_entries_blocks_night_and_preopen():
     assert policy.allow_new_entries(open_exact) is True
     assert is_trading_session(open_exact, policy=policy, trading_day=True) is True
 
-    first_hour = datetime(2026, 11, 16, 10, 29, 0)
-    assert policy.allow_new_entries(first_hour) is True
+    # Dual-session: rest-of-day entries still allowed before 11:30
+    mid_morning = datetime(2026, 11, 16, 10, 30, 0)
+    assert policy.allow_new_entries(mid_morning) is True
+    assert is_trading_session(mid_morning, policy=policy, trading_day=True) is True
 
-    # Day3: no new entries after 10:30 IST (risk exits still run)
-    cutoff = datetime(2026, 11, 16, 10, 30, 0)
+    before_cutoff = datetime(2026, 11, 16, 11, 29, 0)
+    assert policy.allow_new_entries(before_cutoff) is True
+
+    # No new entries after 11:30 IST (risk exits still run)
+    cutoff = datetime(2026, 11, 16, 11, 30, 0)
     assert policy.allow_new_entries(cutoff) is False
     assert is_trading_session(cutoff, policy=policy, trading_day=True) is False
 
@@ -69,28 +74,28 @@ def test_allow_new_entries_blocks_night_and_preopen():
     assert is_trading_session(midday, policy=policy, trading_day=True) is False
 
     # Weekend / holiday: clock in window still blocked when trading_day=False
-    assert is_trading_session(first_hour, policy=policy, trading_day=False) is False
+    assert is_trading_session(before_cutoff, policy=policy, trading_day=False) is False
 
 
-def test_day3_entry_cutoff_1030_keeps_risk_exits():
-    """Entries stop at 10:30; ATR/morning risk exits and soft flatten still allowed."""
+def test_dual_session_entry_cutoff_1130_keeps_risk_exits():
+    """Entries stop at 11:30; ATR/morning risk exits and soft flatten still allowed."""
     policy = SoftEodPolicy.from_config(
         {
             "trading": {
                 "session": {
                     "open": "09:15",
                     "close": "15:30",
-                    "no_new_entries_after": "10:30",
+                    "no_new_entries_after": "11:30",
                     "soft_flatten_ist": "15:20",
                     "soft_flatten_until_ist": "15:40",
                 }
             }
         }
     )
-    assert policy.no_new_entries_after == "10:30"
+    assert policy.no_new_entries_after == "11:30"
     assert policy.soft_flatten_ist == "15:20"
 
-    after_entries = datetime(2026, 11, 18, 11, 0, 0)
+    after_entries = datetime(2026, 11, 18, 12, 0, 0)
     assert is_trading_session(after_entries, policy=policy, trading_day=True) is False
     assert allow_open_book_risk_exits(after_entries, policy=policy, trading_day=True) is True
     assert policy.in_risk_exit_window(after_entries) is True
@@ -301,15 +306,15 @@ def test_market_sentiment_policy_from_config():
 
 
 def test_morning_profit_book_window_and_dynamic_thresholds():
-    """09:15–10:00 IST: ATR-aware TP/stop (Day3 0.6%/1.0×ATR); after 10:00 → none."""
+    """09:15–10:00 IST: ATR-aware TP/stop (1.0%/1.5×ATR); after 10:00 → none."""
     policy = MorningProfitBookPolicy(
         enabled=True,
         start_ist="09:15",
         until_ist="10:00",
-        tp_min_pct=0.6,
-        tp_atr_mult=1.0,
-        stop_min_pct=0.5,
-        stop_atr_mult=0.75,
+        tp_min_pct=1.0,
+        tp_atr_mult=1.5,
+        stop_min_pct=1.0,
+        stop_atr_mult=1.25,
         exit_fraction=1.0,
     )
     soft = SoftEodPolicy.from_config(
@@ -320,9 +325,10 @@ def test_morning_profit_book_window_and_dynamic_thresholds():
                         "enabled": True,
                         "start_ist": "09:15",
                         "until_ist": "10:00",
-                        "tp_min_pct": 0.6,
-                        "tp_atr_mult": 1.0,
-                        "stop_min_pct": 0.5,
+                        "tp_min_pct": 1.0,
+                        "tp_atr_mult": 1.5,
+                        "stop_min_pct": 1.0,
+                        "stop_atr_mult": 1.25,
                     }
                 }
             }
@@ -334,71 +340,62 @@ def test_morning_profit_book_window_and_dynamic_thresholds():
     assert not soft.in_morning_profit_window(datetime(2026, 11, 17, 10, 1, 0))
     assert not soft.in_morning_profit_window(datetime(2026, 11, 17, 10, 15, 0))
 
-    # Day3 defaults from config
-    day3 = MorningProfitBookPolicy.from_config(
-        {
-            "trading": {
-                "session": {
-                    "morning_profit_book": {
-                        "enabled": True,
-                        "tp_min_pct": 0.6,
-                        "tp_atr_mult": 1.0,
-                    }
-                }
-            }
-        }
-    )
-    assert day3.tp_min_pct == 0.6
-    assert day3.tp_atr_mult == 1.0
+    # Dual-session defaults from config / class
+    dual = MorningProfitBookPolicy.from_config({"trading": {"session": {}}})
+    assert dual.tp_min_pct == 1.0
+    assert dual.tp_atr_mult == 1.5
+    assert dual.stop_min_pct == 1.0
+    assert dual.stop_atr_mult == 1.25
 
-    # Tiny +0.3% scalp must NOT fire (was Day3 churn)
-    scalp = morning_profit_book_decision(
-        open_side="long",
-        open_qty=1,
-        entry_avg=100.0,
-        mark=100.35,
-        policy=policy,
-        now=datetime(2026, 11, 17, 9, 45, 0),
-        atr14=None,
-    )
-    assert scalp["action"] == "none"
-    assert scalp["unrealized_pct"] == pytest.approx(0.35)
+    # Tiny +0.3–0.6% scalp must NOT fire (Day3 churn diagnosis)
+    for mark, pct in ((100.35, 0.35), (100.60, 0.60)):
+        scalp = morning_profit_book_decision(
+            open_side="long",
+            open_qty=1,
+            entry_avg=100.0,
+            mark=mark,
+            policy=policy,
+            now=datetime(2026, 11, 17, 9, 45, 0),
+            atr14=None,
+        )
+        assert scalp["action"] == "none"
+        assert scalp["unrealized_pct"] == pytest.approx(pct)
 
-    # % only (no ATR): long entry 100 → mark 100.65 = +0.65% ≥ 0.6% → book
+    # % only (no ATR): long entry 100 → mark 101.00 = +1.0% ≥ 1.0% → book
     hit = morning_profit_book_decision(
         open_side="long",
         open_qty=1,
         entry_avg=100.0,
-        mark=100.65,
+        mark=101.00,
         policy=policy,
         now=datetime(2026, 11, 17, 9, 45, 0),
         atr14=None,
     )
     assert hit["action"] == "profit_book"
     assert hit["exit_qty"] == 1
-    assert hit["unrealized_pct"] == pytest.approx(0.65)
+    assert hit["unrealized_pct"] == pytest.approx(1.0)
     assert "morning_profit_book" in hit["reason"]
     assert hit["thresholds"]["mode"] == "pct_only"
 
-    # Just under TP floor (+0.55% < 0.6%)
+    # Just under TP floor (+0.90% < 1.0%)
     miss = morning_profit_book_decision(
         open_side="long",
         open_qty=1,
         entry_avg=100.0,
-        mark=100.55,
+        mark=100.90,
         policy=policy,
         now=datetime(2026, 11, 17, 9, 45, 0),
         atr14=None,
     )
     assert miss["action"] == "none"
-    assert miss["unrealized_pct"] == pytest.approx(0.55)
+    assert miss["unrealized_pct"] == pytest.approx(0.90)
 
-    # Morning stop: −0.5% with no ATR
+    # Morning stop: −1.0% with no ATR
     stop = morning_profit_book_decision(
         open_side="long",
         open_qty=1,
         entry_avg=100.0,
-        mark=99.50,
+        mark=99.00,
         policy=policy,
         now=datetime(2026, 11, 17, 9, 30, 0),
         atr14=None,
@@ -406,12 +403,12 @@ def test_morning_profit_book_window_and_dynamic_thresholds():
     assert stop["action"] == "stop"
     assert "morning_stop" in stop["reason"]
 
-    # ATR raises TP: entry 100, ATR14=2 → 1.0×ATR=2.0 > 0.6%×100=0.6 → need +2.0
+    # ATR raises TP: entry 100, ATR14=2 → 1.5×ATR=3.0 > 1.0%×100=1.0 → need +3.0
     atr_hold = morning_profit_book_decision(
         open_side="long",
         open_qty=1,
         entry_avg=100.0,
-        mark=101.00,  # +1.0% = 1.0 ₹ < 2.0 ATR leg
+        mark=102.00,  # +2.0% = 2.0 ₹ < 3.0 ATR leg
         policy=policy,
         now=datetime(2026, 11, 17, 9, 40, 0),
         atr14=2.0,
@@ -422,19 +419,19 @@ def test_morning_profit_book_window_and_dynamic_thresholds():
         open_side="long",
         open_qty=1,
         entry_avg=100.0,
-        mark=102.00,  # +2.0 ₹ = 1.0×ATR
+        mark=103.00,  # +3.0 ₹ = 1.5×ATR
         policy=policy,
         now=datetime(2026, 11, 17, 9, 40, 0),
         atr14=2.0,
     )
     assert atr_hit["action"] == "profit_book"
 
-    # ATR raises stop: 0.75×ATR=1.5 > 0.5%×100=0.5 → stop at −1.5
+    # ATR raises stop: 1.25×ATR=2.5 > 1.0%×100=1.0 → stop at −2.5
     atr_stop_miss = morning_profit_book_decision(
         open_side="long",
         open_qty=1,
         entry_avg=100.0,
-        mark=99.20,  # −0.8 ₹ (worse than % floor but above ATR stop)
+        mark=98.00,  # −2.0 ₹ (worse than % floor but above ATR stop)
         policy=policy,
         now=datetime(2026, 11, 17, 9, 40, 0),
         atr14=2.0,
@@ -444,7 +441,7 @@ def test_morning_profit_book_window_and_dynamic_thresholds():
         open_side="long",
         open_qty=1,
         entry_avg=100.0,
-        mark=98.50,  # −1.5 ₹
+        mark=97.50,  # −2.5 ₹
         policy=policy,
         now=datetime(2026, 11, 17, 9, 40, 0),
         atr14=2.0,
@@ -457,7 +454,7 @@ def test_morning_profit_book_window_and_dynamic_thresholds():
         open_side="long",
         open_qty=1,
         entry_avg=100.0,
-        mark=102.0,
+        mark=103.0,
         policy=policy,
         now=datetime(2026, 11, 17, 10, 1, 0),
         atr14=2.0,
@@ -471,7 +468,7 @@ def test_morning_profit_book_window_and_dynamic_thresholds():
         open_side="long",
         open_qty=1,
         entry_avg=100.0,
-        mark=102.0,
+        mark=103.0,
         policy=policy,
         now=datetime(2026, 11, 17, 9, 30, 0),
         is_index=True,
@@ -480,18 +477,18 @@ def test_morning_profit_book_window_and_dynamic_thresholds():
     assert idx["action"] == "none"
     assert "index_not_equity" in idx["reason"]
 
-    # Short geometry (% only): +0.65% profit (≥ 0.6% floor)
+    # Short geometry (% only): +1.0% profit (≥ 1.0% floor)
     short_hit = morning_profit_book_decision(
         open_side="short",
         open_qty=1,
         entry_avg=200.0,
-        mark=198.7,
+        mark=198.0,
         policy=policy,
         now=datetime(2026, 11, 17, 9, 20, 0),
         atr14=None,
     )
     assert short_hit["action"] == "profit_book"
-    assert unrealized_pnl_pct("short", 200.0, 198.7) == pytest.approx(0.65)
+    assert unrealized_pnl_pct("short", 200.0, 198.0) == pytest.approx(1.0)
 
 
 def test_profit_book_exit_qty_full_and_scale_out():
@@ -536,13 +533,13 @@ def test_atr_trail_policy_from_config_under_trading_risk():
                 "risk": {
                     "atr_trail_scale_out": {
                         "enabled": True,
-                        "stop_atr_mult": 1.5,
-                        "stop_pct": 0.8,
-                        "trail_activate_atr_mult": 1.0,
-                        "trail_activate_pct": 0.5,
-                        "trail_atr_mult": 1.0,
-                        "profit_atr_mult": 1.5,
-                        "profit_pct": 0.8,
+                        "stop_atr_mult": 2.0,
+                        "stop_pct": 1.2,
+                        "trail_activate_atr_mult": 1.5,
+                        "trail_activate_pct": 0.8,
+                        "trail_atr_mult": 1.2,
+                        "profit_atr_mult": 2.5,
+                        "profit_pct": 1.2,
                         "scale_out_fraction": 0.5,
                     }
                 }
@@ -550,14 +547,23 @@ def test_atr_trail_policy_from_config_under_trading_risk():
         }
     )
     assert policy.enabled is True
-    assert policy.stop_atr_mult == 1.5
-    assert policy.profit_atr_mult == 1.5
+    assert policy.stop_atr_mult == 2.0
+    assert policy.trail_activate_atr_mult == 1.5
+    assert policy.trail_atr_mult == 1.2
+    assert policy.profit_atr_mult == 2.5
     assert policy.scale_out_fraction == 0.5
+
+    # Dual-session class defaults when YAML omits block
+    defaults = AtrTrailScaleOutPolicy()
+    assert defaults.stop_atr_mult == 2.0
+    assert defaults.profit_atr_mult == 2.5
+    assert defaults.trail_activate_atr_mult == 1.5
+    assert defaults.trail_atr_mult == 1.2
 
 
 def test_atr_trail_activation_and_never_loosen():
-    """Trail activates at +1.0×ATR; extreme updates; trail stop never loosens."""
-    # ATR=4 → activate +4, profit +6, trail dist 4 — room to ratchet without booking.
+    """Trail activates at +1.5×ATR; extreme updates; trail stop never loosens."""
+    # ATR=4 → activate +6, profit +10, trail dist 4.8 — room to ratchet without booking.
     policy = AtrTrailScaleOutPolicy()
     state: dict = {"activated": False, "extreme": None, "trail_stop": None}
 
@@ -565,7 +571,7 @@ def test_atr_trail_activation_and_never_loosen():
         open_side="long",
         open_qty=1,
         entry_avg=100.0,
-        mark=103.00,  # +3 < +4 activate
+        mark=105.00,  # +5 < +6 activate
         policy=policy,
         atr14=4.0,
         trail_state=state,
@@ -577,29 +583,29 @@ def test_atr_trail_activation_and_never_loosen():
         open_side="long",
         open_qty=1,
         entry_avg=100.0,
-        mark=104.00,  # +4 = 1.0×ATR → activate; trail_stop=100
+        mark=106.00,  # +6 = 1.5×ATR → activate; trail_stop=106−4.8=101.2
         policy=policy,
         atr14=4.0,
         trail_state=state,
     )
     assert act["action"] == "none"
     assert state["activated"] is True
-    assert state["extreme"] == pytest.approx(104.0)
-    assert state["trail_stop"] == pytest.approx(100.0)
+    assert state["extreme"] == pytest.approx(106.0)
+    assert state["trail_stop"] == pytest.approx(101.2)
 
-    # New high still below profit (+6) → extreme + trail ratchet up
+    # New high still below profit (+10) → extreme + trail ratchet up
     higher = atr_trail_scale_out_decision(
         open_side="long",
         open_qty=1,
         entry_avg=100.0,
-        mark=105.50,
+        mark=108.00,
         policy=policy,
         atr14=4.0,
         trail_state=state,
     )
     assert higher["action"] == "none"
-    assert state["extreme"] == pytest.approx(105.50)
-    assert state["trail_stop"] == pytest.approx(101.50)  # 105.5 − 4
+    assert state["extreme"] == pytest.approx(108.00)
+    assert state["trail_stop"] == pytest.approx(103.2)  # 108 − 4.8
     stop_after_high = float(state["trail_stop"])
 
     # Pullback that does not touch trail — trail must not loosen
@@ -607,13 +613,13 @@ def test_atr_trail_activation_and_never_loosen():
         open_side="long",
         open_qty=1,
         entry_avg=100.0,
-        mark=104.50,
+        mark=106.50,
         policy=policy,
         atr14=4.0,
         trail_state=state,
     )
     assert pullback["action"] == "none"
-    assert state["extreme"] == pytest.approx(105.50)
+    assert state["extreme"] == pytest.approx(108.00)
     assert state["trail_stop"] == pytest.approx(stop_after_high)
 
     # Touch trail → atr_trail full exit
@@ -621,7 +627,7 @@ def test_atr_trail_activation_and_never_loosen():
         open_side="long",
         open_qty=1,
         entry_avg=100.0,
-        mark=101.50,  # ≤ trail_stop 101.50
+        mark=103.20,  # ≤ trail_stop 103.2
         policy=policy,
         atr14=4.0,
         trail_state=state,
@@ -632,14 +638,25 @@ def test_atr_trail_activation_and_never_loosen():
 
 
 def test_atr_trail_qty1_profit_book_and_scale_out():
-    """qty=1 at +1.5×ATR → full profit_book; qty>1 → 50% profit_scale_out."""
+    """qty=1 at +2.5×ATR → full profit_book; qty>1 → 50% profit_scale_out."""
     policy = AtrTrailScaleOutPolicy()
-    # entry 100, ATR=2 → profit at +3.0
-    qty1 = atr_trail_scale_out_decision(
+    # entry 100, ATR=2 → profit at +5.0 (2.5×ATR); tiny +3 must NOT book
+    tiny = atr_trail_scale_out_decision(
         open_side="long",
         open_qty=1,
         entry_avg=100.0,
         mark=103.00,
+        policy=policy,
+        atr14=2.0,
+        trail_state={"activated": False, "extreme": None, "trail_stop": None},
+    )
+    assert tiny["action"] == "none"
+
+    qty1 = atr_trail_scale_out_decision(
+        open_side="long",
+        open_qty=1,
+        entry_avg=100.0,
+        mark=105.00,
         policy=policy,
         atr14=2.0,
         trail_state={"activated": False, "extreme": None, "trail_stop": None},
@@ -652,7 +669,7 @@ def test_atr_trail_qty1_profit_book_and_scale_out():
         open_side="long",
         open_qty=4,
         entry_avg=100.0,
-        mark=103.00,
+        mark=105.00,
         policy=policy,
         atr14=2.0,
         trail_state={"activated": False, "extreme": None, "trail_stop": None},
@@ -666,7 +683,7 @@ def test_atr_trail_qty1_profit_book_and_scale_out():
         open_side="long",
         open_qty=4,
         qty=1,
-        price=103.0,
+        price=105.0,
         reason=qty4["reason"],
         exit_qty=qty4["exit_qty"],
     )
@@ -674,10 +691,10 @@ def test_atr_trail_qty1_profit_book_and_scale_out():
 
 
 def test_risk_exit_window_aligns_soft_flatten_until():
-    """Open-book risk exits: [09:15, 15:40] IST; entries stay [09:15, 10:30)."""
+    """Open-book risk exits: [09:15, 15:40] IST; entries stay [09:15, 11:30)."""
     policy = SoftEodPolicy(
         open_ist="09:15",
-        no_new_entries_after="10:30",
+        no_new_entries_after="11:30",
         soft_flatten_ist="15:20",
         soft_flatten_until_ist="15:40",
     )
@@ -722,13 +739,13 @@ def test_profit_book_refused_at_0005_ist_allowed_in_session():
     """Regression: TATACONSUM profit_book at 00:05 IST must not fill overnight."""
     atr_policy = AtrTrailScaleOutPolicy()
     soft = SoftEodPolicy()
-    # Profit threshold: entry 100, ATR=2 → +3.0 (1.5×ATR)
+    # Profit threshold: entry 100, ATR=2 → +5.0 (2.5×ATR)
     midnight = datetime(2026, 11, 18, 0, 5, 0)
     overnight = atr_trail_scale_out_decision(
         open_side="long",
         open_qty=1,
         entry_avg=100.0,
-        mark=103.00,
+        mark=105.00,
         policy=atr_policy,
         atr14=2.0,
         trail_state={"activated": False, "extreme": None, "trail_stop": None},
@@ -740,13 +757,26 @@ def test_profit_book_refused_at_0005_ist_allowed_in_session():
     assert overnight["exit_qty"] == 0
     assert "outside_risk_exit_window" in overnight["reason"]
 
-    # Same uPnL during cash session → profit_book OK
+    # Same path during cash session — need +2.5×ATR=+5.0 for profit_book
     midday = datetime(2026, 11, 18, 11, 30, 0)
+    session_hold = atr_trail_scale_out_decision(
+        open_side="long",
+        open_qty=1,
+        entry_avg=100.0,
+        mark=103.00,  # +3 < +5
+        policy=atr_policy,
+        atr14=2.0,
+        trail_state={"activated": False, "extreme": None, "trail_stop": None},
+        now=midday,
+        session_policy=soft,
+        trading_day=True,
+    )
+    assert session_hold["action"] == "none"
     session = atr_trail_scale_out_decision(
         open_side="long",
         open_qty=1,
         entry_avg=100.0,
-        mark=103.00,
+        mark=105.00,
         policy=atr_policy,
         atr14=2.0,
         trail_state={"activated": False, "extreme": None, "trail_stop": None},
@@ -762,7 +792,7 @@ def test_profit_book_refused_at_0005_ist_allowed_in_session():
         open_side="long",
         open_qty=1,
         entry_avg=100.0,
-        mark=96.00,  # −4% < −1.5×ATR
+        mark=95.00,  # −5% < −2.0×ATR
         policy=atr_policy,
         atr14=2.0,
         trail_state={"activated": False, "extreme": None, "trail_stop": None},
@@ -792,16 +822,16 @@ def test_profit_book_refused_at_0005_ist_allowed_in_session():
 
 
 def test_atr_trail_missing_atr_pct_fallback_and_initial_stop():
-    """ATR missing → % floors; initial stop at −0.8%; stop beats profit same tick."""
+    """ATR missing → % floors; initial stop at −1.2%; stop beats profit same tick."""
     policy = AtrTrailScaleOutPolicy()
     state: dict = {"activated": False, "extreme": None, "trail_stop": None}
 
-    # −0.8% stop with no ATR: use mark clearly through the floor (float-safe)
+    # −1.2% stop with no ATR: use mark clearly through the floor (float-safe)
     stop = atr_trail_scale_out_decision(
         open_side="long",
         open_qty=1,
         entry_avg=100.0,
-        mark=99.10,  # −0.9% ≤ −0.8%
+        mark=98.70,  # −1.3% ≤ −1.2%
         policy=policy,
         atr14=None,
         trail_state=state,
@@ -810,7 +840,7 @@ def test_atr_trail_missing_atr_pct_fallback_and_initial_stop():
     assert stop["thresholds"]["stop_mode"] == "pct_only"
     assert "atr_stop" in stop["reason"]
 
-    # Just above stop (−0.5%) — hold / no activate yet (+0.5% needed)
+    # Just above stop (−0.5%) — hold / no activate yet (+0.8% needed)
     hold = atr_trail_scale_out_decision(
         open_side="long",
         open_qty=1,
@@ -822,26 +852,27 @@ def test_atr_trail_missing_atr_pct_fallback_and_initial_stop():
     )
     assert hold["action"] == "none"
 
-    # Activate at +0.5% with no ATR
+    # Activate at +0.8% with no ATR; trail dist uses activate_pct fallback too
+    # (mark slightly above floor for float safety)
     act_state: dict = {"activated": False, "extreme": None, "trail_stop": None}
     atr_trail_scale_out_decision(
         open_side="long",
         open_qty=1,
         entry_avg=100.0,
-        mark=100.50,
+        mark=100.85,
         policy=policy,
         atr14=None,
         trail_state=act_state,
     )
     assert act_state["activated"] is True
-    assert act_state["trail_stop"] == pytest.approx(100.0)  # 100.5 − 0.5%
+    assert act_state["trail_stop"] == pytest.approx(100.05)  # 100.85 − 0.8%
 
-    # Profit book pct fallback +0.8% (mark above floor for float safety)
+    # Profit book pct fallback +1.2% (mark above floor for float safety)
     book = atr_trail_scale_out_decision(
         open_side="long",
         open_qty=1,
         entry_avg=100.0,
-        mark=100.90,
+        mark=101.30,
         policy=policy,
         atr14=None,
         trail_state={"activated": False, "extreme": None, "trail_stop": None},
@@ -849,12 +880,22 @@ def test_atr_trail_missing_atr_pct_fallback_and_initial_stop():
     assert book["action"] == "profit_book"
     assert book["thresholds"]["profit_mode"] == "pct_only"
 
-    # ATR path initial stop: −1.5×ATR=−3.0 on entry 100
+    # ATR path initial stop: −2.0×ATR=−4.0 on entry 100
+    atr_stop_miss = atr_trail_scale_out_decision(
+        open_side="long",
+        open_qty=1,
+        entry_avg=100.0,
+        mark=97.00,  # −3 < −4 → hold
+        policy=policy,
+        atr14=2.0,
+        trail_state={"activated": False, "extreme": None, "trail_stop": None},
+    )
+    assert atr_stop_miss["action"] == "none"
     atr_stop = atr_trail_scale_out_decision(
         open_side="long",
         open_qty=1,
         entry_avg=100.0,
-        mark=97.00,
+        mark=96.00,
         policy=policy,
         atr14=2.0,
         trail_state={"activated": False, "extreme": None, "trail_stop": None},
