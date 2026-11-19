@@ -203,13 +203,13 @@ def test_mtf_fails_when_directions_disagree():
     assert mtf.passed is False
 
 
-def test_relative_volume_1_2x():
+def test_relative_volume_1_0x():
     candles = _rising_15m(25, base_vol=1000)
-    # last vol = 3× base → passes 1.2×
-    ok = check_relative_volume(candles, mult=1.2, lookback=20)
+    # last vol = 3× base → passes 1.0×
+    ok = check_relative_volume(candles, mult=1.0, lookback=20)
     assert ok.passed is True
-    # Flatten volumes → fail
-    flat = [
+    # Equal to mean → still passes ≥1.0×
+    flat_ok = [
         _bar(
             "TCS",
             datetime(2026, 11, 18, 4, 0, tzinfo=timezone.utc) + timedelta(minutes=15 * i),
@@ -218,7 +218,18 @@ def test_relative_volume_1_2x():
         )
         for i in range(25)
     ]
-    assert check_relative_volume(flat, mult=1.2, lookback=20).passed is False
+    assert check_relative_volume(flat_ok, mult=1.0, lookback=20).passed is True
+    # Dead volume vs prior mean → fail
+    dead = [
+        _bar(
+            "TCS",
+            datetime(2026, 11, 18, 4, 0, tzinfo=timezone.utc) + timedelta(minutes=15 * i),
+            c=100 + i,
+            vol=1000 if i < 24 else 100,
+        )
+        for i in range(25)
+    ]
+    assert check_relative_volume(dead, mult=1.0, lookback=20).passed is False
 
 
 def test_atr_pct_above_1_0():
@@ -229,13 +240,16 @@ def test_atr_pct_above_1_0():
 
 
 def test_proximity_block_near_daily_high():
-    # price near high within 0.2×ATR (band=0.4); 99.8 is 0.2 from high
+    # price near high within 0.1×ATR (band=0.2); 99.85 is 0.15 from high
+    z = ist()
+    after_skip = datetime(2026, 11, 18, 11, 0, tzinfo=z)
     r = check_proximity_block(
-        price=99.8,
+        price=99.85,
         atr14=2.0,
         daily_high=100.0,
         daily_low=90.0,
-        proximity_atr_mult=0.2,
+        proximity_atr_mult=0.1,
+        now=after_skip,
     )
     assert r.passed is False
     clear = check_proximity_block(
@@ -243,9 +257,47 @@ def test_proximity_block_near_daily_high():
         atr14=2.0,
         daily_high=100.0,
         daily_low=90.0,
-        proximity_atr_mult=0.2,
+        proximity_atr_mult=0.1,
+        now=after_skip,
     )
     assert clear.passed is True
+    # 0.25 from high clears 0.1×ATR band (0.2) but would fail old 0.2×ATR (0.4)
+    mid = check_proximity_block(
+        price=99.75,
+        atr14=2.0,
+        daily_high=100.0,
+        daily_low=90.0,
+        proximity_atr_mult=0.1,
+        now=after_skip,
+    )
+    assert mid.passed is True
+
+
+def test_proximity_skipped_until_1030_ist():
+    z = ist()
+    before = datetime(2026, 11, 18, 10, 15, tzinfo=z)
+    # Would block after 10:30 (within 0.1×ATR of high) but skip before.
+    r = check_proximity_block(
+        price=99.85,
+        atr14=2.0,
+        daily_high=100.0,
+        daily_low=90.0,
+        proximity_atr_mult=0.1,
+        now=before,
+        skip_until_ist="10:30",
+    )
+    assert r.passed is True
+    assert "proximity_until=10:30" in r.detail
+    at_boundary = check_proximity_block(
+        price=99.85,
+        atr14=2.0,
+        daily_high=100.0,
+        daily_low=90.0,
+        proximity_atr_mult=0.1,
+        now=datetime(2026, 11, 18, 10, 30, tzinfo=z),
+        skip_until_ist="10:30",
+    )
+    assert at_boundary.passed is False
 
 
 def test_session_daily_high_low_from_15m():
@@ -278,9 +330,18 @@ def test_news_1h_conflict():
     )
     score = news_sentiment_1h([item], [sent], now=now, lookback_minutes=60)
     assert score is not None and score < 0
-    assert check_news_conflict(0.80, score).passed is False
-    assert check_news_conflict(-0.80, score).passed is True
-    assert check_news_conflict(0.80, None).passed is True
+    conflict = check_news_conflict(0.80, score, fail_open=True)
+    assert conflict.passed is False
+    assert "clear conflict" in conflict.detail
+    assert check_news_conflict(-0.80, score, fail_open=True).passed is True
+    missing = check_news_conflict(0.80, None, fail_open=True)
+    assert missing.passed is True
+    assert "news_fail_open=missing" in missing.detail
+    neutral = check_news_conflict(0.80, 0.0, fail_open=True)
+    assert neutral.passed is True
+    assert "news_fail_open=neutral" in neutral.detail
+    # fail_open=False → missing news hard-blocks
+    assert check_news_conflict(0.80, None, fail_open=False).passed is False
 
 
 def test_cooloff_120m_after_any_trade():
@@ -387,8 +448,11 @@ def test_high_conviction_config_from_yaml_defaults():
     assert cfg["min_hybrid_after_1420"] == 0.85
     assert cfg["late_base_min_hybrid"] == 0.75
     assert cfg["late_base_wr_threshold"] == 0.55
-    assert cfg["rvol_mult"] == 1.2
+    assert cfg["rvol_mult"] == 1.0
     assert cfg["atr_min_pct_of_price"] == 1.0
+    assert cfg["proximity_atr_mult"] == 0.1
+    assert cfg["proximity_skip_until_ist"] == "10:30"
+    assert cfg["news_fail_open"] is True
     assert cfg["top_pct_enabled"] is True
     assert cfg["top_pct_of_scan"] == 0.10
     assert cfg["cooloff_minutes"] == 120

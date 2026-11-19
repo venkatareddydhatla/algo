@@ -79,6 +79,8 @@ async def _run_batch(symbols: list[str], cfg: dict) -> None:
             "cooloff=%s/%dm morning=%s until=%s morning_min=%.2f "
             "morning_max_new=%d high_conviction=%s floors=%.2f/%.2f/%.2f "
             "late_base=%.2f@wr≥%.0f%% top_pct=%s late_after=%s "
+            "proximity_until=%s proximity=%.1f×ATR rvol=%.1f× "
+            "news_fail_open=%s "
             "(rank by |hybrid|; empty_slots_only; no min-trade quota)",
             admission.anti_churn,
             admission.dynamic_enabled,
@@ -104,6 +106,10 @@ async def _run_batch(symbols: list[str], cfg: dict) -> None:
                 else "off"
             ),
             hc.get("late_after_ist", "14:20"),
+            hc.get("proximity_skip_until_ist", "10:30"),
+            float(hc.get("proximity_atr_mult", 0.1)),
+            float(hc.get("rvol_mult", 1.0)),
+            bool(hc.get("news_fail_open", True)),
         )
 
     async def _one(symbol: str) -> None:

@@ -4,10 +4,11 @@ During a full-universe scan, new ``entry`` intents are staged instead of
 first-fill by CSV/scan order. After the batch, strongest |hybrid| candidates
 fill free slots under a dynamic target (floor/ceiling + min |hybrid|).
 
-Multi-factor filters (MTF/RVOL/ATR/proximity/news) run in the pipeline before
-staging. This module ranks admits, applies cooloff / WR-based max-open, and
-uses time-of-day |hybrid| floors from ``high_conviction`` (+ adaptive delta).
-Anti-churn: ``empty_slots_only``.
+Multi-factor filters (MTF/RVOL≥1.0×/ATR/proximity 0.1×ATR skip-until-10:30/
+news fail-open) run in the pipeline before staging. This module ranks admits,
+applies cooloff / WR-based max-open, and uses time-of-day |hybrid| floors from
+``high_conviction`` (+ adaptive delta). Anti-churn: ``empty_slots_only``.
+Never invents a min-trade quota.
 """
 
 from __future__ import annotations

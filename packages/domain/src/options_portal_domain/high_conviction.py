@@ -1,6 +1,6 @@
 """High-conviction multi-factor equity F&O stock entry gate (indices excluded).
 
-Venkata rule card (afternoon floors relax — no min-trade quota):
+Venkata rule card (entry-hurdle ease — no min-trade quota):
 
 **Universe:** NSE F&O **stocks** only; no index trades.
 **Entry window:** 09:15–15:20 IST (``no_new_entries_after=15:20``).
@@ -12,10 +12,12 @@ Venkata rule card (afternoon floors relax — no min-trade quota):
    Score filter OR: top **10%** of scan ``|hybrid|`` may admit under the fixed
    floor (other factors still required). Adaptive ±0.05, clamp [0.70, 0.90].
 2. Multi-timeframe: 15m and 1h same direction (bullish/bearish).
-3. Relative volume: last 15m vol ≥ 1.2× mean of prior 20 bars.
+3. Relative volume: last 15m vol ≥ 1.0× mean of prior 20 bars (not-dead only).
 4. ATR(14) > 1.0% of price.
-5. Proximity block: no entry within 0.2×ATR of major daily high/low.
-6. News/sentiment: block if last 1h news sentiment conflicts with signal.
+5. Proximity block: no entry within 0.1×ATR of major daily high/low;
+   **skip proximity entirely until 10:30 IST** (open/range still forming).
+6. News/sentiment: **fail-open** when no usable 1h news; hard block **only**
+   on clear conflict with signal direction (missing/empty/neutral → pass).
 7. Same-symbol cooloff **120 minutes** per session after **any** trade.
 8. Max open **6**; if rolling WR < 50% → max open **4**.
    WR window: **last 20 closed equity round-trips** (documented).
@@ -42,7 +44,7 @@ from options_portal_domain.candles_agg import (
     direction_matches_signal,
     session_daily_high_low,
 )
-from options_portal_domain.entry_selection import at_or_after_hhmm
+from options_portal_domain.entry_selection import at_or_after_hhmm, before_hhmm
 from options_portal_domain.round_trips import pair_round_trip_trades
 from options_portal_domain.tz import ist
 from options_portal_domain.types import Candle, NewsItem, SentimentResult
@@ -62,12 +64,14 @@ DEFAULT_LATE_BASE_WR_THRESHOLD = 0.55
 DEFAULT_AFTERNOON_AFTER_IST = "12:00"
 DEFAULT_LATE_ENTRY_AFTER_IST = "14:20"
 
-DEFAULT_RVOL_MULT = 1.2
+DEFAULT_RVOL_MULT = 1.0
 DEFAULT_RVOL_LOOKBACK = 20
 DEFAULT_ATR_PERIOD = 14
 DEFAULT_ATR_MIN_PCT_OF_PRICE = 1.0
-DEFAULT_PROXIMITY_ATR_MULT = 0.2
+DEFAULT_PROXIMITY_ATR_MULT = 0.1
+DEFAULT_PROXIMITY_SKIP_UNTIL_IST = "10:30"
 DEFAULT_NEWS_CONFLICT_LOOKBACK_MIN = 60
+DEFAULT_NEWS_FAIL_OPEN = True
 DEFAULT_COOLOFF_MINUTES = 120
 
 DEFAULT_MAX_OPEN = 6
@@ -397,8 +401,20 @@ def check_proximity_block(
     daily_low: float | None,
     *,
     proximity_atr_mult: float = DEFAULT_PROXIMITY_ATR_MULT,
+    now: datetime | None = None,
+    skip_until_ist: str = DEFAULT_PROXIMITY_SKIP_UNTIL_IST,
 ) -> FactorResult:
-    """Block entry when price is within ``proximity_atr_mult × ATR`` of daily H/L."""
+    """Block entry when price is within ``proximity_atr_mult × ATR`` of daily H/L.
+
+    Before ``skip_until_ist`` (default 10:30 IST) the factor always passes —
+    session open/range is still forming.
+    """
+    if now is not None and before_hhmm(skip_until_ist, now):
+        return FactorResult(
+            name="proximity",
+            passed=True,
+            detail=f"proximity_until={skip_until_ist} skipped (range forming)",
+        )
     if atr14 is None or float(atr14) <= 0:
         # TODO: when daily H/L feed lands without ATR, revisit fail-closed vs open.
         return FactorResult(
@@ -478,23 +494,39 @@ def news_sentiment_1h(
 def check_news_conflict(
     hybrid_score: float,
     news_score_1h: float | None,
+    *,
+    fail_open: bool = DEFAULT_NEWS_FAIL_OPEN,
 ) -> FactorResult:
-    """Block when last-1h news sentiment conflicts with signal direction."""
+    """Hard-block only on clear 1h news conflict with signal direction.
+
+    Missing / empty / neutral news → pass when ``fail_open`` (default True).
+    When ``fail_open`` is False and news is missing, fail-closed.
+    """
     if news_score_1h is None:
+        if fail_open:
+            return FactorResult(
+                name="news_1h",
+                passed=True,
+                detail="news_fail_open=missing",
+            )
         return FactorResult(
             name="news_1h",
-            passed=True,
-            detail="no 1h news — skip conflict check",
+            passed=False,
+            detail="no usable 1h news — fail-closed",
         )
     ns = float(news_score_1h)
     hs = float(hybrid_score)
     if abs(ns) < 1e-9:
-        return FactorResult(name="news_1h", passed=True, detail="news neutral")
+        return FactorResult(
+            name="news_1h",
+            passed=True,
+            detail="news_fail_open=neutral",
+        )
     if (hs > 0 and ns < 0) or (hs < 0 and ns > 0):
         return FactorResult(
             name="news_1h",
             passed=False,
-            detail=f"news_1h={ns:.3f} conflicts signal={_sign_label(hs)}",
+            detail=f"news_1h={ns:.3f} clear conflict signal={_sign_label(hs)}",
         )
     return FactorResult(
         name="news_1h",
@@ -849,6 +881,8 @@ def evaluate_entry_gate(
             daily_high,
             daily_low,
             proximity_atr_mult=float(hc["proximity_atr_mult"]),
+            now=now,
+            skip_until_ist=str(hc["proximity_skip_until_ist"]),
         )
     )
 
@@ -858,7 +892,13 @@ def evaluate_entry_gate(
         now=now,
         lookback_minutes=int(hc["news_lookback_minutes"]),
     )
-    factors.append(check_news_conflict(hybrid_score, news_1h))
+    factors.append(
+        check_news_conflict(
+            hybrid_score,
+            news_1h,
+            fail_open=bool(hc["news_fail_open"]),
+        )
+    )
     factors.append(
         check_cooloff(
             last_trade=last_trade,
@@ -938,9 +978,13 @@ def high_conviction_config(cfg: dict[str, Any] | None) -> dict[str, Any]:
         "proximity_atr_mult": float(
             prox.get("atr_mult", DEFAULT_PROXIMITY_ATR_MULT)
         ),
+        "proximity_skip_until_ist": str(
+            prox.get("skip_until_ist", DEFAULT_PROXIMITY_SKIP_UNTIL_IST)
+        ),
         "news_lookback_minutes": int(
             news.get("lookback_minutes", DEFAULT_NEWS_CONFLICT_LOOKBACK_MIN)
         ),
+        "news_fail_open": bool(news.get("fail_open", DEFAULT_NEWS_FAIL_OPEN)),
         "cooloff_minutes": int(cool.get("minutes", DEFAULT_COOLOFF_MINUTES)),
         "cooloff_same_session": bool(cool.get("same_session_only", True)),
         "max_open": int(cap.get("max_open", DEFAULT_MAX_OPEN)),
