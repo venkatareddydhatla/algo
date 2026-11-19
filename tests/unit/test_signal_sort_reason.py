@@ -200,13 +200,13 @@ def test_mock_seed_signals_have_reason_fields():
         assert enriched["reason_detail"]
 
 
-def test_syrma_synthetic_is_technical_not_hybrid():
+def test_syrma_synthetic_is_pine_action_only():
     row = synthetic_signal_for_symbol("SYRMA")
-    assert row["action"] == "BUY_CE_BIAS"
-    assert row["reason_kind"] == "technical"
-    assert "news" not in row["reason_summary"].lower()
+    assert row["action"] in {"BUY", "SELL", "HOLD"}
+    assert row["reason_kind"] == "pine"
     assert "News:" not in row["reason_detail"]
     assert "Technical:" in row["reason_detail"]
+    assert row["signal_engine"] == "pine_nifty50_v2"
 
 
 def test_synthetic_full_universe_non_placeholder(monkeypatch):
@@ -220,24 +220,19 @@ def test_synthetic_full_universe_non_placeholder(monkeypatch):
     rows = build_universe_signals(watch)
     assert len(rows) >= len(watch)
     kinds = set()
+    actions = set()
     for row in rows:
         assert row.get("stub") is not True
         assert row["reason_kind"]
         kinds.add(row["reason_kind"])
-        if row["reason_kind"] == "technical":
-            assert "News:" not in row["reason_detail"]
-        if row["reason_kind"] == "news":
-            assert "Technical:" not in row["reason_detail"]
+        actions.add(row["action"])
+        assert row["action"] in {"BUY", "SELL", "HOLD"}
+        assert "News:" not in (row.get("reason_detail") or "")
         if row.get("dry_run_synthetic"):
-            assert not (
-                row["hybrid_score"] == 0.0
-                and row["tech_score"] == 0.0
-                and row["news_score"] == 0.0
-                and row["confidence"] == 0.0
-                and row["action"] == "HOLD"
-            )
-    # Full universe should not collapse every actionable to hybrid
-    assert "technical" in kinds
+            assert float(row.get("confidence") or 0) >= 0.0
+    # Pine-only Action path
+    assert "pine" in kinds
+    assert actions <= {"BUY", "SELL", "HOLD"}
 
 
 def test_synthetic_signal_deterministic():

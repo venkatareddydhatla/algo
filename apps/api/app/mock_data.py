@@ -1,7 +1,7 @@
 """In-memory mock payloads so the UI runs without a full DB.
 
-Dry-run path synthesizes non-placeholder hybrid scores for every watchlist
-symbol so the portal can surface actionable F&O names across the full universe.
+Dry-run watchlist Action is Pine-only (BUY / SELL / HOLD). Worker-persisted
+``pine.signal.*`` KV rows override synthetics when present.
 """
 
 from __future__ import annotations
@@ -11,79 +11,91 @@ from datetime import datetime, timezone
 from typing import Any
 
 from options_portal_domain.universe import INDEX_SYMBOLS
-from options_portal_hybrid.explain import attach_reason_fields, build_reason_fields
+from options_portal_hybrid.explain import attach_reason_fields  # noqa: F401 — tests/legacy
 
 NOW = datetime.now(tz=timezone.utc).isoformat()
 
-# Hand-tuned showcase rows (also used as overrides when expanding the universe).
+# Hand-tuned showcase rows (Pine Action labels only).
 _SEED_SIGNALS: list[dict[str, Any]] = [
     {
         "id": "sig-nifty-1",
         "symbol": "NIFTY",
         "timeframe": "15m",
-        "action": "BUY_CE_BIAS",
-        "hybrid_score": 0.62,
-        "tech_score": 0.71,
-        "news_score": 0.38,
-        "confidence": 0.74,
+        "action": "HOLD",
+        "hybrid_score": 0.0,
+        "tech_score": 0.0,
+        "news_score": 0.0,
+        "confidence": 0.2,
         "expiry_hint": "weekly",
         "updated_at": NOW,
         "reasons": [
-            "EMA9 > EMA21 on 15m",
-            "RSI(14) 58 — rising",
-            "Supertrend bullish",
-            "News: mild positive last 3h",
-            "Headline: Foreign inflows lift benchmark indices into close",
+            "index_not_equity — Pine stocks-only watchlist Action=HOLD",
         ],
+        "reason_kind": "pine",
+        "reason_summary": "index blocked",
+        "reason_detail": "Technical:\n- index_not_equity",
     },
     {
         "id": "sig-bn-1",
         "symbol": "BANKNIFTY",
         "timeframe": "15m",
         "action": "HOLD",
-        "hybrid_score": 0.12,
-        "tech_score": 0.20,
-        "news_score": -0.05,
-        "confidence": 0.41,
+        "hybrid_score": 0.0,
+        "tech_score": 0.0,
+        "news_score": 0.0,
+        "confidence": 0.2,
         "expiry_hint": "weekly",
         "updated_at": NOW,
-        "reasons": ["Hybrid in neutral band", "RSI(14) 51 — neutral"],
+        "reasons": ["index_not_equity — Pine stocks-only"],
+        "reason_kind": "pine",
+        "reason_summary": "index blocked",
+        "reason_detail": "Technical:\n- index_not_equity",
     },
     {
         "id": "sig-rel-1",
         "symbol": "RELIANCE",
         "timeframe": "15m",
-        "action": "BUY_PE_BIAS",
-        "hybrid_score": -0.55,
-        "tech_score": -0.48,
-        "news_score": -0.67,
-        "confidence": 0.68,
+        "action": "SELL",
+        "hybrid_score": -1.0,
+        "tech_score": -1.0,
+        "news_score": 0.0,
+        "confidence": 0.85,
         "expiry_hint": "monthly",
         "updated_at": NOW,
         "reasons": [
-            "EMA9 < EMA21",
-            "Close below VWAP",
-            "Bearish news cluster",
-            "Headline: Broker cuts target on Reliance amid margin pressure",
+            "EMA13 crossunder EMA21",
+            "ADX(14)=24.50 ok",
+            "vol/sma20=1.35 ok",
+            "sell_signal=True",
         ],
+        "reason_kind": "pine",
+        "reason_summary": "EMA crossunder+ADX+vol",
+        "reason_detail": (
+            "Technical:\n- EMA13 crossunder EMA21\n- ADX(14)=24.50 ok\n"
+            "- vol/sma20=1.35 ok\n- sell_signal=True"
+        ),
     },
     {
         "id": "sig-tcs-1",
         "symbol": "TCS",
         "timeframe": "15m",
         "action": "HOLD",
-        "hybrid_score": -0.08,
-        "tech_score": 0.10,
-        "news_score": -0.35,
-        "confidence": 0.36,
+        "hybrid_score": 0.0,
+        "tech_score": 0.0,
+        "news_score": 0.0,
+        "confidence": 0.3,
         "expiry_hint": "monthly",
         "updated_at": NOW,
-        "reasons": ["News/TA conflict — hold", "RSI(14) 48 — neutral"],
+        "reasons": ["buy_signal=False sell_signal=False → HOLD"],
+        "reason_kind": "pine",
+        "reason_summary": "no Pine signal",
+        "reason_detail": "Technical:\n- buy_signal=False sell_signal=False → HOLD",
     },
 ]
 
 MOCK_SIGNALS: list[dict[str, Any]] = [
-    attach_reason_fields(row) for row in _SEED_SIGNALS
+    # Keep Pine reason_* as authored (do not reclassify via hybrid explain).
+    dict(row) for row in _SEED_SIGNALS
 ]
 
 MOCK_NEWS: list[dict[str, Any]] = [
@@ -203,6 +215,16 @@ def _aggregate_live_news(live_rows: list[dict[str, Any]]) -> tuple[float, float,
     return max(-1.0, min(1.0, round(news_score, 4))), round(news_conf, 4), headlines[:3]
 
 
+def _normalize_pine_action(action: str | None) -> str:
+    """Map legacy CE/PE labels onto Pine BUY/SELL/HOLD."""
+    act = str(action or "HOLD").upper()
+    if act in {"BUY", "BUY_CE_BIAS", "BUY_CE", "LONG"}:
+        return "BUY"
+    if act in {"SELL", "BUY_PE_BIAS", "BUY_PE", "SHORT"}:
+        return "SELL"
+    return "HOLD"
+
+
 def synthetic_signal_for_symbol(
     symbol: str,
     *,
@@ -212,130 +234,143 @@ def synthetic_signal_for_symbol(
     enter_short: float = -0.45,
     live_news: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Build a non-placeholder dry-run hybrid score for one underlying.
+    """Placeholder Pine-shaped Action until the worker persists real signals.
 
-    When ``live_news`` is present for the symbol, use real VADER scores and
-    headlines instead of synthetic dry-run news filler.
+    Action is BUY / SELL / HOLD only (no hybrid/news drivers). ``live_news`` is
+    ignored for Action (kept for API compatibility).
     """
+    del enter_long, enter_short, live_news  # Pine Action ignores hybrid/news
     sym = symbol.upper()
-    # Map hash into [-0.85, 0.85] tech / news so a share of names clear entry bands.
-    tech_raw = (_stable_unit(sym, "tech") - 0.5) * 1.7
-    tech_score = max(-1.0, min(1.0, round(tech_raw, 4)))
+    if sym in INDEX_SYMBOLS:
+        reasons = ["index_not_equity — Pine stocks-only → HOLD"]
+        return {
+            "id": f"pine-{sym.lower()}",
+            "symbol": sym,
+            "timeframe": timeframe,
+            "action": "HOLD",
+            "hybrid_score": 0.0,
+            "tech_score": 0.0,
+            "news_score": 0.0,
+            "confidence": 0.2,
+            "expiry_hint": "weekly",
+            "updated_at": updated_at or NOW,
+            "reasons": reasons,
+            "stub": False,
+            "dry_run_synthetic": True,
+            "live_news": False,
+            "signal_engine": "pine_nifty50_v2",
+            "reason_kind": "pine",
+            "reason_summary": "index blocked",
+            "reason_detail": "Technical:\n- " + reasons[0],
+        }
 
-    live = list(live_news or [])
-    if live:
-        news_score, news_conf, headlines = _aggregate_live_news(live)
-        used_live_news = True
-    else:
-        news_raw = (_stable_unit(sym, "news") - 0.5) * 1.5
-        news_score = max(-1.0, min(1.0, round(news_raw, 4)))
-        news_conf = 1.0 if abs(news_score) > 0 else 0.0
-        headlines = []
-        used_live_news = False
-
-    hybrid = max(
-        -1.0,
-        min(1.0, round(0.65 * tech_score + 0.35 * news_score, 4)),
-    )
-    confidence = round(
-        min(1.0, 0.35 + abs(hybrid) * 0.45 + _stable_unit(sym, "conf") * 0.2),
-        4,
-    )
-
-    reasons: list[str] = []
-    if tech_score >= 0.15:
-        reasons.append("EMA9 > EMA21 on 15m")
-        reasons.append(f"RSI(14) {50 + int(tech_score * 20)} - rising")
-        if tech_score >= 0.35:
-            reasons.append("Supertrend bullish")
-    elif tech_score <= -0.15:
-        reasons.append("EMA9 < EMA21")
-        reasons.append(f"RSI(14) {50 + int(tech_score * 20)} - falling")
-        if tech_score <= -0.35:
-            reasons.append("Close below VWAP")
-    else:
-        reasons.append(f"RSI(14) {50 + int(tech_score * 10)} - neutral")
-
-    weight_tech = 0.65
-    weight_news = 0.35
-    tech_alone = weight_tech * tech_score
-    news_alone = weight_news * news_score
-    # Only attach news bullets when news alone clears or tips the decision;
-    # mild filler must not force a HYBRID label.
-    news_tips = False
-    if hybrid >= enter_long:
-        action = "BUY_CE_BIAS"
-        news_tips = tech_alone < enter_long
-    elif hybrid <= enter_short:
-        action = "BUY_PE_BIAS"
-        news_tips = tech_alone > enter_short
+    # Deterministic placeholder: ~12% BUY, ~12% SELL, else HOLD (until worker KV).
+    roll = _stable_unit(sym, "pine_action")
+    st_bull = _stable_unit(sym, "pine_st") > 0.45
+    adx = 15.0 + _stable_unit(sym, "pine_adx") * 25.0
+    vol_ratio = 0.8 + _stable_unit(sym, "pine_vol") * 0.8
+    adx_ok = adx > 20.0
+    high_vol = vol_ratio > 1.2
+    reasons: list[str] = [
+        f"EMA13/EMA21 placeholder (await worker candles)",
+        "Supertrend bullish" if st_bull else "Supertrend bearish",
+        f"ADX(14)={adx:.2f} {'ok' if adx_ok else 'need>20'}",
+        f"vol/sma20={vol_ratio:.2f} {'ok' if high_vol else 'need>1.2'}",
+    ]
+    if roll >= 0.88 and st_bull and high_vol and adx_ok:
+        action = "BUY"
+        score = 1.0
+        reasons.append("buy_signal=True (placeholder until worker persist)")
+        summary = "EMA cross+ST+ADX+vol"
+    elif roll <= 0.12 and high_vol and adx_ok:
+        action = "SELL"
+        score = -1.0
+        reasons.append("sell_signal=True (placeholder until worker persist)")
+        summary = "EMA crossunder+ADX+vol"
     else:
         action = "HOLD"
+        score = 0.0
+        reasons.append("buy_signal=False sell_signal=False → HOLD")
+        summary = "no Pine signal"
 
-    news_alone_clears = (
-        (action == "BUY_CE_BIAS" and news_alone >= enter_long)
-        or (action == "BUY_PE_BIAS" and news_alone <= enter_short)
-    )
-    include_news = action != "HOLD" and (news_tips or news_alone_clears)
-
-    if used_live_news and (include_news or abs(news_score) >= 0.15):
-        tone = "bullish" if news_score > 0 else "bearish" if news_score < 0 else "neutral"
-        reasons.append(
-            f"News: {tone} live RSS cluster ({len(live)} item(s), score {news_score:+.2f})"
-        )
-        for title in headlines[:2]:
-            reasons.append(f"Headline: {title}")
-    elif include_news and abs(news_score) >= 0.15:
-        tone = "bullish" if news_score > 0 else "bearish"
-        if abs(news_score) >= 0.35:
-            reasons.append(f"News: {tone} cluster last 3h")
-            reasons.append(
-                f"Headline: Dry-run {tone} flow for {sym} "
-                f"(score {news_score:+.2f})"
-            )
-        else:
-            reasons.append(
-                f"News: mild {'positive' if news_score > 0 else 'negative'} last 3h"
-            )
-
-    if action == "BUY_CE_BIAS":
-        reasons.append(f"Hybrid {hybrid:.2f} >= enter_long {enter_long}")
-    elif action == "BUY_PE_BIAS":
-        reasons.append(f"Hybrid {hybrid:.2f} <= enter_short {enter_short}")
-    else:
-        reasons.append(f"Hybrid {hybrid:.2f} in neutral band")
-
-    explain = build_reason_fields(
-        action=action,
-        tech_score=tech_score,
-        news_score=news_score,
-        hybrid_score=hybrid,
-        reasons=reasons,
-        weight_tech=weight_tech,
-        weight_news=weight_news,
-        enter_long=enter_long,
-        enter_short=enter_short,
-        tech_confidence=1.0,
-        news_confidence=news_conf if (used_live_news or abs(news_score) > 0) else 0.0,
-    )
-    expiry = "weekly" if sym in INDEX_SYMBOLS else "monthly"
+    detail = "Technical:\n" + "\n".join(f"- {r}" for r in reasons)
     return {
-        "id": f"dry-{sym.lower()}",
+        "id": f"pine-{sym.lower()}",
         "symbol": sym,
         "timeframe": timeframe,
         "action": action,
-        "hybrid_score": hybrid,
-        "tech_score": tech_score,
-        "news_score": news_score,
-        "confidence": confidence,
-        "expiry_hint": expiry,
+        "hybrid_score": score,
+        "tech_score": score,
+        "news_score": 0.0,
+        "confidence": 0.85 if action != "HOLD" else 0.3,
+        "expiry_hint": "monthly",
         "updated_at": updated_at or NOW,
         "reasons": reasons,
         "stub": False,
         "dry_run_synthetic": True,
-        "live_news": used_live_news,
-        **explain,
+        "live_news": False,
+        "signal_engine": "pine_nifty50_v2",
+        "reason_kind": "pine",
+        "reason_summary": summary,
+        "reason_detail": detail,
     }
+
+
+def pine_row_from_kv(payload: dict[str, Any], *, timeframe: str = "15m") -> dict[str, Any]:
+    """Normalize a worker-persisted ``pine.signal.*`` KV payload into an API row."""
+    sym = str(payload.get("symbol") or "").upper()
+    action = _normalize_pine_action(str(payload.get("action") or "HOLD"))
+    score = float(payload.get("score") or (1.0 if action == "BUY" else -1.0 if action == "SELL" else 0.0))
+    reasons = list(payload.get("reasons") or [])
+    summary = str(payload.get("reason_summary") or (
+        "EMA cross+ST+ADX+vol" if action == "BUY"
+        else "EMA crossunder+ADX+vol" if action == "SELL"
+        else "no Pine signal"
+    ))
+    detail = str(payload.get("reason_detail") or (
+        "Technical:\n" + "\n".join(f"- {r}" for r in reasons) if reasons else "Neutral: no Pine buy/sell"
+    ))
+    return {
+        "id": f"pine-{sym.lower()}",
+        "symbol": sym,
+        "timeframe": str(payload.get("timeframe") or timeframe),
+        "action": action,
+        "hybrid_score": score,
+        "tech_score": score,
+        "news_score": 0.0,
+        "confidence": float(payload.get("confidence") or (0.85 if action != "HOLD" else 0.3)),
+        "expiry_hint": "weekly" if sym in INDEX_SYMBOLS else "monthly",
+        "updated_at": str(payload.get("updated_at") or NOW),
+        "reasons": reasons,
+        "stub": False,
+        "dry_run_synthetic": False,
+        "live_news": False,
+        "signal_engine": "pine_nifty50_v2",
+        "pine_persisted": True,
+        "reason_kind": "pine",
+        "reason_summary": summary,
+        "reason_detail": detail,
+        "features": dict(payload.get("features") or {}),
+    }
+
+
+def load_persisted_pine_signals(symbols: list[str]) -> dict[str, dict[str, Any]]:
+    """Read worker-persisted Pine actions from KvStore when available."""
+    out: dict[str, dict[str, Any]] = {}
+    try:
+        from options_portal_persistence.kv_store import KvStore
+
+        kv = KvStore()
+        if not kv.available:
+            return out
+        for sym in symbols:
+            key = str(sym).upper()
+            payload = kv.get(f"pine.signal.{key}")
+            if isinstance(payload, dict) and payload.get("action"):
+                out[key] = pine_row_from_kv(payload)
+    except Exception:  # noqa: BLE001
+        return out
+    return out
 
 
 def build_universe_signals(
@@ -345,9 +380,13 @@ def build_universe_signals(
     seed_rows: list[dict[str, Any]] | None = None,
     live_news_by_symbol: dict[str, list[dict[str, Any]]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Scores for the full watchlist: seed overrides + synthetic dry-run rows."""
-    seeds = {r["symbol"].upper(): attach_reason_fields(dict(r)) for r in (seed_rows or MOCK_SIGNALS)}
-    live_map = live_news_by_symbol or {}
+    """Watchlist rows: prefer worker Pine KV, else Pine-shaped synthetics."""
+    del live_news_by_symbol  # Action is Pine-only; news no longer drives Action
+    seeds = {
+        r["symbol"].upper(): dict(r)
+        for r in (seed_rows or MOCK_SIGNALS)
+    }
+    persisted = load_persisted_pine_signals([str(s).upper() for s in symbols])
     now = datetime.now(tz=timezone.utc).isoformat()
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -356,23 +395,28 @@ def build_universe_signals(
         if key in seen:
             continue
         seen.add(key)
-        live = live_map.get(key) or []
-        if key in seeds and not live:
+        if key in persisted:
+            row = dict(persisted[key])
+            row["updated_at"] = row.get("updated_at") or now
+            rows.append(row)
+        elif key in seeds:
             row = dict(seeds[key])
+            row["action"] = _normalize_pine_action(row.get("action"))
             row["updated_at"] = now
-            rows.append(attach_reason_fields(row))
+            row.setdefault("signal_engine", "pine_nifty50_v2")
+            row.setdefault("reason_kind", "pine")
+            rows.append(row)
         else:
-            # Prefer live-news-aware synthetic row when RSS data exists for the symbol
             rows.append(
                 synthetic_signal_for_symbol(
                     key,
                     timeframe=timeframe,
                     updated_at=now,
-                    live_news=live or None,
                 )
             )
-    # Include any seed symbols not in the watchlist (demo leftovers)
     for key, row in seeds.items():
         if key not in seen:
-            rows.append(attach_reason_fields(dict(row)))
+            r = dict(row)
+            r["action"] = _normalize_pine_action(r.get("action"))
+            rows.append(r)
     return rows

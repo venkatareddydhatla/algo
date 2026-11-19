@@ -84,6 +84,33 @@ def test_plan_ce_bias_buys_long():
     assert intents[0].resulting_position == "long"
 
 
+def test_plan_pine_buy_sell_actions():
+    buy = plan_equity_intents(
+        "RELIANCE",
+        SignalAction.BUY,
+        open_side=None,
+        open_qty=0,
+        qty=1,
+        price=2500.0,
+        reason="pine buy_signal",
+    )
+    assert len(buy) == 1
+    assert buy[0].side == "BUY"
+    assert buy[0].resulting_position == "long"
+    sell = plan_equity_intents(
+        "TCS",
+        SignalAction.SELL,
+        open_side=None,
+        open_qty=0,
+        qty=1,
+        price=3900.0,
+        reason="pine sell_signal",
+    )
+    assert len(sell) == 1
+    assert sell[0].side == "SELL"
+    assert sell[0].resulting_position == "short"
+
+
 def test_plan_pe_bias_sells_short():
     intents = plan_equity_intents(
         "TCS",
