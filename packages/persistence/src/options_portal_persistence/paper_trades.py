@@ -147,15 +147,24 @@ class PaperTradeStore:
 
     def _connect(self) -> sqlite3.Connection:
         assert self._path is not None
+        # Wait for worker writers (default 5s is tight under open-book poll).
+        timeout = 30.0
         if str(self._path) == ":memory:" or self._path.name == ":memory:":
             conn = sqlite3.connect(
                 "file:options_portal_paper?mode=memory&cache=shared",
                 uri=True,
                 check_same_thread=False,
+                timeout=timeout,
             )
         else:
-            conn = sqlite3.connect(str(self._path), check_same_thread=False)
+            conn = sqlite3.connect(
+                str(self._path), check_same_thread=False, timeout=timeout
+            )
         conn.row_factory = sqlite3.Row
+        try:
+            conn.execute("PRAGMA busy_timeout = 30000")
+        except sqlite3.Error:
+            pass
         return conn
 
     def _ensure_schema(self) -> None:

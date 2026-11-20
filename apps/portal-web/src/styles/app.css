@@ -341,6 +341,13 @@ button.danger {
   font-size: 0.9rem;
 }
 
+.notice.bt-error {
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--line));
+  background: color-mix(in srgb, var(--danger) 12%, var(--bg-elev));
+  color: var(--danger);
+  font-weight: 600;
+}
+
 .toolbar {
   display: flex;
   flex-wrap: wrap;

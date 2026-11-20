@@ -9,12 +9,17 @@ from typing import Any
 from options_portal_broker.adapter import UpstoxAdapter
 from options_portal_broker.instruments import resolve_instrument_key
 from options_portal_domain.adaptive_hybrid import load_adaptive_delta
-from options_portal_domain.calendar import is_nse_trading_day
+from options_portal_domain.calendar import is_nse_trading_day, pnl_ist_day
 from options_portal_domain.candles_agg import (
     aggregate_15m_to_1h,
     bar_direction,
 )
 from options_portal_domain.config import load_config, trading_mode
+from options_portal_domain.entry_selection import (
+    entry_selection_config,
+    in_reentry_cooloff,
+    last_exit_times_from_fills,
+)
 from options_portal_domain.equity import plan_equity_intents, resolve_equity_mark
 from options_portal_domain.high_conviction import (
     evaluate_entry_gate,
@@ -881,6 +886,8 @@ async def run_symbol_tick(
     limits = {**risk_cfg, "halt": cfg.get("trading", {}).get("halt")}
 
     # High-conviction multi-factor gate — bypassed on Pine path (exact buy/sell only).
+    # Re-entry cooloff still applies on Pine so manual_close / risk exits are not
+    # immediately reversed by the next BUY/SELL tick.
     hc_enabled = bool(hc_cfg.get("enabled", True)) and (not use_pine)
     if use_pine:
         result["high_conviction"] = {
@@ -890,9 +897,50 @@ async def run_symbol_tick(
             "factors": [],
         }
         logger.info(
-            "%s pine_entry_path — HC/MTF/RVOL/proximity/news/cooloff/top10%% bypassed",
+            "%s pine_entry_path — HC/MTF/RVOL/proximity/news/top10%% bypassed "
+            "(reentry_cooloff still enforced)",
             symbol,
         )
+        sel_cfg = entry_selection_config(cfg)
+        cool = dict(sel_cfg.get("reentry_cooloff") or {})
+        if (
+            cool.get("enabled", True)
+            and int(cool.get("minutes") or 0) > 0
+            and any(
+                getattr(i, "action_kind", None) == "entry"
+                and (open_side is None or open_qty <= 0)
+                for i in intents
+            )
+        ):
+            last_exit = None
+            try:
+                if paper is not None and paper.available:
+                    fills_cool = list(paper.list_all_fills(mode="dry_run"))
+                    last_exit = last_exit_times_from_fills(fills_cool).get(
+                        symbol.upper()
+                    )
+            except Exception:  # noqa: BLE001
+                logger.exception("%s pine reentry_cooloff lookup failed", symbol)
+            if in_reentry_cooloff(
+                last_close=last_exit,
+                now=ist_now,
+                cooloff_minutes=int(cool.get("minutes") or 0),
+                same_session_only=bool(cool.get("same_session_only", True)),
+                session_day=pnl_ist_day(ist_now),
+            ):
+                mins = int(cool.get("minutes") or 0)
+                cool_note = (
+                    f"reentry_cooloff — {symbol.upper()} blocked {mins}m "
+                    f"after exit (incl. manual_close)"
+                )
+                logger.info("%s %s", symbol, cool_note)
+                intents = filter_entry_intents(intents, allow_entries=False)
+                result["reentry_cooloff"] = True
+                if not intents:
+                    result["order"] = None
+                    result["note"] = cool_note
+                    return result
+                result["note"] = cool_note
     if hc_enabled and any(
         getattr(i, "action_kind", None) == "entry"
         and (open_side is None or open_qty <= 0)

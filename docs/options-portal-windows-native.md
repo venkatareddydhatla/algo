@@ -248,9 +248,28 @@ git pull origin cursor/trades-page-round-trips-cb5e
 
 Open http://127.0.0.1:5173/trades — Open positions unchanged; Closed trades show Symbol, Side LONG/SHORT, Entry/Exit IST, Entry/Exit px, PnL, Reason, dry_run.
 
-### Pull strict candle-clear EMA confirm (stacked) — tip
+### Pull manual Sell/Close on open trades (stacked) — tip
 
-After EMA cross, require the **next completed 15m candle** fully clear of both EMAs: buy when `low > max(EMA)`; sell when `high < min(EMA)`. No fire if wick touches/sits on the lines. Prefer closed bar. Keeps **09:30** entry gate, open-book **±2%**, max open **10**, stocks-only, `dry_run`. Stacked on `cursor/purge-930-entry-gate-5e77` (PR #48).
+Trades → Open positions: **Sell/Close** (long) or **Cover** (short) closes that dry_run paper leg immediately via `POST /api/v1/trades/{symbol}/close` with `confirm=true` + `reason=manual_close`. Confirm dialog; dry_run only (no live broker). Pine path honors **reentry_cooloff** after exits (incl. manual_close) so the worker does not instantly re-open the same symbol. Stacked on `cursor/strict-candle-clear-emas-d84e` (PR #49).
+
+**Must stop then start** so API picks up the new route (start-native skips a still-running uvicorn).
+
+```powershell
+cd C:\algo
+Set-ExecutionPolicy -Scope Process Bypass
+.\deploy\windows\native\stop-native.ps1
+git fetch origin
+git checkout cursor/manual-sell-open-ae11
+git pull origin cursor/manual-sell-open-ae11
+.\deploy\windows\native\setup-native.ps1
+.\deploy\windows\native\start-native.ps1 -WithWorker
+```
+
+Confirm route exists: http://127.0.0.1:8000/docs → `POST /api/v1/trades/{symbol}/close`. Open http://127.0.0.1:5173/trades — Sell/Close (or Cover) → confirm → row leaves Open; Closed shows `manual_close`. Red error toast if API/CORS fails. Still `dry_run`, **09:30** entry gate, open-book **±2%**, max open **10**, cooloff 120m.
+
+### Pull strict candle-clear EMA confirm (stacked)
+
+After EMA cross, require the **next completed 15m candle** fully clear of both EMAs: buy when `low > max(EMA)`; sell when `high < min(EMA)`. No fire if wick touches/sits on the lines. Prefer closed bar. Keeps **09:30** entry gate, open-book **±2%**, max open **10**, stocks-only, `dry_run`. Prefer the manual-close tip above. Stacked on `cursor/purge-930-entry-gate-5e77` (PR #48).
 
 ```powershell
 cd C:\algo

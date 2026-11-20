@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api } from "../api/client";
 
 const PAGE_SIZE = 50;
@@ -10,39 +10,101 @@ export default function TradesPage() {
   const [offset, setOffset] = useState(0);
   /** Optional IST day YYYY-MM-DD for Day realized; empty = NSE session day default. */
   const [day, setDay] = useState("");
+  const [closing, setClosing] = useState<string | null>(null);
+  const [closeMsg, setCloseMsg] = useState<string | null>(null);
+  const [closeErr, setCloseErr] = useState<string | null>(null);
+
+  const reload = useCallback(async () => {
+    try {
+      const next = await api.trades({
+        offset,
+        limit: PAGE_SIZE,
+        day: day.trim() || undefined,
+      });
+      setData(next);
+      return next;
+    } catch {
+      const empty = {
+        mode: "dry_run",
+        instrument: "equity",
+        execution: "dry_run",
+        dry_run: true,
+        positions: [],
+        fills: [],
+        fills_kind: "round_trip",
+        fills_total: 0,
+        fills_offset: offset,
+        fills_limit: PAGE_SIZE,
+        closed_trades: [],
+        closed_trades_total: 0,
+        day_ist: day.trim() || undefined,
+        day_realized: 0,
+        day_unrealized: 0,
+        source: "local-empty",
+      };
+      setData(empty);
+      return empty;
+    }
+  }, [offset, day]);
 
   useEffect(() => {
-    (async () => {
-      try {
-        setData(
-          await api.trades({
-            offset,
-            limit: PAGE_SIZE,
-            day: day.trim() || undefined,
-          }),
+    void reload();
+  }, [reload]);
+
+  async function onManualClose(symbol: string, side: string) {
+    const sym = String(symbol || "").trim().toUpperCase();
+    if (!sym || closing) return;
+    const sideLabel = String(side || "").toLowerCase() === "short" ? "short" : "long";
+    const verb = sideLabel === "short" ? "cover (buy)" : "sell";
+    const ok = window.confirm(
+      `Close ${sym} ${sideLabel} paper position now (${verb})?\nReason: manual_close · dry_run only`,
+    );
+    if (!ok) {
+      setCloseErr(null);
+      setCloseMsg("Close cancelled");
+      return;
+    }
+    setClosing(sym);
+    setCloseMsg(null);
+    setCloseErr(null);
+    try {
+      const res = await api.closeTrade(sym, {
+        reason: "manual_close",
+        confirm: true,
+      });
+      if (!res?.ok) {
+        throw new Error(
+          typeof res?.detail === "string"
+            ? String(res.detail)
+            : `Close failed for ${sym}`,
         );
-      } catch {
-        setData({
-          mode: "dry_run",
-          instrument: "equity",
-          execution: "dry_run",
-          dry_run: true,
-          positions: [],
-          fills: [],
-          fills_kind: "round_trip",
-          fills_total: 0,
-          fills_offset: offset,
-          fills_limit: PAGE_SIZE,
-          closed_trades: [],
-          closed_trades_total: 0,
-          day_ist: day.trim() || undefined,
-          day_realized: 0,
-          day_unrealized: 0,
-          source: "local-empty",
-        });
       }
-    })();
-  }, [offset, day]);
+      const pnl = res.realized_pnl != null ? Number(res.realized_pnl) : null;
+      const pnlTxt =
+        pnl == null || Number.isNaN(pnl)
+          ? ""
+          : ` · realized ₹${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}`;
+      const next = await reload();
+      const stillOpen = (
+        (next?.positions as Array<Record<string, unknown>> | undefined) || []
+      ).some((p) => String(p.symbol || "").toUpperCase() === sym);
+      if (stillOpen) {
+        setCloseErr(
+          `${sym} still listed open after close — worker may have re-entered, or API/SQLite did not drop the row. Check API logs; pull tip + stop/start-native.`,
+        );
+        setCloseMsg(null);
+      } else {
+        setCloseMsg(
+          `Closed ${sym} ${String(res.order_side ?? verb)} @ ₹${Number(res.price ?? 0).toFixed(2)}${pnlTxt}`,
+        );
+      }
+    } catch (err) {
+      setCloseMsg(null);
+      setCloseErr(err instanceof Error ? err.message : String(err));
+    } finally {
+      setClosing(null);
+    }
+  }
 
   const positions = (data?.positions as Array<Record<string, unknown>>) || [];
   const trades =
@@ -72,6 +134,16 @@ export default function TradesPage() {
         </p>
       </div>
       <h2>Open positions</h2>
+      {closeErr ? (
+        <p className="notice bt-error" role="alert" style={{ marginTop: 0 }}>
+          Sell/Close failed: {closeErr}
+        </p>
+      ) : null}
+      {closeMsg ? (
+        <p className="notice" role="status" style={{ marginTop: 0 }}>
+          {closeMsg}
+        </p>
+      ) : null}
       <div className="table-wrap">
         <table>
           <thead>
@@ -82,31 +154,52 @@ export default function TradesPage() {
               <th>Qty</th>
               <th>Avg</th>
               <th>uPnL</th>
+              <th>Action</th>
             </tr>
           </thead>
           <tbody>
             {positions.length === 0 ? (
               <tr>
-                <td colSpan={6} className="muted">
+                <td colSpan={7} className="muted">
                   No open paper positions
                 </td>
               </tr>
             ) : (
-              positions.map((p, i) => (
-                <tr key={i}>
-                  <td>{String(p.symbol)}</td>
-                  <td className="mono">{String(p.side ?? "—")}</td>
-                  <td className="mono">
-                    {fmtOpenEntryIst(
-                      p.entry_ts_ist_display ?? p.opened_at_ist_display,
-                      p.entry_ts ?? p.opened_at,
-                    )}
-                  </td>
-                  <td className="mono">{String(p.qty)}</td>
-                  <td className="mono">₹ {Number(p.avg_price).toFixed(2)}</td>
-                  <td className="mono">₹ {Number(p.unrealized_pnl ?? 0).toFixed(0)}</td>
-                </tr>
-              ))
+              positions.map((p, i) => {
+                const sym = String(p.symbol ?? "");
+                const side = String(p.side ?? "");
+                const busy = closing === sym.toUpperCase();
+                const label =
+                  side.toLowerCase() === "short" ? "Cover" : "Sell/Close";
+                return (
+                  <tr key={i}>
+                    <td>{sym}</td>
+                    <td className="mono">{side || "—"}</td>
+                    <td className="mono">
+                      {fmtOpenEntryIst(
+                        p.entry_ts_ist_display ?? p.opened_at_ist_display,
+                        p.entry_ts ?? p.opened_at,
+                      )}
+                    </td>
+                    <td className="mono">{String(p.qty)}</td>
+                    <td className="mono">₹ {Number(p.avg_price).toFixed(2)}</td>
+                    <td className="mono">
+                      ₹ {Number(p.unrealized_pnl ?? 0).toFixed(0)}
+                    </td>
+                    <td>
+                      <button
+                        type="button"
+                        className="danger"
+                        disabled={Boolean(closing) || !sym}
+                        onClick={() => void onManualClose(sym, side)}
+                        title="Close this dry_run paper position now (manual_close)"
+                      >
+                        {busy ? "Closing…" : label}
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })
             )}
           </tbody>
         </table>

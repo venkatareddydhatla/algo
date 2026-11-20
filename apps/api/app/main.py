@@ -64,14 +64,21 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Vite (5173) + optional direct API / static hosts. Regex covers any port on
+# localhost / 127.0.0.1 so POST /trades/{symbol}/close is not blocked by CORS
+# when VITE_API_BASE points at :8000 instead of the Vite proxy.
 origins = [
     "http://127.0.0.1:5173",
     "http://localhost:5173",
     "http://127.0.0.1:80",
+    "http://localhost:80",
+    "http://127.0.0.1:8000",
+    "http://localhost:8000",
 ]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
