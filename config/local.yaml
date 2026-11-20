@@ -102,6 +102,8 @@ trading:
       stop_pct: 2.0
     profit_candle_protect:
       enabled: true
+    opposite_pine_exit:
+      enabled: true
     atr_trail_scale_out:
       enabled: false
       atr_period: 14

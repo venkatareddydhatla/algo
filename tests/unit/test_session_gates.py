@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -16,6 +16,7 @@ from options_portal_domain.session_gates import (
     FixedPctExitPolicy,
     MarketSentimentPolicy,
     MorningProfitBookPolicy,
+    OppositePineExitPolicy,
     ProfitCandleProtectPolicy,
     SoftEodPolicy,
     allow_open_book_risk_exits,
@@ -28,6 +29,7 @@ from options_portal_domain.session_gates import (
     is_cash_market_open,
     is_trading_session,
     morning_profit_book_decision,
+    opposite_pine_exit_decision,
     overnight_hold_allowed,
     profit_candle_protect_decision,
     soft_flatten_decision,
@@ -1328,3 +1330,136 @@ def test_profit_candle_protect_short_symmetric():
         trading_day=True,
     )
     assert hold["action"] == "none"
+
+
+def test_opposite_pine_exit_policy_from_config():
+    on = OppositePineExitPolicy.from_config(
+        {"trading": {"risk": {"opposite_pine_exit": {"enabled": True}}}}
+    )
+    assert on.enabled is True
+    off = OppositePineExitPolicy.from_config(
+        {"trading": {"risk": {"opposite_pine_exit": {"enabled": False}}}}
+    )
+    assert off.enabled is False
+    default = OppositePineExitPolicy.from_config({"trading": {"risk": {}}})
+    assert default.enabled is True
+
+
+def test_opposite_pine_long_closes_on_fresh_sell():
+    """Open LONG + fresh Pine SELL → opposite_pine_sell (close-only)."""
+    bar = datetime(2026, 11, 20, 5, 0, 0, tzinfo=timezone.utc)  # 10:30 IST
+    now = bar + timedelta(minutes=7)
+    hit = opposite_pine_exit_decision(
+        open_side="long",
+        open_qty=1,
+        pine_action=SignalAction.SELL,
+        bar_ts=bar,
+        policy=OppositePineExitPolicy(),
+        now=now,
+    )
+    assert hit["action"] == "opposite_pine_sell"
+    assert hit["exit_qty"] == 1
+    assert hit["fresh_action"] == "SELL"
+    assert "opposite_pine_sell" in hit["reason"]
+
+    # Planner close-only: EXIT → sell to close long (no flip_open).
+    intents = plan_equity_intents(
+        "RELIANCE",
+        SignalAction.EXIT,
+        open_side="long",
+        open_qty=1,
+        qty=1,
+        price=2500.0,
+        reason=str(hit["reason"]),
+    )
+    assert len(intents) == 1
+    assert intents[0].action_kind == "exit"
+    assert intents[0].side == "SELL"
+
+
+def test_opposite_pine_short_covers_on_fresh_buy():
+    """Open SHORT + fresh Pine BUY → opposite_pine_buy (cover)."""
+    bar = datetime(2026, 11, 20, 5, 15, 0, tzinfo=timezone.utc)
+    now = bar + timedelta(minutes=5)
+    hit = opposite_pine_exit_decision(
+        open_side="short",
+        open_qty=1,
+        pine_action=SignalAction.BUY,
+        bar_ts=bar,
+        policy=OppositePineExitPolicy(),
+        now=now,
+    )
+    assert hit["action"] == "opposite_pine_buy"
+    assert hit["exit_qty"] == 1
+    assert hit["fresh_action"] == "BUY"
+
+    intents = plan_equity_intents(
+        "TCS",
+        SignalAction.EXIT,
+        open_side="short",
+        open_qty=1,
+        qty=1,
+        price=3900.0,
+        reason=str(hit["reason"]),
+    )
+    assert len(intents) == 1
+    assert intents[0].action_kind == "exit"
+    assert intents[0].side == "BUY"
+
+
+def test_opposite_pine_no_close_on_hold():
+    bar = datetime(2026, 11, 20, 5, 0, 0, tzinfo=timezone.utc)
+    hold = opposite_pine_exit_decision(
+        open_side="long",
+        open_qty=1,
+        pine_action=SignalAction.HOLD,
+        bar_ts=bar,
+        policy=OppositePineExitPolicy(),
+        now=bar,
+    )
+    assert hold["action"] == "none"
+    assert hold["fresh_action"] == "HOLD"
+    assert hold["exit_qty"] == 0
+
+
+def test_opposite_pine_no_close_on_stale_expired_action():
+    """Stale SELL hours later expires → HOLD; must not re-close."""
+    bar = datetime(2026, 11, 20, 4, 0, 0, tzinfo=timezone.utc)  # morning signal
+    hours_later = bar + timedelta(hours=4)
+    stale = opposite_pine_exit_decision(
+        open_side="long",
+        open_qty=1,
+        pine_action=SignalAction.SELL,
+        bar_ts=bar,
+        policy=OppositePineExitPolicy(),
+        now=hours_later,
+    )
+    assert stale["action"] == "none"
+    assert stale["fresh_action"] == "HOLD"
+    assert "expired" in stale["reason"] or "HOLD" in stale["reason"]
+
+    # Missing bar_ts also counts as stale / not current.
+    missing = opposite_pine_exit_decision(
+        open_side="short",
+        open_qty=1,
+        pine_action="BUY",
+        bar_ts=None,
+        policy=OppositePineExitPolicy(),
+        now=hours_later,
+    )
+    assert missing["action"] == "none"
+    assert missing["fresh_action"] == "HOLD"
+
+
+def test_opposite_pine_same_side_does_not_close():
+    bar = datetime(2026, 11, 20, 5, 0, 0, tzinfo=timezone.utc)
+    same = opposite_pine_exit_decision(
+        open_side="long",
+        open_qty=1,
+        pine_action=SignalAction.BUY,
+        bar_ts=bar,
+        policy=OppositePineExitPolicy(),
+        now=bar,
+    )
+    assert same["action"] == "none"
+    assert same["fresh_action"] == "BUY"
