@@ -79,7 +79,7 @@ class EntryCycleAdmission:
     morning_min_hybrid_abs: float = 0.75
     morning_max_new_entries: int = 3
     cooloff_enabled: bool = True
-    cooloff_minutes: int = 180
+    cooloff_minutes: int = 120
     cooloff_same_session: bool = True
     _pending: dict[str, PendingEntry] = field(default_factory=dict)
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -113,7 +113,7 @@ class EntryCycleAdmission:
             morning_min_hybrid_abs=float(morn.get("min_hybrid_abs", 0.75)),
             morning_max_new_entries=int(morn.get("max_new_entries", 3)),
             cooloff_enabled=bool(cool.get("enabled", True)),
-            cooloff_minutes=int(cool.get("minutes", 180)),
+            cooloff_minutes=int(cool.get("minutes", 120)),
             cooloff_same_session=bool(cool.get("same_session_only", True)),
         )
 

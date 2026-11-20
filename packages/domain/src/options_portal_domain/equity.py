@@ -14,12 +14,18 @@ when market data is available:
 Never silently reuse entry price when LTP succeeded.
 Never apply another symbol's LTP / candle close / entry avg to this symbol's fill —
 marks are always resolved per instrument key / tradingsymbol.
+
+Price floor
+-----------
+Symbols with LTP (or last close) below ``trading.risk.min_equity_price`` (default
+₹20) are excluded from watchlist scoring and new entries. Open-book exits still
+run when a position is already open.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal, Mapping
 
 from options_portal_domain.types import SignalAction
 
@@ -27,6 +33,9 @@ EquitySide = Literal["BUY", "SELL"]
 PositionSide = Literal["long", "short"]
 EquityActionKind = Literal["entry", "exit", "flip_close", "flip_open"]
 EquityMarkSource = Literal["ltp", "candle_close", "entry_avg", "fallback"]
+
+# Skip scoring / new entries when LTP or last close is below this (INR).
+DEFAULT_MIN_EQUITY_PRICE = 20.0
 
 
 @dataclass(frozen=True)
@@ -51,6 +60,35 @@ class EquityMark:
     price: float
     source: EquityMarkSource
     detail: str = ""
+
+
+def min_equity_price_from_config(config: Mapping[str, Any] | None) -> float:
+    """``trading.risk.min_equity_price`` (default ₹20). ``0`` disables the floor."""
+    root = dict(config or {})
+    trading = dict(root.get("trading") or {})
+    risk = dict(trading.get("risk") or {})
+    equity = dict(trading.get("equity") or {})
+    raw = risk.get("min_equity_price", equity.get("min_equity_price", DEFAULT_MIN_EQUITY_PRICE))
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        return float(DEFAULT_MIN_EQUITY_PRICE)
+
+
+def below_min_equity_price(
+    price: float | None,
+    *,
+    min_price: float = DEFAULT_MIN_EQUITY_PRICE,
+) -> bool:
+    """True when a positive price is strictly below the configured floor."""
+    floor = float(min_price)
+    if floor <= 0 or price is None:
+        return False
+    try:
+        px = float(price)
+    except (TypeError, ValueError):
+        return False
+    return px > 0 and px < floor
 
 
 def resolve_equity_mark(

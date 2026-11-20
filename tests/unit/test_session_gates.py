@@ -16,6 +16,7 @@ from options_portal_domain.session_gates import (
     FixedPctExitPolicy,
     MarketSentimentPolicy,
     MorningProfitBookPolicy,
+    ProfitCandleProtectPolicy,
     SoftEodPolicy,
     allow_open_book_risk_exits,
     at_or_after_ist,
@@ -28,9 +29,10 @@ from options_portal_domain.session_gates import (
     is_trading_session,
     morning_profit_book_decision,
     overnight_hold_allowed,
+    profit_candle_protect_decision,
     soft_flatten_decision,
 )
-from options_portal_domain.types import SignalAction
+from options_portal_domain.types import Candle, SignalAction
 
 
 def test_at_or_after_ist_boundary():
@@ -1188,3 +1190,141 @@ def test_fixed_pct_exit_stop_priority_over_profit_impossible_same_mark():
     )
     assert edge["action"] == "pct_profit_2"
     assert edge["exit_qty"] == 2
+
+
+def _two_bars(
+    *,
+    prior_h: float,
+    prior_l: float,
+    cur_o: float,
+    cur_c: float,
+    prior_c: float | None = None,
+    cur_h: float | None = None,
+    cur_l: float | None = None,
+) -> list[Candle]:
+    """Minimal prior + current 15m candles for profit-candle tests."""
+    pc = prior_c if prior_c is not None else (prior_h + prior_l) / 2.0
+    ch = cur_h if cur_h is not None else max(cur_o, cur_c)
+    cl = cur_l if cur_l is not None else min(cur_o, cur_c)
+    ts0 = datetime(2026, 11, 20, 10, 0, 0)
+    ts1 = datetime(2026, 11, 20, 10, 15, 0)
+    return [
+        Candle(
+            symbol="TEST",
+            timeframe="15m",
+            ts=ts0,
+            open=pc,
+            high=prior_h,
+            low=prior_l,
+            close=pc,
+            volume=1000,
+        ),
+        Candle(
+            symbol="TEST",
+            timeframe="15m",
+            ts=ts1,
+            open=cur_o,
+            high=ch,
+            low=cl,
+            close=cur_c,
+            volume=1000,
+        ),
+    ]
+
+
+def test_profit_candle_protect_policy_from_config():
+    on = ProfitCandleProtectPolicy.from_config(
+        {"trading": {"risk": {"profit_candle_protect": {"enabled": True}}}}
+    )
+    assert on.enabled is True
+    off = ProfitCandleProtectPolicy.from_config(
+        {"trading": {"risk": {"profit_candle_protect": {"enabled": False}}}}
+    )
+    assert off.enabled is False
+    default = ProfitCandleProtectPolicy.from_config({"trading": {"risk": {}}})
+    assert default.enabled is True
+
+
+def test_profit_candle_protect_long_fires_when_open_below_mid_close_below_prior_low():
+    """Long in profit: open < mid(prior) and close < prior.low → exit."""
+    # prior high=110 low=100 → mid=105; current open=104 close=99
+    bars = _two_bars(prior_h=110.0, prior_l=100.0, cur_o=104.0, cur_c=99.0)
+    hit = profit_candle_protect_decision(
+        open_side="long",
+        open_qty=1,
+        entry_avg=100.0,
+        mark=101.0,  # +1% profit
+        candles=bars,
+        policy=ProfitCandleProtectPolicy(),
+        now=datetime(2026, 11, 20, 11, 0, 0),
+        trading_day=True,
+    )
+    assert hit["action"] == "profit_candle_protect"
+    assert hit["exit_qty"] == 1
+    assert hit["prior_mid"] == pytest.approx(105.0)
+    assert "profit_candle_protect" in hit["reason"]
+
+
+def test_profit_candle_protect_long_holds_when_not_in_profit_or_structure_ok():
+    bars = _two_bars(prior_h=110.0, prior_l=100.0, cur_o=104.0, cur_c=99.0)
+    # Not in profit
+    flat = profit_candle_protect_decision(
+        open_side="long",
+        open_qty=1,
+        entry_avg=100.0,
+        mark=100.0,
+        candles=bars,
+        policy=ProfitCandleProtectPolicy(),
+        now=datetime(2026, 11, 20, 11, 0, 0),
+        trading_day=True,
+    )
+    assert flat["action"] == "none"
+    assert "not in profit" in flat["reason"]
+
+    # In profit but close still above prior low
+    ok_bars = _two_bars(prior_h=110.0, prior_l=100.0, cur_o=104.0, cur_c=100.5)
+    hold = profit_candle_protect_decision(
+        open_side="long",
+        open_qty=1,
+        entry_avg=100.0,
+        mark=101.0,
+        candles=ok_bars,
+        policy=ProfitCandleProtectPolicy(),
+        now=datetime(2026, 11, 20, 11, 0, 0),
+        trading_day=True,
+    )
+    assert hold["action"] == "none"
+    assert "structure intact" in hold["reason"]
+
+
+def test_profit_candle_protect_short_symmetric():
+    """Short in profit: open > mid(prior) and close > prior.high → exit."""
+    # prior high=100 low=90 → mid=95; current open=96 close=101
+    bars = _two_bars(prior_h=100.0, prior_l=90.0, cur_o=96.0, cur_c=101.0)
+    hit = profit_candle_protect_decision(
+        open_side="short",
+        open_qty=1,
+        entry_avg=100.0,
+        mark=99.0,  # +1% short profit
+        candles=bars,
+        policy=ProfitCandleProtectPolicy(),
+        now=datetime(2026, 11, 20, 11, 0, 0),
+        trading_day=True,
+    )
+    assert hit["action"] == "profit_candle_protect"
+    assert hit["exit_qty"] == 1
+    assert hit["prior_mid"] == pytest.approx(95.0)
+
+    # Structure not broken (close below prior high)
+    hold_bars = _two_bars(prior_h=100.0, prior_l=90.0, cur_o=96.0, cur_c=99.5)
+    hold = profit_candle_protect_decision(
+        open_side="short",
+        open_qty=1,
+        entry_avg=100.0,
+        mark=99.0,
+        candles=hold_bars,
+        policy=ProfitCandleProtectPolicy(),
+        now=datetime(2026, 11, 20, 11, 0, 0),
+        trading_day=True,
+    )
+    assert hold["action"] == "none"

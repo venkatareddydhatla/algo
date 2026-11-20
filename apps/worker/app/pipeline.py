@@ -20,7 +20,12 @@ from options_portal_domain.entry_selection import (
     in_reentry_cooloff,
     last_exit_times_from_fills,
 )
-from options_portal_domain.equity import plan_equity_intents, resolve_equity_mark
+from options_portal_domain.equity import (
+    below_min_equity_price,
+    min_equity_price_from_config,
+    plan_equity_intents,
+    resolve_equity_mark,
+)
 from options_portal_domain.high_conviction import (
     evaluate_entry_gate,
     high_conviction_config,
@@ -38,6 +43,7 @@ from options_portal_domain.session_gates import (
     FixedPctExitPolicy,
     MarketSentimentPolicy,
     MorningProfitBookPolicy,
+    ProfitCandleProtectPolicy,
     SoftEodPolicy,
     allow_open_book_risk_exits,
     atr_trail_scale_out_decision,
@@ -47,6 +53,7 @@ from options_portal_domain.session_gates import (
     fixed_pct_exit_decision,
     is_trading_session,
     morning_profit_book_decision,
+    profit_candle_protect_decision,
     soft_flatten_decision,
 )
 from options_portal_domain.tz import now_ist
@@ -201,6 +208,47 @@ async def run_symbol_tick(
     start = end - timedelta(days=min(max(history_days, 2), 10))
     candles = await broker.get_candles(symbol, "15m", start, end)
     market_data_source = broker.last_candle_source
+    min_equity_price = min_equity_price_from_config(cfg)
+    candle_close_early = float(candles[-1].close) if candles else None
+
+    # ₹20 floor: skip watchlist scoring + new entries when flat and cheap.
+    # Open positions still continue for exit management below.
+    paper_peek = None
+    peek_open = False
+    try:
+        from options_portal_persistence.paper_trades import PaperTradeLedger
+
+        paper_peek = PaperTradeLedger()
+        if paper_peek.available:
+            safe_peek = "dry_run" if mode == "live" else mode
+            pos_peek = paper_peek.get_position(symbol, mode=safe_peek)  # type: ignore[arg-type]
+            if pos_peek and int(pos_peek.get("qty") or 0) > 0:
+                peek_open = True
+    except Exception:  # noqa: BLE001
+        logger.exception("%s price_floor paper peek failed — continuing", symbol)
+        peek_open = False
+
+    if (
+        not peek_open
+        and below_min_equity_price(candle_close_early, min_price=min_equity_price)
+    ):
+        note = (
+            f"price_floor — close/LTP {float(candle_close_early):.2f} < "
+            f"₹{min_equity_price:g} — skip watchlist score and new entry"
+        )
+        logger.info("%s %s", symbol, note)
+        return {
+            "symbol": symbol.upper(),
+            "hybrid_action": SignalAction.HOLD.value,
+            "hybrid_score": 0.0,
+            "order": None,
+            "note": note,
+            "price_floor": True,
+            "min_equity_price": min_equity_price,
+            "candle_close": candle_close_early,
+            "market_data_source": market_data_source,
+        }
+
     features = registry.compute_all(candles)
     tech = signal_gen.evaluate(symbol, candles, features)
 
@@ -369,6 +417,7 @@ async def run_symbol_tick(
     morning_policy = MorningProfitBookPolicy.from_config(cfg)
     atr_trail_policy = AtrTrailScaleOutPolicy.from_config(cfg)
     fixed_pct_policy = FixedPctExitPolicy.from_config(cfg)
+    profit_candle_policy = ProfitCandleProtectPolicy.from_config(cfg)
     mkt_policy = MarketSentimentPolicy.from_config(cfg)
     _remember_index_hybrid(symbol, decision.hybrid_score, mkt_policy)
     # Resolve instrument key early for index segment check (NSE_INDEX/BSE_INDEX).
@@ -486,6 +535,13 @@ async def run_symbol_tick(
         and open_side is not None
         and risk_exit_session
     )
+    profit_candle_mgmt_needed = (
+        profit_candle_policy.enabled
+        and not index_underlying
+        and open_qty > 0
+        and open_side is not None
+        and risk_exit_session
+    )
     atr_mgmt_needed = (
         atr_trail_policy.enabled
         and not index_underlying
@@ -502,11 +558,12 @@ async def run_symbol_tick(
         and risk_exit_session
     )
 
-    # Overnight hold: still fetch mark when fixed-pct/ATR/morning may exit
+    # Overnight hold: still fetch mark when fixed-pct/candle/ATR/morning may exit
     # (priority > soft_flatten). Only short-circuit when no exit mgmt can fire.
     if (
         flatten["action"] == "overnight_hold"
         and not fixed_pct_mgmt_needed
+        and not profit_candle_mgmt_needed
         and not atr_mgmt_needed
         and not morning_mgmt_needed
     ):
@@ -531,6 +588,7 @@ async def run_symbol_tick(
         or decision.action != SignalAction.HOLD
         or (open_qty > 0 and open_side is not None)
         or fixed_pct_mgmt_needed
+        or profit_candle_mgmt_needed
         or atr_mgmt_needed
         or morning_mgmt_needed
     )
@@ -672,6 +730,20 @@ async def run_symbol_tick(
     )
     result["fixed_pct_exit"] = fixed_pct
 
+    profit_candle = profit_candle_protect_decision(
+        open_side=open_side,  # type: ignore[arg-type]
+        open_qty=open_qty,
+        entry_avg=entry_avg,
+        mark=fill_price if may_trade else None,
+        candles=candles,
+        policy=profit_candle_policy,
+        now=ist_now,
+        is_index=index_underlying,
+        session_policy=soft_policy,
+        trading_day=trading_day,
+    )
+    result["profit_candle_protect"] = profit_candle
+
     trail_state = get_atr_trail_state(symbol) if atr_mgmt_needed else None
     atr_mgmt = atr_trail_scale_out_decision(
         open_side=open_side,  # type: ignore[arg-type]
@@ -702,8 +774,8 @@ async def run_symbol_tick(
     )
     result["morning_tp"] = morning_tp
 
-    # Same-tick priority: fixed ±2% > atr stop/trail > scale/profit >
-    # morning > soft_flatten. ATR/morning stay wired but config-disabled.
+    # Same-tick priority: fixed ±2% > profit_candle_protect > atr stop/trail >
+    # scale/profit > morning > soft_flatten. ATR/morning stay wired but off.
     atr_exit_actions = {
         "atr_stop",
         "atr_trail",
@@ -711,6 +783,7 @@ async def run_symbol_tick(
         "profit_scale_out",
     }
     fixed_pct_action = str(fixed_pct.get("action") or "none")
+    profit_candle_action = str(profit_candle.get("action") or "none")
     if fixed_pct_action not in {"none", ""} and fixed_pct.get("exit_qty"):
         logger.info("%s %s", symbol, fixed_pct["reason"])
         intents = plan_equity_intents(
@@ -722,6 +795,19 @@ async def run_symbol_tick(
             price=fill_price,
             reason=str(fixed_pct["reason"]),
             exit_qty=int(fixed_pct.get("exit_qty") or open_qty),
+        )
+        clear_atr_trail_state(symbol)
+    elif profit_candle_action not in {"none", ""} and profit_candle.get("exit_qty"):
+        logger.info("%s %s", symbol, profit_candle["reason"])
+        intents = plan_equity_intents(
+            symbol,
+            SignalAction.EXIT,
+            open_side=open_side,  # type: ignore[arg-type]
+            open_qty=open_qty,
+            qty=share_qty,
+            price=fill_price,
+            reason=str(profit_candle["reason"]),
+            exit_qty=int(profit_candle.get("exit_qty") or open_qty),
         )
         clear_atr_trail_state(symbol)
     elif atr_mgmt.get("action") in atr_exit_actions:
@@ -799,6 +885,28 @@ async def run_symbol_tick(
         # Fresh entry / flip_open should start without stale trail state.
         if any(getattr(i, "action_kind", None) in {"entry", "flip_open"} for i in intents):
             clear_atr_trail_state(symbol)
+
+    # ₹20 floor on new entries even if scoring already ran (LTP may be cheaper
+    # than last candle close). Exits / covers kept.
+    floor_px = ltp_px if ltp_px is not None else (
+        float(fill_price) if may_trade and fill_price else candle_close_early
+    )
+    if below_min_equity_price(floor_px, min_price=min_equity_price) and any(
+        getattr(i, "action_kind", None) in {"entry", "flip_open"} for i in intents
+    ):
+        floor_note = (
+            f"price_floor — {float(floor_px):.2f} < ₹{min_equity_price:g} "
+            "— new entry refused"
+        )
+        logger.info("%s %s", symbol, floor_note)
+        before_floor = len(intents)
+        intents = filter_entry_intents(intents, allow_entries=False)
+        result["price_floor"] = True
+        if before_floor and not intents:
+            result["order"] = None
+            result["note"] = floor_note
+            return result
+        result["note"] = f"{floor_note} — entry legs dropped; exits kept"
 
     # Cash entry window only: [entries_open_ist, no_new_entries_after) on trading days.
     # Nights / pre-09:30 / after cutoff → drop entry/flip_open; exits kept.
