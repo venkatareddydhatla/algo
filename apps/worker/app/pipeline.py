@@ -38,6 +38,8 @@ from options_portal_domain.pine_signals import (
     evaluate_pine_signal,
     pine_params_from_config,
     pine_signals_enabled,
+    prefer_closed_candles,
+    watchlist_pine_action,
 )
 from options_portal_domain.session_gates import (
     AtrTrailScaleOutPolicy,
@@ -292,7 +294,12 @@ async def run_symbol_tick(
         pine_result = evaluate_pine_signal(
             symbol, candles, params=pine_params, cfg=cfg
         )
-        bar_ts = candles[-1].ts if candles else datetime.now(tz=timezone.utc)
+        closed_for_bar = prefer_closed_candles(candles)
+        bar_ts = (
+            closed_for_bar[-1].ts
+            if closed_for_bar
+            else (candles[-1].ts if candles else datetime.now(tz=timezone.utc))
+        )
         # Pine-only decision path: Action = BUY/SELL/HOLD; score ±1/0 for soft EOD.
         decision = HybridDecision(
             symbol=symbol.upper(),
@@ -321,31 +328,75 @@ async def run_symbol_tick(
             (pine_result.state.candle_clear_above if pine_result.state else None),
             (pine_result.state.candle_clear_below if pine_result.state else None),
         )
-        # Persist last Pine action for watchlist API (Action = BUY/SELL/HOLD only).
+        # Persist watchlist Action only while signal bar is current / same 15m;
+        # otherwise HOLD so names like APOLLOHOSP cannot linger as SELL for hours.
         try:
             from options_portal_persistence.kv_store import KvStore
 
             kv = KvStore()
             if kv.available:
+                now_utc = datetime.now(tz=timezone.utc)
+                bar_ts_iso = (
+                    bar_ts.astimezone(timezone.utc).isoformat()
+                    if getattr(bar_ts, "tzinfo", None)
+                    else bar_ts.replace(tzinfo=timezone.utc).isoformat()
+                )
+                wl_action = watchlist_pine_action(
+                    pine_result.action,
+                    bar_ts,
+                    now=now_utc,
+                    timeframe_minutes=15,
+                )
+                live = wl_action in {"BUY", "SELL"}
+                if live:
+                    persist_action = pine_result.action.value
+                    persist_buy = bool(pine_result.buy_signal)
+                    persist_sell = bool(pine_result.sell_signal)
+                    persist_score = float(pine_result.score)
+                    persist_conf = float(pine_result.confidence)
+                    persist_summary = pine_result.reason_summary
+                    persist_detail = pine_result.reason_detail
+                    persist_reasons = list(pine_result.reasons)
+                else:
+                    persist_action = SignalAction.HOLD.value
+                    persist_buy = False
+                    persist_sell = False
+                    persist_score = 0.0
+                    persist_conf = 0.0
+                    if pine_result.action != SignalAction.HOLD:
+                        persist_summary = "stale Pine signal → HOLD"
+                        persist_detail = (
+                            "Neutral: signal bar no longer current "
+                            f"(bar_ts={bar_ts_iso}); watchlist Action expired to HOLD"
+                        )
+                        persist_reasons = [
+                            f"signal bar {bar_ts_iso} expired → HOLD",
+                            *list(pine_result.reasons)[:6],
+                        ]
+                    else:
+                        persist_summary = pine_result.reason_summary
+                        persist_detail = pine_result.reason_detail
+                        persist_reasons = list(pine_result.reasons)
                 kv.set(
                     f"pine.signal.{symbol.upper()}",
                     {
                         "symbol": symbol.upper(),
-                        "action": pine_result.action.value,
-                        "buy_signal": pine_result.buy_signal,
-                        "sell_signal": pine_result.sell_signal,
-                        "score": pine_result.score,
-                        "confidence": pine_result.confidence,
-                        "reasons": list(pine_result.reasons),
+                        "action": persist_action,
+                        "buy_signal": persist_buy,
+                        "sell_signal": persist_sell,
+                        "score": persist_score,
+                        "confidence": persist_conf,
+                        "reasons": persist_reasons,
                         "reason_kind": "pine",
-                        "reason_summary": pine_result.reason_summary,
-                        "reason_detail": pine_result.reason_detail,
+                        "reason_summary": persist_summary,
+                        "reason_detail": persist_detail,
                         "features": {
                             k: v
                             for k, v in pine_result.features.items()
                             if isinstance(v, (int, float, bool, str, type(None)))
                         },
-                        "updated_at": datetime.now(tz=timezone.utc).isoformat(),
+                        "bar_ts": bar_ts_iso,
+                        "updated_at": now_utc.isoformat(),
                         "timeframe": "15m",
                     },
                 )

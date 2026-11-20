@@ -10,6 +10,7 @@ import hashlib
 from datetime import datetime, timezone
 from typing import Any
 
+from options_portal_domain.pine_signals import watchlist_pine_action
 from options_portal_domain.universe import INDEX_SYMBOLS
 from options_portal_hybrid.explain import attach_reason_fields  # noqa: F401 — tests/legacy
 
@@ -319,20 +320,64 @@ def synthetic_signal_for_symbol(
     }
 
 
-def pine_row_from_kv(payload: dict[str, Any], *, timeframe: str = "15m") -> dict[str, Any]:
-    """Normalize a worker-persisted ``pine.signal.*`` KV payload into an API row."""
+def pine_row_from_kv(
+    payload: dict[str, Any],
+    *,
+    timeframe: str = "15m",
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Normalize a worker-persisted ``pine.signal.*`` KV payload into an API row.
+
+    BUY/SELL only while ``bar_ts`` is current / same 15m; otherwise HOLD.
+    """
     sym = str(payload.get("symbol") or "").upper()
-    action = _normalize_pine_action(str(payload.get("action") or "HOLD"))
-    score = float(payload.get("score") or (1.0 if action == "BUY" else -1.0 if action == "SELL" else 0.0))
-    reasons = list(payload.get("reasons") or [])
-    summary = str(payload.get("reason_summary") or (
-        "EMA cross + candle clear above both" if action == "BUY"
-        else "EMA crossunder + candle clear below both" if action == "SELL"
-        else "no Pine signal"
-    ))
-    detail = str(payload.get("reason_detail") or (
-        "Technical:\n" + "\n".join(f"- {r}" for r in reasons) if reasons else "Neutral: no Pine buy/sell"
-    ))
+    clock = now or datetime.now(tz=timezone.utc)
+    raw_action = _normalize_pine_action(str(payload.get("action") or "HOLD"))
+    bar_ts = payload.get("bar_ts")
+    action = watchlist_pine_action(
+        raw_action,
+        bar_ts,
+        now=clock,
+        timeframe_minutes=15,
+    )
+    expired = raw_action in {"BUY", "SELL"} and action == "HOLD"
+    if expired:
+        score = 0.0
+        confidence = 0.0
+        reasons = list(payload.get("reasons") or [])
+        reasons = [f"stale Pine {raw_action} expired → HOLD", *reasons[:6]]
+        summary = "stale Pine signal → HOLD"
+        detail = (
+            "Neutral: signal bar no longer current; watchlist Action expired to HOLD"
+            + (f" (bar_ts={bar_ts})" if bar_ts else " (missing bar_ts)")
+        )
+    else:
+        score = float(
+            payload.get("score")
+            or (1.0 if action == "BUY" else -1.0 if action == "SELL" else 0.0)
+        )
+        confidence = float(
+            payload.get("confidence") or (0.85 if action != "HOLD" else 0.3)
+        )
+        reasons = list(payload.get("reasons") or [])
+        summary = str(
+            payload.get("reason_summary")
+            or (
+                "EMA cross + candle clear above both"
+                if action == "BUY"
+                else "EMA crossunder + candle clear below both"
+                if action == "SELL"
+                else "no Pine signal"
+            )
+        )
+        detail = str(
+            payload.get("reason_detail")
+            or (
+                "Technical:\n" + "\n".join(f"- {r}" for r in reasons)
+                if reasons
+                else "Neutral: no Pine buy/sell"
+            )
+        )
     return {
         "id": f"pine-{sym.lower()}",
         "symbol": sym,
@@ -341,7 +386,7 @@ def pine_row_from_kv(payload: dict[str, Any], *, timeframe: str = "15m") -> dict
         "hybrid_score": score,
         "tech_score": score,
         "news_score": 0.0,
-        "confidence": float(payload.get("confidence") or (0.85 if action != "HOLD" else 0.3)),
+        "confidence": confidence,
         "expiry_hint": "weekly" if sym in INDEX_SYMBOLS else "monthly",
         "updated_at": str(payload.get("updated_at") or NOW),
         "reasons": reasons,
@@ -350,6 +395,8 @@ def pine_row_from_kv(payload: dict[str, Any], *, timeframe: str = "15m") -> dict
         "live_news": False,
         "signal_engine": "pine_nifty50_v2",
         "pine_persisted": True,
+        "pine_action_expired": expired,
+        "bar_ts": bar_ts,
         "reason_kind": "pine",
         "reason_summary": summary,
         "reason_detail": detail,
@@ -357,8 +404,58 @@ def pine_row_from_kv(payload: dict[str, Any], *, timeframe: str = "15m") -> dict
     }
 
 
-def load_persisted_pine_signals(symbols: list[str]) -> dict[str, dict[str, Any]]:
-    """Read worker-persisted Pine actions from KvStore when available."""
+def _expire_persisted_pine_payload(
+    kv: Any,
+    key: str,
+    payload: dict[str, Any],
+    *,
+    now: datetime,
+) -> dict[str, Any]:
+    """Rewrite stale BUY/SELL KV rows to HOLD (APOLLOHOSP-style linger fix)."""
+    updated = dict(payload)
+    updated.update(
+        {
+            "action": "HOLD",
+            "buy_signal": False,
+            "sell_signal": False,
+            "score": 0.0,
+            "confidence": 0.0,
+            "reason_summary": "stale Pine signal → HOLD",
+            "reason_detail": (
+                "Neutral: signal bar no longer current; "
+                "watchlist Action expired to HOLD"
+                + (
+                    f" (bar_ts={payload.get('bar_ts')})"
+                    if payload.get("bar_ts")
+                    else " (missing bar_ts)"
+                )
+            ),
+            "updated_at": now.isoformat(),
+            "expired_from": _normalize_pine_action(str(payload.get("action") or "")),
+        }
+    )
+    reasons = list(payload.get("reasons") or [])
+    updated["reasons"] = [
+        f"stale Pine {updated['expired_from']} expired → HOLD",
+        *reasons[:6],
+    ]
+    try:
+        kv.set(f"pine.signal.{key}", updated)
+    except Exception:  # noqa: BLE001
+        pass
+    return updated
+
+
+def load_persisted_pine_signals(
+    symbols: list[str],
+    *,
+    now: datetime | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Read worker-persisted Pine actions from KvStore when available.
+
+    Stale BUY/SELL (signal bar not current / same 15m, or missing ``bar_ts``)
+    are rewritten to HOLD in KV and returned as HOLD.
+    """
     out: dict[str, dict[str, Any]] = {}
     try:
         from options_portal_persistence.kv_store import KvStore
@@ -366,11 +463,29 @@ def load_persisted_pine_signals(symbols: list[str]) -> dict[str, dict[str, Any]]
         kv = KvStore()
         if not kv.available:
             return out
+        clock = now or datetime.now(tz=timezone.utc)
         for sym in symbols:
             key = str(sym).upper()
             payload = kv.get(f"pine.signal.{key}")
-            if isinstance(payload, dict) and payload.get("action"):
-                out[key] = pine_row_from_kv(payload)
+            if not (isinstance(payload, dict) and payload.get("action")):
+                continue
+            raw = _normalize_pine_action(str(payload.get("action") or "HOLD"))
+            live = watchlist_pine_action(
+                raw,
+                payload.get("bar_ts"),
+                now=clock,
+                timeframe_minutes=15,
+            )
+            did_expire = False
+            if raw in {"BUY", "SELL"} and live == "HOLD":
+                payload = _expire_persisted_pine_payload(
+                    kv, key, payload, now=clock
+                )
+                did_expire = True
+            row = pine_row_from_kv(payload, now=clock)
+            if did_expire:
+                row["pine_action_expired"] = True
+            out[key] = row
     except Exception:  # noqa: BLE001
         return out
     return out

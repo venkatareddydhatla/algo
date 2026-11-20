@@ -171,7 +171,57 @@ def test_clear_persisted_pine_signals_deletes_kv(tmp_path: Path, monkeypatch: py
             "reasons": ["stale"],
         },
     )
-    assert "IDEA" in load_persisted_pine_signals(["IDEA"])
+    # Missing bar_ts → expired to HOLD but row still present until clear.
+    loaded = load_persisted_pine_signals(["IDEA"])
+    assert "IDEA" in loaded
+    assert loaded["IDEA"]["action"] == "HOLD"
     cleared = clear_persisted_pine_signals(["IDEA"])
     assert cleared == ["IDEA"]
     assert load_persisted_pine_signals(["IDEA"]) == {}
+
+
+def test_load_persisted_pine_expires_stale_sell_to_hold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """APOLLOHOSP: morning SELL must not linger hours later on watchlist."""
+    from datetime import datetime, timedelta, timezone
+
+    from options_portal_persistence.kv_store import KvStore
+
+    from app.mock_data import load_persisted_pine_signals
+
+    db = tmp_path / "kv.sqlite"
+    monkeypatch.setenv("PERSISTENCE_PROFILE", "local")
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db}")
+    kv = KvStore(url=f"sqlite:///{db}")
+    assert kv.available
+    bar_ts = datetime(2026, 11, 20, 4, 0, tzinfo=timezone.utc)  # 09:30 IST
+    kv.set(
+        "pine.signal.APOLLOHOSP",
+        {
+            "symbol": "APOLLOHOSP",
+            "action": "SELL",
+            "buy_signal": False,
+            "sell_signal": True,
+            "score": -1.0,
+            "confidence": 0.85,
+            "reasons": ["sell_signal=True"],
+            "bar_ts": bar_ts.isoformat(),
+            "timeframe": "15m",
+        },
+    )
+    # Still current during next 15m.
+    live_now = bar_ts + timedelta(minutes=20)
+    live = load_persisted_pine_signals(["APOLLOHOSP"], now=live_now)
+    assert live["APOLLOHOSP"]["action"] == "SELL"
+    assert live["APOLLOHOSP"].get("pine_action_expired") is False
+
+    # Hours later → HOLD and KV rewritten.
+    stale_now = bar_ts + timedelta(hours=5)
+    stale = load_persisted_pine_signals(["APOLLOHOSP"], now=stale_now)
+    assert stale["APOLLOHOSP"]["action"] == "HOLD"
+    assert stale["APOLLOHOSP"].get("pine_action_expired") is True
+    rewritten = kv.get("pine.signal.APOLLOHOSP")
+    assert isinstance(rewritten, dict)
+    assert rewritten["action"] == "HOLD"
+    assert rewritten.get("expired_from") == "SELL"

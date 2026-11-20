@@ -137,6 +137,114 @@ def pine_signals_enabled(cfg: Mapping[str, Any] | None) -> bool:
     return bool(raw.get("enabled", True))
 
 
+def _ensure_utc(ts: datetime) -> datetime:
+    if ts.tzinfo is None:
+        return ts.replace(tzinfo=timezone.utc)
+    return ts.astimezone(timezone.utc)
+
+
+def parse_pine_bar_ts(value: datetime | str | None) -> datetime | None:
+    """Parse a persisted ``bar_ts`` (datetime or ISO string) to UTC."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        return _ensure_utc(value)
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        # Allow trailing Z from isoformat().
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return _ensure_utc(parsed)
+
+
+def floor_to_timeframe(
+    ts: datetime,
+    *,
+    timeframe_minutes: int = DEFAULT_TIMEFRAME_MINUTES,
+) -> datetime:
+    """Floor ``ts`` to the open of its ``timeframe_minutes`` bucket (UTC)."""
+    clock = _ensure_utc(ts)
+    tf = max(1, int(timeframe_minutes))
+    minute = (clock.minute // tf) * tf
+    return clock.replace(minute=minute, second=0, microsecond=0)
+
+
+def latest_closed_bar_open(
+    now: datetime | None = None,
+    *,
+    timeframe_minutes: int = DEFAULT_TIMEFRAME_MINUTES,
+) -> datetime:
+    """Open time of the latest completed bar under ``prefer_closed_candles`` rules.
+
+    Mid-bucket: forming bar starts at ``floor(now)`` → latest closed is one tf earlier.
+    Exactly on a bucket boundary: the bar that just ended is closed (``clock < bar_end``
+    is false at equality), so latest closed opens at ``floor(now) - tf``.
+    """
+    clock = _ensure_utc(now or datetime.now(tz=timezone.utc))
+    tf = max(1, int(timeframe_minutes))
+    bucket = floor_to_timeframe(clock, timeframe_minutes=tf)
+    return bucket - timedelta(minutes=tf)
+
+
+def pine_signal_bar_is_current(
+    bar_ts: datetime | str | None,
+    *,
+    now: datetime | None = None,
+    timeframe_minutes: int = DEFAULT_TIMEFRAME_MINUTES,
+) -> bool:
+    """True while the signal bar is still current for watchlist Action.
+
+    BUY/SELL may show only when:
+    - ``now`` is in the same 15m bucket as ``bar_ts``, or
+    - ``bar_ts`` is still the latest completed 15m bar (prefer_closed view).
+
+    Missing / unparseable ``bar_ts`` → not current (stale KV must expire to HOLD).
+    """
+    ts = parse_pine_bar_ts(bar_ts)
+    if ts is None:
+        return False
+    clock = _ensure_utc(now or datetime.now(tz=timezone.utc))
+    tf = max(1, int(timeframe_minutes))
+    signal_bucket = floor_to_timeframe(ts, timeframe_minutes=tf)
+    now_bucket = floor_to_timeframe(clock, timeframe_minutes=tf)
+    if signal_bucket == now_bucket:
+        return True
+    latest_closed = latest_closed_bar_open(clock, timeframe_minutes=tf)
+    return signal_bucket == latest_closed
+
+
+def watchlist_pine_action(
+    action: str | SignalAction | None,
+    bar_ts: datetime | str | None,
+    *,
+    now: datetime | None = None,
+    timeframe_minutes: int = DEFAULT_TIMEFRAME_MINUTES,
+) -> str:
+    """Map a Pine action to watchlist BUY/SELL/HOLD with signal-bar expiry.
+
+    Non-HOLD actions expire to HOLD once the signal bar is no longer current
+    (or same 15m). HOLD always stays HOLD.
+    """
+    raw = action.value if isinstance(action, SignalAction) else str(action or "HOLD")
+    act = raw.upper()
+    if act in {"BUY_CE_BIAS", "BUY_CE", "LONG"}:
+        act = "BUY"
+    elif act in {"BUY_PE_BIAS", "BUY_PE", "SHORT"}:
+        act = "SELL"
+    elif act not in {"BUY", "SELL", "HOLD"}:
+        act = "HOLD"
+    if act == "HOLD":
+        return "HOLD"
+    if pine_signal_bar_is_current(
+        bar_ts, now=now, timeframe_minutes=timeframe_minutes
+    ):
+        return act
+    return "HOLD"
+
+
 def prefer_closed_candles(
     candles: Sequence[Candle],
     *,

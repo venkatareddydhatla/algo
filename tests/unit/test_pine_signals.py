@@ -14,10 +14,14 @@ from options_portal_domain.pine_signals import (
     dmi_adx_series,
     evaluate_pine_bar,
     evaluate_pine_signal,
+    floor_to_timeframe,
+    latest_closed_bar_open,
     pine_params_from_config,
+    pine_signal_bar_is_current,
     pine_signals_enabled,
     prefer_closed_candles,
     supertrend_series,
+    watchlist_pine_action,
 )
 from options_portal_domain.types import Candle, SignalAction
 
@@ -518,3 +522,25 @@ def test_atr_rma_warmup():
     assert all(v is None for v in atr[:9])
     assert atr[9] is not None
     assert atr[-1] is not None
+
+
+def test_pine_signal_bar_current_same_15m_and_latest_closed():
+    """BUY/SELL live only on signal bar / same 15m (or while it is latest closed)."""
+    bar = datetime(2026, 11, 20, 4, 0, tzinfo=timezone.utc)  # 09:30 IST
+    # During the signal bar bucket.
+    assert pine_signal_bar_is_current(bar, now=bar + timedelta(minutes=7)) is True
+    assert watchlist_pine_action("SELL", bar, now=bar + timedelta(minutes=7)) == "SELL"
+    # Next 15m: signal bar is still the latest closed under prefer_closed.
+    mid_next = bar + timedelta(minutes=20)  # 04:20 UTC
+    assert floor_to_timeframe(mid_next) == bar + timedelta(minutes=15)
+    assert latest_closed_bar_open(mid_next) == bar
+    assert pine_signal_bar_is_current(bar, now=mid_next) is True
+    assert watchlist_pine_action("SELL", bar, now=mid_next) == "SELL"
+    # Hours later (APOLLOHOSP case) → HOLD.
+    hours_later = bar + timedelta(hours=5)
+    assert pine_signal_bar_is_current(bar, now=hours_later) is False
+    assert watchlist_pine_action("SELL", bar, now=hours_later) == "HOLD"
+    # Missing bar_ts → not current (stale KV without stamp).
+    assert pine_signal_bar_is_current(None, now=hours_later) is False
+    assert watchlist_pine_action("BUY", None, now=mid_next) == "HOLD"
+    assert watchlist_pine_action("HOLD", bar, now=hours_later) == "HOLD"
