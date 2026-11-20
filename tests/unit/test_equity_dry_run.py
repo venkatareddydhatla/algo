@@ -8,10 +8,12 @@ import pytest
 
 from options_portal_domain.equity import (
     below_min_equity_price,
+    mark_within_session_hl,
     min_equity_price_from_config,
     plan_equity_intents,
     realized_equity_pnl,
     resolve_equity_mark,
+    session_mark_bounds,
     unrealized_equity_pnl,
 )
 from options_portal_domain.types import OrderResult, SignalAction
@@ -73,6 +75,67 @@ def test_resolve_equity_mark_falls_back_to_candle_then_entry():
     assert entry.source == "entry_avg"
     assert entry.price == pytest.approx(14346.45)
     assert "PnL will be 0" in entry.detail
+
+
+def test_resolve_equity_mark_rejects_candle_above_session_high():
+    """HINDZINC-style: stale close 529 must not beat session high ~520."""
+    from datetime import datetime, timezone
+
+    from options_portal_domain.types import Candle
+
+    assert mark_within_session_hl(529.0, 520.0, 500.0) is False
+    assert mark_within_session_hl(515.0, 520.0, 500.0) is True
+
+    bad = resolve_equity_mark(
+        ltp=None,
+        candle_close=529.0,
+        entry_avg=510.0,
+        session_high=520.0,
+        session_low=500.0,
+    )
+    assert bad.source == "entry_avg"
+    assert bad.price == pytest.approx(510.0)
+    assert "candle_close=529" in bad.detail
+
+    good_ltp = resolve_equity_mark(
+        ltp=515.0,
+        candle_close=529.0,
+        entry_avg=510.0,
+        session_high=520.0,
+        session_low=500.0,
+    )
+    assert good_ltp.source == "ltp"
+    assert good_ltp.price == pytest.approx(515.0)
+
+    # In-range candle still usable when LTP missing
+    ok_candle = resolve_equity_mark(
+        ltp=None,
+        candle_close=518.0,
+        entry_avg=510.0,
+        session_high=520.0,
+        session_low=500.0,
+    )
+    assert ok_candle.source == "candle_close"
+    assert ok_candle.price == pytest.approx(518.0)
+
+    # session_mark_bounds uses bar high/low (not corrupt close)
+    ts = datetime(2026, 11, 20, 5, 0, tzinfo=timezone.utc)
+    bars = [
+        Candle(
+            symbol="HINDZINC",
+            timeframe="15m",
+            ts=ts,
+            open=510.0,
+            high=520.0,
+            low=500.0,
+            close=529.0,  # corrupt close > high
+            volume=1000,
+        )
+    ]
+    bounds = session_mark_bounds(bars, now=ts)
+    assert bounds is not None
+    assert bounds[0] == pytest.approx(520.0)
+    assert bounds[1] == pytest.approx(500.0)
 
 
 def test_realized_and_unrealized_pnl_math():

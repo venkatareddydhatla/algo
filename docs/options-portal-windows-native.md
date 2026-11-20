@@ -248,9 +248,26 @@ git pull origin cursor/trades-page-round-trips-cb5e
 
 Open http://127.0.0.1:5173/trades — Open positions unchanged; Closed trades show Symbol, Side LONG/SHORT, Entry/Exit IST, Entry/Exit px, PnL, Reason, dry_run.
 
-### Pull price floor + 120m cooloff + profit candle protect (stacked) — tip
+### Pull exit mark = live LTP + session H/L guard (stacked) — tip
 
-Three Venkata rules on the manual-sell tip: (1) skip score/entry when LTP or last close **&lt; ₹20**; (2) **120m** same-IST-day cooloff after any exit (incl. manual) before re-trading the symbol; (3) **profit_candle_protect** — in-profit long whose latest 15m opens below prior mid and closes below prior low → immediate close (short symmetric). Keeps Pine clear-EMA, **±2%**, **09:30**, max open **10**, manual Sell/Close. Stacked on `cursor/manual-sell-open-ae11` (PR #50).
+Open-book exits (**±2%**, **profit_candle_protect**, manual Sell/Close) prefer **live Upstox LTP**. Marks outside today's session high/low (from 15m bars) are rejected — never a stale candle close above the day high (e.g. HINDZINC 529 vs ~520). Keeps ₹20 floor, 120m cooloff, profit candle, Pine clear-EMA, **09:30**, max open **10**. Stacked on `cursor/price-cooloff-profit-candle-548e` (PR #51).
+
+```powershell
+cd C:\algo
+Set-ExecutionPolicy -Scope Process Bypass
+.\deploy\windows\native\stop-native.ps1
+git fetch origin
+git checkout cursor/fix-exit-mark-ltp-38ba
+git pull origin cursor/fix-exit-mark-ltp-38ba
+.\deploy\windows\native\setup-native.ps1
+.\deploy\windows\native\start-native.ps1 -WithWorker
+```
+
+**Must stop then start** so API + worker pick up the mark guard. Confirm closed-trade Exit px tracks live LTP and stays inside the session range. After merge into the tip chain / `main`, pull that branch instead.
+
+### Pull price floor + 120m cooloff + profit candle protect (stacked)
+
+Three Venkata rules on the manual-sell tip: (1) skip score/entry when LTP or last close **&lt; ₹20**; (2) **120m** same-IST-day cooloff after any exit (incl. manual) before re-trading the symbol; (3) **profit_candle_protect** — in-profit long whose latest 15m opens below prior mid and closes below prior low → immediate close (short symmetric). Keeps Pine clear-EMA, **±2%**, **09:30**, max open **10**, manual Sell/Close. Prefer the exit-mark tip above. Stacked on `cursor/manual-sell-open-ae11` (PR #50).
 
 ```powershell
 cd C:\algo

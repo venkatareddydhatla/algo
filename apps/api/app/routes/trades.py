@@ -17,7 +17,10 @@ from options_portal_domain.config import (
     paper_retention_config,
     trading_mode,
 )
-from options_portal_domain.equity import plan_equity_intents, resolve_equity_mark
+from options_portal_domain.equity import (
+    plan_equity_intents,
+    resolve_equity_mark,
+)
 from options_portal_domain.round_trips import (
     closed_trades_for_ist_day,
     pair_round_trip_trades,
@@ -178,9 +181,10 @@ async def _close_fill_mark(
 ) -> tuple[Any, dict[str, str]]:
     """Resolve a close mark without hanging the UI on slow MD.
 
-    Prefer live/last-known LTP (short timeout). Skip candle history when LTP
-    is present — historical candle fetch was blocking manual close on Windows.
-    Fall back to entry avg so the SQLite exit always completes.
+    Prefer live/last-known LTP (short timeout). Fetch session H/L (and candle
+    close only when LTP is missing) under the same timeout budget so stale
+    closes above the day high cannot price the exit. Fall back to entry avg so
+    the SQLite exit always completes.
     """
     marks: dict[str, float] = {}
     mark_sources: dict[str, str] = {}
@@ -199,33 +203,51 @@ async def _close_fill_mark(
         logger.warning("manual_close %s LTP failed", sym, exc_info=True)
 
     candle_px: float | None = None
+    session_high: float | None = None
+    session_low: float | None = None
+    # Prefer live LTP for manual close. Only hit candle history when LTP is
+    # missing — then reject closes outside today's session H/L. Skipping the
+    # candle round-trip when LTP is present keeps Windows close snappy.
     if sym not in marks:
         try:
-            from app.marks import candle_close_map
+            from app.marks import candle_close_and_session_hl_map
 
-            candle = await asyncio.wait_for(
-                candle_close_map([sym]),
+            closes, hl_map = await asyncio.wait_for(
+                candle_close_and_session_hl_map([sym]),
                 timeout=_CLOSE_MARK_TIMEOUT_SEC,
             )
-            if candle.get(sym):
-                candle_px = float(candle[sym])
+            if sym in hl_map:
+                session_high, session_low = hl_map[sym]
+            if closes.get(sym):
+                candle_px = float(closes[sym])
         except asyncio.TimeoutError:
-            logger.warning("manual_close %s candle mark timed out", sym)
+            logger.warning(
+                "manual_close %s session H/L / candle mark timed out", sym
+            )
         except Exception:  # noqa: BLE001
-            logger.warning("manual_close %s candle mark failed", sym, exc_info=True)
+            logger.warning(
+                "manual_close %s session H/L / candle mark failed",
+                sym,
+                exc_info=True,
+            )
 
     mark = resolve_equity_mark(
         ltp=marks.get(sym),
         candle_close=candle_px,
         entry_avg=entry_avg if entry_avg > 0 else None,
+        session_high=session_high,
+        session_low=session_low,
     )
     if mark.source != "ltp":
         logger.warning(
-            "manual_close %s mark source=%s detail=%s px=%.4f",
+            "manual_close %s mark source=%s detail=%s px=%.4f "
+            "session_hl=%s/%s",
             sym,
             mark.source,
             mark.detail,
             mark.price,
+            session_high,
+            session_low,
         )
     return mark, mark_sources
 
