@@ -1,26 +1,92 @@
 const API_BASE = import.meta.env.VITE_API_BASE?.replace(/\/$/, "") || "";
 
+/** FastAPI may return detail as string or validation-error array. */
+export function formatApiDetail(detail: unknown, fallback: string): string {
+  if (detail == null) return fallback;
+  if (typeof detail === "string" && detail.trim()) return detail;
+  if (Array.isArray(detail)) {
+    const parts = detail
+      .map((item) => {
+        if (typeof item === "string") return item;
+        if (item && typeof item === "object") {
+          const row = item as { msg?: unknown; loc?: unknown };
+          const loc = Array.isArray(row.loc)
+            ? row.loc.filter((x) => x !== "body").join(".")
+            : "";
+          const msg = row.msg != null ? String(row.msg) : "";
+          return loc && msg ? `${loc}: ${msg}` : msg || JSON.stringify(item);
+        }
+        return String(item);
+      })
+      .filter(Boolean);
+    if (parts.length) return parts.join("; ");
+  }
+  if (typeof detail === "object") {
+    try {
+      return JSON.stringify(detail);
+    } catch {
+      /* ignore */
+    }
+  }
+  return fallback;
+}
+
 async function getJson<T>(path: string): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`);
   if (!res.ok) {
-    throw new Error(`${res.status} ${res.statusText}`);
+    let detail = `${res.status} ${res.statusText}`;
+    try {
+      const err = (await res.json()) as { detail?: unknown };
+      detail = formatApiDetail(err.detail, detail);
+    } catch {
+      /* ignore */
+    }
+    throw new Error(detail);
   }
   return res.json() as Promise<T>;
 }
 
-async function postJson<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+async function postJson<T>(
+  path: string,
+  body: unknown,
+  opts?: { timeoutMs?: number },
+): Promise<T> {
+  const timeoutMs = opts?.timeoutMs ?? 25_000;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    });
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new Error(
+        `Request timed out after ${Math.round(timeoutMs / 1000)}s — is the API on :8000 running the latest tip?`,
+      );
+    }
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      msg.toLowerCase().includes("fetch")
+        ? `Network/CORS error calling ${path} (API_BASE=${API_BASE || "(vite proxy)"}). Is API on :8000 up? ${msg}`
+        : msg,
+    );
+  } finally {
+    clearTimeout(timer);
+  }
   if (!res.ok) {
     let detail = `${res.status} ${res.statusText}`;
     try {
-      const err = (await res.json()) as { detail?: string };
-      if (err.detail) detail = String(err.detail);
+      const err = (await res.json()) as { detail?: unknown };
+      detail = formatApiDetail(err.detail, detail);
     } catch {
       /* ignore */
+    }
+    if (res.status === 404) {
+      detail = `${detail} — POST ${path} missing; restart API after pulling tip (stop-native then start-native)`;
     }
     throw new Error(detail);
   }
@@ -205,14 +271,22 @@ export const api = {
   closeTrade: (
     symbol: string,
     body?: { reason?: string; confirm?: boolean },
-  ) =>
-    postJson<Record<string, unknown>>(
-      `/api/v1/trades/${encodeURIComponent(symbol)}/close`,
+  ) => {
+    const sym = String(symbol || "")
+      .trim()
+      .toUpperCase();
+    if (!sym) {
+      return Promise.reject(new Error("symbol required"));
+    }
+    return postJson<Record<string, unknown>>(
+      `/api/v1/trades/${encodeURIComponent(sym)}/close`,
       {
         reason: body?.reason ?? "manual_close",
         confirm: body?.confirm ?? true,
       },
-    ),
+      { timeoutMs: 25_000 },
+    );
+  },
   health: () => getJson<Record<string, unknown>>("/api/v1/health"),
   config: () => getJson<Record<string, unknown>>("/api/v1/admin/config"),
   marketIndices: () => getJson<MarketIndicesPayload>("/api/v1/market/indices"),

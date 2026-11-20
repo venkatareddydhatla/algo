@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Body, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app.mock_data import MOCK_TRADES
@@ -31,10 +32,12 @@ router = APIRouter(prefix="/api/v1", tags=["trades"])
 
 # Manual close is paper/dry_run only — never broker live placement.
 _MANUAL_CLOSE_REASON = "manual_close"
+# Keep close snappy — never block the UI on slow Upstox candle history.
+_CLOSE_MARK_TIMEOUT_SEC = 4.0
 
 
 class ManualCloseBody(BaseModel):
-    """Optional body for POST /trades/{symbol}/close."""
+    """Body for POST /trades/{symbol}/close (JSON)."""
 
     reason: str = Field(default=_MANUAL_CLOSE_REASON, min_length=1, max_length=120)
     confirm: bool = True
@@ -168,24 +171,85 @@ def _paper_safe_mode() -> str:
     return "dry_run" if mode == "live" else mode
 
 
+async def _close_fill_mark(
+    sym: str,
+    *,
+    entry_avg: float,
+) -> tuple[Any, dict[str, str]]:
+    """Resolve a close mark without hanging the UI on slow MD.
+
+    Prefer live/last-known LTP (short timeout). Skip candle history when LTP
+    is present — historical candle fetch was blocking manual close on Windows.
+    Fall back to entry avg so the SQLite exit always completes.
+    """
+    marks: dict[str, float] = {}
+    mark_sources: dict[str, str] = {}
+    try:
+        marks, mark_sources = await asyncio.wait_for(
+            _open_position_marks([sym]),
+            timeout=_CLOSE_MARK_TIMEOUT_SEC,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "manual_close %s LTP timed out after %.1fs — using entry/fallback",
+            sym,
+            _CLOSE_MARK_TIMEOUT_SEC,
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("manual_close %s LTP failed", sym, exc_info=True)
+
+    candle_px: float | None = None
+    if sym not in marks:
+        try:
+            from app.marks import candle_close_map
+
+            candle = await asyncio.wait_for(
+                candle_close_map([sym]),
+                timeout=_CLOSE_MARK_TIMEOUT_SEC,
+            )
+            if candle.get(sym):
+                candle_px = float(candle[sym])
+        except asyncio.TimeoutError:
+            logger.warning("manual_close %s candle mark timed out", sym)
+        except Exception:  # noqa: BLE001
+            logger.warning("manual_close %s candle mark failed", sym, exc_info=True)
+
+    mark = resolve_equity_mark(
+        ltp=marks.get(sym),
+        candle_close=candle_px,
+        entry_avg=entry_avg if entry_avg > 0 else None,
+    )
+    if mark.source != "ltp":
+        logger.warning(
+            "manual_close %s mark source=%s detail=%s px=%.4f",
+            sym,
+            mark.source,
+            mark.detail,
+            mark.price,
+        )
+    return mark, mark_sources
+
+
 @router.post("/trades/{symbol}/close")
 async def close_open_position(
     symbol: str,
-    body: ManualCloseBody | None = None,
+    body: ManualCloseBody = Body(default_factory=ManualCloseBody),
 ) -> dict[str, Any]:
     """Close one open dry_run/demo paper position immediately (manual Sell/Close).
 
-    Long → SELL cover; short → BUY cover. Reason defaults to ``manual_close``.
+    Long → SELL; short → BUY cover. Reason defaults to ``manual_close``.
     Never places a live broker order (v1 dry_run only).
     """
-    body = body or ManualCloseBody()
     if not body.confirm:
         raise HTTPException(
             status_code=400,
             detail="confirm=true required to close an open paper position",
         )
 
-    sym = str(symbol or "").strip().upper()
+    # Path may arrive URL-encoded (e.g. odd symbols); normalize once.
+    from urllib.parse import unquote
+
+    sym = unquote(str(symbol or "")).strip().upper()
     if not sym:
         raise HTTPException(status_code=400, detail="symbol required")
 
@@ -219,7 +283,7 @@ async def close_open_position(
             detail=f"No open paper position for {sym}",
         )
 
-    open_side = str(pos.get("side") or "").lower()
+    open_side = str(pos.get("side") or "").strip().lower()
     if open_side not in {"long", "short"}:
         raise HTTPException(
             status_code=409,
@@ -233,28 +297,15 @@ async def close_open_position(
         )
     entry_avg = float(pos.get("avg_price") or 0.0)
 
-    marks, mark_sources = await _open_position_marks([sym])
-    candle: dict[str, float] = {}
-    try:
-        from app.marks import candle_close_map
-
-        candle = await candle_close_map([sym])
-    except Exception:  # noqa: BLE001
-        logger.warning("manual close candle_close_map failed for %s", sym, exc_info=True)
-
-    mark = resolve_equity_mark(
-        ltp=marks.get(sym),
-        candle_close=candle.get(sym),
-        entry_avg=entry_avg if entry_avg > 0 else None,
+    logger.info(
+        "manual_close start symbol=%s side=%s qty=%d mode=%s",
+        sym,
+        open_side,
+        open_qty,
+        safe_mode,
     )
-    if mark.source != "ltp":
-        logger.warning(
-            "manual_close %s mark source=%s detail=%s px=%.4f",
-            sym,
-            mark.source,
-            mark.detail,
-            mark.price,
-        )
+
+    mark, mark_sources = await _close_fill_mark(sym, entry_avg=entry_avg)
 
     intents = plan_equity_intents(
         sym,
@@ -274,16 +325,23 @@ async def close_open_position(
 
     cfg = load_config()
     risk_cfg = dict(cfg.get("risk") or {})
+    trading_risk = dict((cfg.get("trading") or {}).get("risk") or {})
+    # Prefer trading.risk (local.yaml); fall back to top-level risk.
+    merged_risk = {**risk_cfg, **trading_risk}
     equity_cfg = (cfg.get("trading") or {}).get("equity") or {}
-    share_qty = int(equity_cfg.get("share_qty", risk_cfg.get("equity_share_qty", 1)) or 1)
+    share_qty = int(
+        equity_cfg.get("share_qty", merged_risk.get("equity_share_qty", 1)) or 1
+    )
     limits = {
-        **risk_cfg,
+        **merged_risk,
         "equity_share_qty": share_qty,
         "max_equity_qty_per_symbol": int(
-            risk_cfg.get("max_equity_qty_per_symbol", share_qty) or share_qty
+            merged_risk.get("max_equity_qty_per_symbol", share_qty) or share_qty
         ),
         "max_open_symbols": int(
-            equity_cfg.get("max_open_symbols", risk_cfg.get("max_open_symbols", 10))
+            equity_cfg.get(
+                "max_open_symbols", merged_risk.get("max_open_symbols", 10)
+            )
             or 10
         ),
         # Explicit user close must not be blocked by day-loss entry caps.
@@ -339,6 +397,24 @@ async def close_open_position(
         logger.exception("Gmail fill notify failed for manual_close %s", sym)
 
     still_open = store.get_position(sym, mode=safe_mode)  # type: ignore[arg-type]
+    if still_open is not None:
+        logger.error(
+            "manual_close %s persisted fill but position still open — ledger bug",
+            sym,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Close fill recorded but {sym} still open in SQLite",
+        )
+
+    logger.info(
+        "manual_close ok symbol=%s side=%s order=%s px=%.4f pnl=%s",
+        sym,
+        intent.side,
+        intent.side,
+        float(intent.limit_price),
+        persist_meta.get("realized_pnl"),
+    )
     return {
         "ok": True,
         "symbol": sym,
@@ -358,6 +434,6 @@ async def close_open_position(
         "client_order_id": order.client_order_id,
         "broker_order_id": order.broker_order_id,
         "message": order.message,
-        "position_remaining": still_open,
+        "position_remaining": None,
         "fill": persist_meta,
     }

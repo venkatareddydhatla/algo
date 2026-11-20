@@ -704,3 +704,44 @@ async def test_manual_close_missing_position(paper_env: Path, monkeypatch: pytes
     with pytest.raises(HTTPException) as exc:
         await close_open_position("NOSUCH", ManualCloseBody())
     assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_manual_close_falls_back_when_marks_timeout(
+    paper_env: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Slow MD must not block SQLite close — use entry avg."""
+    import asyncio
+
+    monkeypatch.setenv("TRADING_MODE", "dry_run")
+    store = PaperTradeStore()
+    entry = plan_equity_intents(
+        "HINDALCO",
+        SignalAction.BUY,
+        open_side=None,
+        open_qty=0,
+        qty=1,
+        price=700.0,
+        reason="entry",
+    )[0]
+    store.record_simulated_fill(
+        entry,
+        OrderResult("h-e1", "simulated", "dry_run", "SIM-h-e1", None),
+    )
+
+    async def _hang(symbols: list[str]):
+        await asyncio.sleep(30)
+        return ({}, {})
+
+    monkeypatch.setattr("app.routes.trades._open_position_marks", _hang)
+    monkeypatch.setattr("app.routes.trades._CLOSE_MARK_TIMEOUT_SEC", 0.05)
+
+    from app.routes.trades import ManualCloseBody, close_open_position
+
+    out = await close_open_position("HINDALCO", ManualCloseBody(confirm=True))
+    assert out["ok"] is True
+    assert out["symbol"] == "HINDALCO"
+    assert out["order_side"] == "SELL"
+    assert out["mark_source"] == "entry_avg"
+    assert out["price"] == pytest.approx(700.0)
+    assert store.get_position("HINDALCO") is None

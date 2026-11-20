@@ -250,7 +250,9 @@ Open http://127.0.0.1:5173/trades — Open positions unchanged; Closed trades sh
 
 ### Pull manual Sell/Close on open trades (stacked) — tip
 
-Trades → Open positions: **Sell/Close** (long) or **Cover** (short) closes that dry_run paper leg immediately via `POST /api/v1/trades/{symbol}/close` with reason `manual_close`. Confirm dialog; dry_run only (no live broker). Stacked on `cursor/strict-candle-clear-emas-d84e` (PR #49).
+Trades → Open positions: **Sell/Close** (long) or **Cover** (short) closes that dry_run paper leg immediately via `POST /api/v1/trades/{symbol}/close` with `confirm=true` + `reason=manual_close`. Confirm dialog; dry_run only (no live broker). Pine path honors **reentry_cooloff** after exits (incl. manual_close) so the worker does not instantly re-open the same symbol. Stacked on `cursor/strict-candle-clear-emas-d84e` (PR #49).
+
+**Must stop then start** so API picks up the new route (start-native skips a still-running uvicorn).
 
 ```powershell
 cd C:\algo
@@ -263,7 +265,7 @@ git pull origin cursor/manual-sell-open-ae11
 .\deploy\windows\native\start-native.ps1 -WithWorker
 ```
 
-Open http://127.0.0.1:5173/trades — each open row has Sell/Close (or Cover). After click + confirm, the row leaves Open and appears under Closed trades with reason containing `manual_close`. Still `dry_run`, **09:30** entry gate, open-book **±2%**, max open **10**.
+Confirm route exists: http://127.0.0.1:8000/docs → `POST /api/v1/trades/{symbol}/close`. Open http://127.0.0.1:5173/trades — Sell/Close (or Cover) → confirm → row leaves Open; Closed shows `manual_close`. Red error toast if API/CORS fails. Still `dry_run`, **09:30** entry gate, open-book **±2%**, max open **10**, cooloff 120m.
 
 ### Pull strict candle-clear EMA confirm (stacked)
 

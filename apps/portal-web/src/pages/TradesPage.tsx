@@ -12,18 +12,19 @@ export default function TradesPage() {
   const [day, setDay] = useState("");
   const [closing, setClosing] = useState<string | null>(null);
   const [closeMsg, setCloseMsg] = useState<string | null>(null);
+  const [closeErr, setCloseErr] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
     try {
-      setData(
-        await api.trades({
-          offset,
-          limit: PAGE_SIZE,
-          day: day.trim() || undefined,
-        }),
-      );
+      const next = await api.trades({
+        offset,
+        limit: PAGE_SIZE,
+        day: day.trim() || undefined,
+      });
+      setData(next);
+      return next;
     } catch {
-      setData({
+      const empty = {
         mode: "dry_run",
         instrument: "equity",
         execution: "dry_run",
@@ -40,7 +41,9 @@ export default function TradesPage() {
         day_realized: 0,
         day_unrealized: 0,
         source: "local-empty",
-      });
+      };
+      setData(empty);
+      return empty;
     }
   }, [offset, day]);
 
@@ -56,25 +59,48 @@ export default function TradesPage() {
     const ok = window.confirm(
       `Close ${sym} ${sideLabel} paper position now (${verb})?\nReason: manual_close · dry_run only`,
     );
-    if (!ok) return;
+    if (!ok) {
+      setCloseErr(null);
+      setCloseMsg("Close cancelled");
+      return;
+    }
     setClosing(sym);
     setCloseMsg(null);
+    setCloseErr(null);
     try {
       const res = await api.closeTrade(sym, {
         reason: "manual_close",
         confirm: true,
       });
+      if (!res?.ok) {
+        throw new Error(
+          typeof res?.detail === "string"
+            ? String(res.detail)
+            : `Close failed for ${sym}`,
+        );
+      }
       const pnl = res.realized_pnl != null ? Number(res.realized_pnl) : null;
       const pnlTxt =
         pnl == null || Number.isNaN(pnl)
           ? ""
           : ` · realized ₹${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}`;
-      setCloseMsg(
-        `Closed ${sym} ${String(res.order_side ?? verb)} @ ₹${Number(res.price ?? 0).toFixed(2)}${pnlTxt}`,
-      );
-      await reload();
+      const next = await reload();
+      const stillOpen = (
+        (next?.positions as Array<Record<string, unknown>> | undefined) || []
+      ).some((p) => String(p.symbol || "").toUpperCase() === sym);
+      if (stillOpen) {
+        setCloseErr(
+          `${sym} still listed open after close — worker may have re-entered, or API/SQLite did not drop the row. Check API logs; pull tip + stop/start-native.`,
+        );
+        setCloseMsg(null);
+      } else {
+        setCloseMsg(
+          `Closed ${sym} ${String(res.order_side ?? verb)} @ ₹${Number(res.price ?? 0).toFixed(2)}${pnlTxt}`,
+        );
+      }
     } catch (err) {
-      setCloseMsg(err instanceof Error ? err.message : String(err));
+      setCloseMsg(null);
+      setCloseErr(err instanceof Error ? err.message : String(err));
     } finally {
       setClosing(null);
     }
@@ -108,8 +134,13 @@ export default function TradesPage() {
         </p>
       </div>
       <h2>Open positions</h2>
+      {closeErr ? (
+        <p className="notice bt-error" role="alert" style={{ marginTop: 0 }}>
+          Sell/Close failed: {closeErr}
+        </p>
+      ) : null}
       {closeMsg ? (
-        <p className="notice" style={{ marginTop: 0 }}>
+        <p className="notice" role="status" style={{ marginTop: 0 }}>
           {closeMsg}
         </p>
       ) : null}
