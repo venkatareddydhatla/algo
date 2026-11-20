@@ -2,9 +2,10 @@
 
 Product rules (equity dry-run):
 - **New entries (open/add / flip_open)** only on NSE trading days inside the
-  cash entry window [open_ist, no_new_entries_after) IST (default 09:15–15:20).
-  Use ``is_trading_session`` / ``SoftEodPolicy.allow_new_entries`` — nights,
-  pre-open, and post-cutoff must not persist entry fills or send entry Gmail.
+  cash entry window [open_ist, no_new_entries_after) IST (default **09:15–10:30**
+  first-hour-ish). Use ``is_trading_session`` / ``SoftEodPolicy.allow_new_entries``
+  — nights, pre-open, and post-cutoff must not persist entry fills or send
+  entry Gmail. Risk exits / soft flatten still run through soft_flatten_until.
 - **Index underlyings** (NIFTY, BANKNIFTY, … / NSE_INDEX|BSE_INDEX) never use
   stock hybrid entry; open index paper is soft-closed with ``index_not_equity``.
 - **Open-book risk exits** (``profit_book``, ``profit_scale_out``, ``atr_stop``,
@@ -25,7 +26,7 @@ Product rules (equity dry-run):
 - **Morning dynamic TP/stop** [morning_tp_ist, morning_tp_until_ist] inclusive
   by HH:MM (default **09:15–10:00 IST**), stocks only (not indices), on the
   ~15s open-book poll (also requires the risk-exit cash window):
-  - Profit: uPnL ≥ max(0.3% entry, 0.5×ATR14) → ``morning_profit_book``
+  - Profit: uPnL ≥ max(0.6% entry, 1.0×ATR14) → ``morning_profit_book``
   - Stop: uPnL ≤ −max(0.5% entry, 0.75×ATR14) → ``morning_stop``
   - If ATR14 unavailable → percent floors only. After 10:00: no morning exits.
 - Soft flatten window [soft_flatten_ist, soft_flatten_until_ist] inclusive by
@@ -64,8 +65,8 @@ DEFAULT_SOFT_FLATTEN_POLL_SEC = 15
 DEFAULT_MORNING_TP_IST = "09:15"
 DEFAULT_MORNING_TP_UNTIL_IST = "10:00"
 # Dynamic morning thresholds (ATR-aware; % floors when ATR missing).
-DEFAULT_MORNING_TP_MIN_PCT = 0.3  # book ≥ max(0.3% entry, 0.5×ATR14)
-DEFAULT_MORNING_TP_ATR_MULT = 0.5
+DEFAULT_MORNING_TP_MIN_PCT = 0.6  # book ≥ max(0.6% entry, 1.0×ATR14)
+DEFAULT_MORNING_TP_ATR_MULT = 1.0
 DEFAULT_MORNING_STOP_MIN_PCT = 0.5  # stop ≤ −max(0.5% entry, 0.75×ATR14)
 DEFAULT_MORNING_STOP_ATR_MULT = 0.75
 DEFAULT_MORNING_ATR_PERIOD = 14
@@ -126,7 +127,7 @@ class SoftEodPolicy:
 
     open_ist: str = "09:15"
     close_ist: str = "15:30"
-    no_new_entries_after: str = "15:20"
+    no_new_entries_after: str = "10:30"
     soft_flatten_ist: str = "15:20"
     # Last HH:MM IST minute where soft_flatten exits may still fire (inclusive).
     soft_flatten_until_ist: str = "15:40"
@@ -136,8 +137,9 @@ class SoftEodPolicy:
     morning_tp_until_ist: str = DEFAULT_MORNING_TP_UNTIL_IST
     # Documented user monitoring window (no hard flatten at end)
     user_hours_note: str = (
-        "09:15–15:40 IST (risk exits 09:15–15:40; morning TP/stop 09:15–10:00; "
-        "soft flatten 15:20–15:40; no hard 15:40 square-off)"
+        "09:15–15:40 IST (entries 09:15–10:30; risk exits 09:15–15:40; "
+        "morning TP/stop 09:15–10:00; soft flatten 15:20–15:40; "
+        "no hard 15:40 square-off)"
     )
 
     @classmethod
@@ -163,9 +165,9 @@ class SoftEodPolicy:
         return cls(
             open_ist=str(session.get("open", "09:15")),
             close_ist=str(session.get("close", "15:30")),
-            no_new_entries_after=str(session.get("no_new_entries_after", "15:20")),
+            no_new_entries_after=str(session.get("no_new_entries_after", "10:30")),
             soft_flatten_ist=str(
-                session.get("soft_flatten_ist", session.get("no_new_entries_after", "15:20"))
+                session.get("soft_flatten_ist", "15:20")
             ),
             soft_flatten_until_ist=str(session.get("soft_flatten_until_ist", "15:40")),
             overnight_hold_min_hybrid_abs=float(overnight),
@@ -185,8 +187,9 @@ class SoftEodPolicy:
             user_hours_note=str(
                 session.get(
                     "user_hours_note",
-                    "09:15–15:40 IST (risk exits 09:15–15:40; morning TP/stop 09:15–10:00; "
-                    "soft flatten 15:20–15:40; no hard 15:40 square-off)",
+                    "09:15–15:40 IST (entries 09:15–10:30; risk exits 09:15–15:40; "
+                    "morning TP/stop 09:15–10:00; soft flatten 15:20–15:40; "
+                    "no hard 15:40 square-off)",
                 )
             ),
         )
@@ -223,7 +226,7 @@ class SoftEodPolicy:
     def in_cash_session(self, now: datetime | None = None) -> bool:
         """True when IST clock is in [open_ist, close_ist) cash hours (default 09:15–15:30).
 
-        Distinct from ``allow_new_entries`` (cuts off at no_new_entries_after / 15:20).
+        Distinct from ``allow_new_entries`` (cuts off at no_new_entries_after / 10:30).
         Use for market OPEN/CLOSE UI status, not entry gating.
         """
         return not self.before_session_open(now) and not self.past_session_close(now)
@@ -232,8 +235,8 @@ class SoftEodPolicy:
         """True when IST clock is in [open_ist, no_new_entries_after).
 
         Clock-only — callers that also need an NSE trading day should use
-        ``is_trading_session``. Aligns with soft_flatten start so no new
-        entries after the flatten window begins (default 15:20).
+        ``is_trading_session``. Default entry window is first-hour-ish
+        **09:15–10:30 IST**; soft flatten stays 15:20–15:40.
         """
         return (
             not self.before_session_open(now)
@@ -1019,7 +1022,7 @@ def is_trading_session(
     """True when new equity entries may open/add.
 
     Requires an NSE trading day and IST clock in
-    ``[policy.open_ist, policy.no_new_entries_after)`` (default 09:15–15:20).
+    ``[policy.open_ist, policy.no_new_entries_after)`` (default **09:15–10:30**).
 
     Soft flatten (``in_soft_flatten_window`` / ``soft_flatten_decision``) and
     the 16:00 IST daily summary use separate gates — they intentionally run
@@ -1050,7 +1053,7 @@ def allow_open_book_risk_exits(
     ``[policy.open_ist, policy.soft_flatten_until_ist]`` inclusive
     (default **09:15–15:40 IST**). Distinct from:
 
-    - ``is_trading_session`` — new entries only ``[09:15, 15:20)``
+    - ``is_trading_session`` — new entries only ``[09:15, 10:30)``
     - ``in_soft_flatten_window`` — soft flatten only ``[15:20, 15:40]``
     - ``is_cash_market_open`` — UI badge ``[09:15, 15:30)``
 

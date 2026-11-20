@@ -34,13 +34,13 @@ AntiChurnMode = Literal["empty_slots_only"]
 RankBy = Literal["abs_hybrid"]
 
 # Sensible defaults when YAML omits knobs (ops can manage the list in config).
-# 2026-11-17: prefer fewer trades / lower brokerage (was ceiling 15 / 0.55).
-DEFAULT_CEILING = 8
-DEFAULT_FLOOR = 4
-DEFAULT_MIN_HYBRID_ABS = 0.65
-DEFAULT_AFTERNOON_MIN_HYBRID_ABS = 0.70
+# 2026-11-18 Day3: far fewer / higher conviction (was ceiling 8 / 0.65 / 90m).
+DEFAULT_CEILING = 5
+DEFAULT_FLOOR = 3
+DEFAULT_MIN_HYBRID_ABS = 0.72
+DEFAULT_AFTERNOON_MIN_HYBRID_ABS = 0.75
 DEFAULT_AFTERNOON_AFTER_IST = "12:00"
-DEFAULT_REENTRY_COOLOFF_MINUTES = 90
+DEFAULT_REENTRY_COOLOFF_MINUTES = 180
 
 
 @dataclass(frozen=True)

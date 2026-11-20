@@ -40,7 +40,7 @@ def test_at_or_after_ist_boundary():
 
 def test_allow_new_entries_blocks_night_and_preopen():
     """Regression: past_no_new_entries alone allowed 00:01 IST entries."""
-    policy = SoftEodPolicy(open_ist="09:15", no_new_entries_after="15:20")
+    policy = SoftEodPolicy(open_ist="09:15", no_new_entries_after="10:30")
     # Monday 2026-11-16 — trading day; midnight must NOT allow entries
     midnight = datetime(2026, 11, 17, 0, 1, 0)  # Tue 00:01 IST (MUTHOOTFIN bug)
     assert policy.past_no_new_entries(midnight) is False  # old bug path
@@ -56,15 +56,48 @@ def test_allow_new_entries_blocks_night_and_preopen():
     assert policy.allow_new_entries(open_exact) is True
     assert is_trading_session(open_exact, policy=policy, trading_day=True) is True
 
-    mid = datetime(2026, 11, 16, 12, 0, 0)
-    assert policy.allow_new_entries(mid) is True
+    first_hour = datetime(2026, 11, 16, 10, 29, 0)
+    assert policy.allow_new_entries(first_hour) is True
 
-    cutoff = datetime(2026, 11, 16, 15, 20, 0)
+    # Day3: no new entries after 10:30 IST (risk exits still run)
+    cutoff = datetime(2026, 11, 16, 10, 30, 0)
     assert policy.allow_new_entries(cutoff) is False
     assert is_trading_session(cutoff, policy=policy, trading_day=True) is False
 
+    midday = datetime(2026, 11, 16, 12, 0, 0)
+    assert policy.allow_new_entries(midday) is False
+    assert is_trading_session(midday, policy=policy, trading_day=True) is False
+
     # Weekend / holiday: clock in window still blocked when trading_day=False
-    assert is_trading_session(mid, policy=policy, trading_day=False) is False
+    assert is_trading_session(first_hour, policy=policy, trading_day=False) is False
+
+
+def test_day3_entry_cutoff_1030_keeps_risk_exits():
+    """Entries stop at 10:30; ATR/morning risk exits and soft flatten still allowed."""
+    policy = SoftEodPolicy.from_config(
+        {
+            "trading": {
+                "session": {
+                    "open": "09:15",
+                    "close": "15:30",
+                    "no_new_entries_after": "10:30",
+                    "soft_flatten_ist": "15:20",
+                    "soft_flatten_until_ist": "15:40",
+                }
+            }
+        }
+    )
+    assert policy.no_new_entries_after == "10:30"
+    assert policy.soft_flatten_ist == "15:20"
+
+    after_entries = datetime(2026, 11, 18, 11, 0, 0)
+    assert is_trading_session(after_entries, policy=policy, trading_day=True) is False
+    assert allow_open_book_risk_exits(after_entries, policy=policy, trading_day=True) is True
+    assert policy.in_risk_exit_window(after_entries) is True
+
+    soft = datetime(2026, 11, 18, 15, 25, 0)
+    assert is_trading_session(soft, policy=policy, trading_day=True) is False
+    assert policy.in_soft_flatten_window(soft) is True
 
 
 def test_cash_market_open_until_close_ist():
@@ -268,13 +301,13 @@ def test_market_sentiment_policy_from_config():
 
 
 def test_morning_profit_book_window_and_dynamic_thresholds():
-    """09:15–10:00 IST: ATR-aware TP/stop; after 10:00 → none; pct fallback."""
+    """09:15–10:00 IST: ATR-aware TP/stop (Day3 0.6%/1.0×ATR); after 10:00 → none."""
     policy = MorningProfitBookPolicy(
         enabled=True,
         start_ist="09:15",
         until_ist="10:00",
-        tp_min_pct=0.3,
-        tp_atr_mult=0.5,
+        tp_min_pct=0.6,
+        tp_atr_mult=1.0,
         stop_min_pct=0.5,
         stop_atr_mult=0.75,
         exit_fraction=1.0,
@@ -287,7 +320,8 @@ def test_morning_profit_book_window_and_dynamic_thresholds():
                         "enabled": True,
                         "start_ist": "09:15",
                         "until_ist": "10:00",
-                        "tp_min_pct": 0.3,
+                        "tp_min_pct": 0.6,
+                        "tp_atr_mult": 1.0,
                         "stop_min_pct": 0.5,
                     }
                 }
@@ -300,8 +334,25 @@ def test_morning_profit_book_window_and_dynamic_thresholds():
     assert not soft.in_morning_profit_window(datetime(2026, 11, 17, 10, 1, 0))
     assert not soft.in_morning_profit_window(datetime(2026, 11, 17, 10, 15, 0))
 
-    # % only (no ATR): long entry 100 → mark 100.35 = +0.35% → book
-    hit = morning_profit_book_decision(
+    # Day3 defaults from config
+    day3 = MorningProfitBookPolicy.from_config(
+        {
+            "trading": {
+                "session": {
+                    "morning_profit_book": {
+                        "enabled": True,
+                        "tp_min_pct": 0.6,
+                        "tp_atr_mult": 1.0,
+                    }
+                }
+            }
+        }
+    )
+    assert day3.tp_min_pct == 0.6
+    assert day3.tp_atr_mult == 1.0
+
+    # Tiny +0.3% scalp must NOT fire (was Day3 churn)
+    scalp = morning_profit_book_decision(
         open_side="long",
         open_qty=1,
         entry_avg=100.0,
@@ -310,24 +361,37 @@ def test_morning_profit_book_window_and_dynamic_thresholds():
         now=datetime(2026, 11, 17, 9, 45, 0),
         atr14=None,
     )
+    assert scalp["action"] == "none"
+    assert scalp["unrealized_pct"] == pytest.approx(0.35)
+
+    # % only (no ATR): long entry 100 → mark 100.65 = +0.65% ≥ 0.6% → book
+    hit = morning_profit_book_decision(
+        open_side="long",
+        open_qty=1,
+        entry_avg=100.0,
+        mark=100.65,
+        policy=policy,
+        now=datetime(2026, 11, 17, 9, 45, 0),
+        atr14=None,
+    )
     assert hit["action"] == "profit_book"
     assert hit["exit_qty"] == 1
-    assert hit["unrealized_pct"] == pytest.approx(0.35)
+    assert hit["unrealized_pct"] == pytest.approx(0.65)
     assert "morning_profit_book" in hit["reason"]
     assert hit["thresholds"]["mode"] == "pct_only"
 
-    # Just under TP floor (+0.25% < 0.3%)
+    # Just under TP floor (+0.55% < 0.6%)
     miss = morning_profit_book_decision(
         open_side="long",
         open_qty=1,
         entry_avg=100.0,
-        mark=100.25,
+        mark=100.55,
         policy=policy,
         now=datetime(2026, 11, 17, 9, 45, 0),
         atr14=None,
     )
     assert miss["action"] == "none"
-    assert miss["unrealized_pct"] == pytest.approx(0.25)
+    assert miss["unrealized_pct"] == pytest.approx(0.55)
 
     # Morning stop: −0.5% with no ATR
     stop = morning_profit_book_decision(
@@ -342,12 +406,12 @@ def test_morning_profit_book_window_and_dynamic_thresholds():
     assert stop["action"] == "stop"
     assert "morning_stop" in stop["reason"]
 
-    # ATR raises TP: entry 100, ATR14=2 → 0.5×ATR=1.0 > 0.3%×100=0.3 → need +1.0
+    # ATR raises TP: entry 100, ATR14=2 → 1.0×ATR=2.0 > 0.6%×100=0.6 → need +2.0
     atr_hold = morning_profit_book_decision(
         open_side="long",
         open_qty=1,
         entry_avg=100.0,
-        mark=100.50,  # +0.5% = 0.5 ₹ < 1.0 ATR leg
+        mark=101.00,  # +1.0% = 1.0 ₹ < 2.0 ATR leg
         policy=policy,
         now=datetime(2026, 11, 17, 9, 40, 0),
         atr14=2.0,
@@ -358,7 +422,7 @@ def test_morning_profit_book_window_and_dynamic_thresholds():
         open_side="long",
         open_qty=1,
         entry_avg=100.0,
-        mark=101.00,  # +1.0 ₹ = 0.5×ATR
+        mark=102.00,  # +2.0 ₹ = 1.0×ATR
         policy=policy,
         now=datetime(2026, 11, 17, 9, 40, 0),
         atr14=2.0,
@@ -393,7 +457,7 @@ def test_morning_profit_book_window_and_dynamic_thresholds():
         open_side="long",
         open_qty=1,
         entry_avg=100.0,
-        mark=101.0,
+        mark=102.0,
         policy=policy,
         now=datetime(2026, 11, 17, 10, 1, 0),
         atr14=2.0,
@@ -407,7 +471,7 @@ def test_morning_profit_book_window_and_dynamic_thresholds():
         open_side="long",
         open_qty=1,
         entry_avg=100.0,
-        mark=101.0,
+        mark=102.0,
         policy=policy,
         now=datetime(2026, 11, 17, 9, 30, 0),
         is_index=True,
@@ -416,18 +480,18 @@ def test_morning_profit_book_window_and_dynamic_thresholds():
     assert idx["action"] == "none"
     assert "index_not_equity" in idx["reason"]
 
-    # Short geometry (% only): +0.5% profit
+    # Short geometry (% only): +0.65% profit (≥ 0.6% floor)
     short_hit = morning_profit_book_decision(
         open_side="short",
         open_qty=1,
         entry_avg=200.0,
-        mark=199.0,
+        mark=198.7,
         policy=policy,
         now=datetime(2026, 11, 17, 9, 20, 0),
         atr14=None,
     )
     assert short_hit["action"] == "profit_book"
-    assert unrealized_pnl_pct("short", 200.0, 199.0) == pytest.approx(0.5)
+    assert unrealized_pnl_pct("short", 200.0, 198.7) == pytest.approx(0.65)
 
 
 def test_profit_book_exit_qty_full_and_scale_out():
@@ -610,10 +674,10 @@ def test_atr_trail_qty1_profit_book_and_scale_out():
 
 
 def test_risk_exit_window_aligns_soft_flatten_until():
-    """Open-book risk exits: [09:15, 15:40] IST; entries stay [09:15, 15:20)."""
+    """Open-book risk exits: [09:15, 15:40] IST; entries stay [09:15, 10:30)."""
     policy = SoftEodPolicy(
         open_ist="09:15",
-        no_new_entries_after="15:20",
+        no_new_entries_after="10:30",
         soft_flatten_ist="15:20",
         soft_flatten_until_ist="15:40",
     )
@@ -633,6 +697,7 @@ def test_risk_exit_window_aligns_soft_flatten_until():
     assert is_trading_session(open_exact, policy=policy, trading_day=True) is True
 
     mid = datetime(2026, 11, 18, 12, 0, 0)
+    assert is_trading_session(mid, policy=policy, trading_day=True) is False
     assert allow_open_book_risk_exits(mid, policy=policy, trading_day=True) is True
 
     # After entry cutoff but still in risk-exit / soft-flatten window

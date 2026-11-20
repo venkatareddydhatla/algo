@@ -55,13 +55,13 @@ class EntryCycleAdmission:
     enabled: bool = True
     anti_churn: str = "empty_slots_only"
     dynamic_enabled: bool = False
-    floor: int = 4
-    ceiling: int = 8
-    min_hybrid_abs: float = 0.65
+    floor: int = 3
+    ceiling: int = 5
+    min_hybrid_abs: float = 0.72
     afternoon_after_ist: str | None = "12:00"
-    afternoon_min_hybrid_abs: float | None = 0.70
+    afternoon_min_hybrid_abs: float | None = 0.75
     cooloff_enabled: bool = True
-    cooloff_minutes: int = 90
+    cooloff_minutes: int = 180
     cooloff_same_session: bool = True
     _pending: dict[str, PendingEntry] = field(default_factory=dict)
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -82,15 +82,15 @@ class EntryCycleAdmission:
             enabled=True,
             anti_churn=str(sel["anti_churn"]),
             dynamic_enabled=bool(dyn.get("enabled", False)),
-            floor=int(dyn.get("floor", 4)),
+            floor=int(dyn.get("floor", 3)),
             ceiling=ceiling,
-            min_hybrid_abs=float(dyn.get("min_hybrid_abs", 0.65)),
+            min_hybrid_abs=float(dyn.get("min_hybrid_abs", 0.72)),
             afternoon_after_ist=str(aft_after) if aft_after else None,
             afternoon_min_hybrid_abs=(
                 float(aft_min) if aft_min is not None else None
             ),
             cooloff_enabled=bool(cool.get("enabled", True)),
-            cooloff_minutes=int(cool.get("minutes", 90)),
+            cooloff_minutes=int(cool.get("minutes", 180)),
             cooloff_same_session=bool(cool.get("same_session_only", True)),
         )
 
