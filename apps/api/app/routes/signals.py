@@ -9,8 +9,10 @@ from fastapi import APIRouter, HTTPException, Query
 from app.marks import enrich_rows_with_prices
 from app.mock_data import (
     MOCK_SIGNALS,
+    apply_open_trade_display_actions,
     build_universe_signals,
     clear_persisted_pine_signals,
+    rows_for_top_strip,
 )
 from options_portal_domain.config import load_config, watchlist_symbols
 from options_portal_domain.equity import (
@@ -34,6 +36,15 @@ def _normalize_pine_actions(rows: list[dict[str, Any]]) -> None:
             row["action"] = "SELL"
         elif act not in {"BUY", "SELL", "HOLD"}:
             row["action"] = "HOLD"
+        # Keep pine_action aligned when present (before open-trade overlay).
+        if "pine_action" in row:
+            pine = str(row.get("pine_action") or "HOLD").upper()
+            if pine in {"BUY_CE_BIAS", "BUY_CE", "LONG"}:
+                row["pine_action"] = "BUY"
+            elif pine in {"BUY_PE_BIAS", "BUY_PE", "SHORT"}:
+                row["pine_action"] = "SELL"
+            elif pine not in {"BUY", "SELL", "HOLD"}:
+                row["pine_action"] = "HOLD"
 
 
 async def _apply_min_equity_price_filter(
@@ -104,16 +115,20 @@ async def list_signals(
 ) -> dict:
     """List signals sorted actionable-first, then by |score| desc.
 
-    Action is Pine-only: BUY / SELL / HOLD (worker KV when present).
+    User-facing Action is Pine BUY/SELL/HOLD, except while a dry-run position is
+    open: LONG → BUY, SHORT → SELL (display / mode only). ``pine_action`` keeps
+    expire-stale signal freshness. Entries still require a fresh Pine bar.
     Symbols with LTP/close below ``min_equity_price`` (₹20) are omitted.
     """
     cfg = load_config()
     rows, source = _load_signal_rows(symbol=symbol, expand_watchlist=expand_watchlist)
     _normalize_pine_actions(rows)
     rows, floor_meta = await _apply_min_equity_price_filter(rows, cfg=cfg)
+    apply_open_trade_display_actions(rows)
     rows = sort_signal_rows(rows)
     total = len(rows)
     page = rows[offset : offset + limit]
+    sticky = sum(1 for r in page if r.get("action_from_open_trade"))
     return {
         "items": page,
         "total": total,
@@ -125,9 +140,13 @@ async def list_signals(
         "price_sources": floor_meta.get("price_sources", {}),
         "min_equity_price": floor_meta.get("min_equity_price"),
         "price_floor_dropped": floor_meta.get("price_floor_dropped", []),
+        "open_trade_action_overlay": sticky,
         "note": (
-            "Action = Pine BUY/SELL/HOLD only "
-            "(EMA13/21 cross + next 15m candle fully clear above/below both). "
+            "Action = Pine BUY/SELL/HOLD "
+            "(EMA13/21 cross + next 15m candle fully clear above/below both), "
+            "or sticky BUY/SELL while that symbol has an open dry-run trade "
+            "(LONG→BUY, SHORT→SELL; display only — entries need a fresh Pine bar). "
+            "pine_action keeps signal freshness after expire-stale. "
             "Hover reason_summary for Pine factor detail. "
             "price = live LTP when available, else candle close / last-known mark. "
             f"Symbols below ₹{float(floor_meta.get('min_equity_price') or 20):g} "
@@ -141,14 +160,20 @@ async def top_hybrid(
     limit: int = Query(5, ge=1, le=20),
     expand_watchlist: bool = Query(True),
 ) -> dict:
-    """Top BUY and SELL Pine strip candidates (ce/pe keys kept for UI compat)."""
+    """Top BUY and SELL Pine strip candidates (ce/pe keys kept for UI compat).
+
+    Strip ranking uses ``pine_action`` (fresh signal), not sticky open-trade Action.
+    """
     cfg = load_config()
     rows, source = _load_signal_rows(expand_watchlist=expand_watchlist)
     _normalize_pine_actions(rows)
     # Enrich + price-floor filter BEFORE picking TOP BUY/SELL so IDEA-like
     # sub-₹20 names cannot occupy the strip from stale Pine KV.
     rows, floor_meta = await _apply_min_equity_price_filter(rows, cfg=cfg)
-    sides = pick_top_hybrid_sides(rows, limit=limit)
+    # Capture pine before optional overlay; strip must not treat open LONGs as
+    # fresh BUY signals.
+    apply_open_trade_display_actions(rows)
+    sides = pick_top_hybrid_sides(rows_for_top_strip(rows), limit=limit)
     return {
         "ce": sides["ce"],
         "pe": sides["pe"],
@@ -157,7 +182,8 @@ async def top_hybrid(
         "min_equity_price": floor_meta.get("min_equity_price"),
         "price_floor_dropped": floor_meta.get("price_floor_dropped", []),
         "note": (
-            "Top Pine BUY / SELL (Action from buy_signal / sell_signal only). "
+            "Top Pine BUY / SELL from fresh pine_action only "
+            "(sticky open-trade Action does not enter the strip). "
             f"Excludes symbols below ₹{float(floor_meta.get('min_equity_price') or 20):g}."
         ),
     }
@@ -174,6 +200,8 @@ async def get_signal(signal_id: str) -> dict:
     for s in rows:
         if s["id"] == signal_id:
             row = dict(s)
+            _normalize_pine_actions([row])
+            apply_open_trade_display_actions([row])
             await enrich_rows_with_prices([row])
             return {
                 **row,
