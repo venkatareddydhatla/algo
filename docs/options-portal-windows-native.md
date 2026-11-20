@@ -248,13 +248,30 @@ git pull origin cursor/trades-page-round-trips-cb5e
 
 Open http://127.0.0.1:5173/trades — Open positions unchanged; Closed trades show Symbol, Side LONG/SHORT, Entry/Exit IST, Entry/Exit px, PnL, Reason, dry_run.
 
-### Pull expire stale Pine Action → HOLD (stacked) — tip
+### Pull fifty volatile F&O watchlist (stacked) — tip
 
-Watchlist **Action** shows **BUY/SELL** only while that signal’s 15m bar is current (same 15m, or still the latest closed bar). Afterwards → **HOLD** and `pine.signal.*` KV is updated/cleared so morning signals (e.g. APOLLOHOSP SELL) cannot linger for hours. Keeps exit mark LTP + session H/L, ₹20 floor, 120m cooloff, profit candle, Pine clear-EMA, **09:30**, max open **10**. Stacked on `cursor/fix-exit-mark-ltp-38ba` (PR #52).
+Replaces full NSE F&O with Venkata’s **~48 volatile equities** (`universe: volatile_fno50`). Excludes **Nifty Financial Services** (FINNIFTY). Maps: Asahi → **ASAHIINDIA**, Tata Motors → **TMPV**, LTIM → **LTM**, GUJGASLTD → **GUJENERGY**; skips delisted **IDFC** (IDFCFIRSTB kept). **IDEA** stays listed; **₹20 floor** still skips entry/UI when price &lt; 20. Stacked on `cursor/expire-stale-pine-action-7f07` (PR #53).
 
 ```powershell
 cd C:\algo
-Set-ExecutionPolicy -Scope Process Bypass
+Set-ExecutionPolicy -Scope Process Bypass -Force
+.\deploy\windows\native\stop-native.ps1
+git fetch origin
+git checkout cursor/fifty-volatile-watchlist-bc1e
+git pull origin cursor/fifty-volatile-watchlist-bc1e
+.\deploy\windows\native\setup-native.ps1
+.\deploy\windows\native\start-native.ps1 -WithWorker
+```
+
+**Must stop then start.** Verify Signals/watchlist shows ~48 names (ASAHIINDIA, TMPV, LTM, GUJENERGY; no FINNIFTY / full F&O). IDEA may appear but will not enter while LTP &lt; ₹20. After merge into the tip chain / `main`, pull that branch instead.
+
+### Pull expire stale Pine Action → HOLD (stacked)
+
+Watchlist **Action** shows **BUY/SELL** only while that signal’s 15m bar is current (same 15m, or still the latest closed bar). Afterwards → **HOLD** and `pine.signal.*` KV is updated/cleared so morning signals (e.g. APOLLOHOSP SELL) cannot linger for hours. Keeps exit mark LTP + session H/L, ₹20 floor, 120m cooloff, profit candle, Pine clear-EMA, **09:30**, max open **10**. Prefer the fifty-volatile tip above. Stacked on `cursor/fix-exit-mark-ltp-38ba` (PR #52).
+
+```powershell
+cd C:\algo
+Set-ExecutionPolicy -Scope Process Bypass -Force
 .\deploy\windows\native\stop-native.ps1
 git fetch origin
 git checkout cursor/expire-stale-pine-action-7f07

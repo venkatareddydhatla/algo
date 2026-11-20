@@ -68,6 +68,25 @@ def test_resolve_universe_alias():
     assert len(symbols) >= 200
 
 
+def test_resolve_volatile_fno50_universe():
+    """Default trading universe is Venkata’s volatile equities (not full F&O)."""
+    csv_path = ROOT / "config" / "universe" / "volatile_fno50_underlyings.csv"
+    rows = load_universe_csv(csv_path)
+    symbols = resolve_watchlist_symbols(
+        {"universe": "volatile_fno50"}, config_dir=ROOT / "config"
+    )
+    assert len(symbols) == len(rows) == 48
+    assert "ASAHIINDIA" in symbols  # Asahi India Glass (not ASHAI)
+    assert "TMPV" in symbols  # Tata Motors → TMPV
+    assert "LTM" in symbols  # LTIMindtree LTIM → LTM
+    assert "GUJENERGY" in symbols  # Gujarat Gas → GUJENERGY
+    assert "IDEA" in symbols  # kept; ₹20 floor still skips entry
+    assert "FINNIFTY" not in symbols  # Nifty Financial Services excluded
+    assert "IDFC" not in symbols  # delisted / merged into IDFCFIRSTB
+    assert "NIFTY" not in symbols
+    assert all(r.kind == "equity" for r in rows)
+
+
 def test_symbols_demo_flag():
     symbols = resolve_watchlist_symbols(
         {
@@ -81,14 +100,18 @@ def test_symbols_demo_flag():
 
 
 def test_active_scan_cap_positive():
-    watch = resolve_watchlist_symbols({"universe": "nse_fno"}, config_dir=ROOT / "config")
+    watch = resolve_watchlist_symbols(
+        {"universe": "volatile_fno50"}, config_dir=ROOT / "config"
+    )
     active = active_scan_symbols(watch, {"max_active_symbols": 20})
     assert len(active) == 20
     assert active == watch[:20]
 
 
 def test_active_scan_unlimited_zero_or_null():
-    watch = resolve_watchlist_symbols({"universe": "nse_fno"}, config_dir=ROOT / "config")
+    watch = resolve_watchlist_symbols(
+        {"universe": "volatile_fno50"}, config_dir=ROOT / "config"
+    )
     assert active_scan_symbols(watch, {"max_active_symbols": 0}) == watch
     assert active_scan_symbols(watch, {"max_active_symbols": None}) == watch
     assert len(active_scan_symbols(watch, {})) == len(watch)
@@ -100,8 +123,11 @@ def test_load_config_resolves_local_yaml(monkeypatch):
     cfg = load_config()
     wl = watchlist_symbols(cfg)
     active = scan_symbols(cfg)
-    assert len(wl) >= 200
-    # Default for this request: full universe (max_active_symbols 0/null)
+    assert cfg["trading"].get("universe") == "volatile_fno50"
+    assert len(wl) == 48
+    assert "ASAHIINDIA" in wl
+    assert "FINNIFTY" not in wl
+    # Default: score entire configured universe (max_active_symbols 0/null)
     max_active = cfg["trading"].get("max_active_symbols", 0)
     if max_active is None or int(max_active) <= 0:
         assert active == wl

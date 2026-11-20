@@ -23,21 +23,21 @@ trading:
       auto_purge: false
       allow_purge_before_live: true
       live_min_retain_days: 90
-  # Full NSE F&O watchlist (indices + equities). Worker scores the full universe by default.
-  universe: nse_fno       # alias -> config/universe/nse_fno_underlyings.csv
-  # symbols: nse_fno      # alternate: string alias instead of universe key
-  # symbols_file: config/universe/nse_fno_underlyings.csv
+  # Venkata’s volatile equities only (not full NSE F&O). Alias → CSV below.
+  universe: volatile_fno50  # config/universe/volatile_fno50_underlyings.csv
+  # symbols: volatile_fno50
+  # symbols_file: config/universe/volatile_fno50_underlyings.csv
+  # Full F&O (disabled): universe: nse_fno
   symbols_demo:          # small set for quick tests (use_symbols_demo: true)
     - NIFTY
     - BANKNIFTY
     - RELIANCE
     - TCS
   use_symbols_demo: false
-  # 0 or null = unlimited (score all ~224 F&O names). Positive N = first-N cap.
+  # 0 or null = unlimited (score entire configured universe). Positive N = first-N cap.
   max_active_symbols: 0
   scan_batch_size: 8     # concurrent symbols per worker batch (rate-limit friendly)
-  # Expected cycle: ~2-5 min full dry-run pass on one Windows machine (synthetic MD);
-  # longer with live broker ratelimit_rpm. Keep batch size modest to avoid hangs.
+  # Expected cycle: short on ~48-name volatile list; longer under live broker ratelimit_rpm.
   session:
     # Entries 09:30–15:20 (wait first 15m); cash/risk from 09:15; soft flatten 15:28.
     open: "09:15"
@@ -310,7 +310,7 @@ persistence:
 
 ui:
   guest_hide_pnl: true
-  default_symbols: nse_fno   # full watchlist; UI paginates
+  default_symbols: volatile_fno50   # volatile equities watchlist; UI paginates
   page_size: 50
 
 backtest:
