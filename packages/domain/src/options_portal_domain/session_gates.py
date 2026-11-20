@@ -1,38 +1,28 @@
-"""Soft EOD flatten + morning profit book + ATR trail/scale-out (IST).
+"""Soft EOD flatten + fixed ±2% exits + morning/ATR helpers (IST).
 
-Product rules (equity dry-run) — dual-session high conviction:
+Product rules (equity dry-run) — Pine entry + fixed open-book exits:
 
 - **New entries (open/add / flip_open)** only on NSE trading days inside the
-  cash entry window [open_ist, no_new_entries_after) IST (default **09:15–15:20**
-  under high-conviction multi-factor gate). Use ``is_trading_session`` /
-  ``SoftEodPolicy.allow_new_entries`` — nights, pre-open, and post-cutoff must
-  not persist entry fills or send entry Gmail. Multi-factor admission floors
-  live in ``high_conviction`` (+ ``entry_selection`` ranking). Risk exits /
-  soft flatten still run through soft_flatten_until.
+  cash entry window [open_ist, no_new_entries_after) IST (default **09:15–15:20**).
+  Use ``is_trading_session`` / ``SoftEodPolicy.allow_new_entries`` — nights,
+  pre-open, and post-cutoff must not persist entry fills or send entry Gmail.
+  Primary entry engine: Pine buy/sell. Risk exits / soft flatten still run
+  through soft_flatten_until.
 - **Index underlyings** (NIFTY, BANKNIFTY, … / NSE_INDEX|BSE_INDEX) never use
   stock hybrid entry; open index paper is soft-closed with ``index_not_equity``.
-- **Open-book risk exits** (``profit_book``, ``profit_scale_out``, ``atr_stop``,
-  ``atr_trail``, ``morning_profit_book``, ``morning_stop``) only on NSE trading
-  days inside ``[open_ist, soft_flatten_until_ist]`` IST (default **09:15–15:40**,
-  aligned with soft_flatten_until). Use ``allow_open_book_risk_exits`` /
-  ``SoftEodPolicy.in_risk_exit_window``. Outside that window the worker may
-  still poll for marks / news / TA — **no risk-exit fills or Gmail**.
-- **ATR trailing stop + profit scale-out** (stocks only; during the risk-exit
-  window above) on the ~15s open-book poll (`trading.risk.atr_trail_scale_out`):
-  - Initial stop: uPnL ≤ −2.0×ATR14 (or −1.2% if ATR missing) → ``atr_stop``
-  - Trail activates at uPnL ≥ +1.5×ATR (or +0.8%): trail = extreme − 1.2×ATR
-    (long high−ATR; short low+ATR); extreme updates each poll; never loosen;
-    touch → ``atr_trail``
-  - Profit: uPnL ≥ +2.5×ATR (or +1.2%): qty>1 → 50% ``profit_scale_out``;
-    **qty=1 → full exit ``profit_book``** (current dry-run size)
-  - Same-tick priority: stop/trail > scale/profit > soft_flatten
-- **Morning dynamic TP/stop** [morning_tp_ist, morning_tp_until_ist] inclusive
-  by HH:MM (default **09:15–10:00 IST**), stocks only (not indices), on the
-  ~15s open-book poll (also requires the risk-exit cash window):
-  - Profit: uPnL ≥ max(1.0% entry, 1.5×ATR14) → ``morning_profit_book``
-  - Stop: uPnL ≤ −max(1.0% entry, 1.25×ATR14) → ``morning_stop``
-  - Prefer hold through noise unless hard stop. After 10:00: no morning exits
-    (all-day ATR path with raised profit_book ≥ 2.5×ATR).
+- **Fixed ±2% open-book exits** (stocks only; **open positions only** — not an
+  entry filter) on the ~15s poll (`trading.risk.fixed_pct_exit`):
+  - Long: mark ≥ entry×1.02 → ``pct_profit_2``; mark ≤ entry×0.98 → ``pct_stop_2``
+  - Short: mark ≤ entry×0.98 → ``pct_profit_2``; mark ≥ entry×1.02 → ``pct_stop_2``
+  - Same-tick priority: stop > profit > (disabled ATR/morning) > soft_flatten
+- **Open-book risk exits** (``pct_profit_2``, ``pct_stop_2``, plus optional
+  ``profit_book`` / ``atr_*`` / ``morning_*`` when re-enabled) only on NSE
+  trading days inside ``[open_ist, soft_flatten_until_ist]`` IST (default
+  **09:15–15:40**). Use ``allow_open_book_risk_exits``. Outside that window
+  the worker may still poll for marks / news / TA — **no risk-exit fills**.
+- **ATR trail / morning dynamic TP** remain in code but are **disabled** as
+  primary exits while fixed ±2% is on (`atr_trail_scale_out.enabled: false`,
+  `morning_profit_book.enabled: false`). Soft EOD flatten stays as safety.
 - Soft flatten window [soft_flatten_ist, soft_flatten_until_ist] inclusive by
   HH:MM (default **15:28–15:40 IST**): close open paper equity unless |hybrid|
   ≥ overnight floor (**0.85**) on the same side **and** trend confirmed.
@@ -76,6 +66,10 @@ DEFAULT_MORNING_TP_ATR_MULT = 1.5
 DEFAULT_MORNING_STOP_MIN_PCT = 1.0  # stop ≤ −max(1.0% entry, 1.25×ATR14)
 DEFAULT_MORNING_STOP_ATR_MULT = 1.25
 DEFAULT_MORNING_ATR_PERIOD = 14
+
+# Fixed ±2% profit / stop on open equity (trading.risk.fixed_pct_exit).
+DEFAULT_FIXED_PCT_PROFIT = 2.0
+DEFAULT_FIXED_PCT_STOP = 2.0
 
 # All-day ATR trail + profit scale-out (trading.risk.atr_trail_scale_out).
 # Wider stops + higher profit_book so tiny scalp books stop firing.
@@ -573,6 +567,194 @@ def morning_profit_book_decision(
             f"morning window: uPnL={pct:.3f}% between "
             f"-{thr['stop_pct_equiv']:.3f}% and +{thr['tp_pct_equiv']:.3f}% "
             f"[{mode}; {atr_note}] — hold"
+        ),
+        "exit_qty": 0,
+        "unrealized_pct": pct,
+        "unrealized_rupees": upnl_rs,
+        "thresholds": thr,
+    }
+
+
+@dataclass(frozen=True)
+class FixedPctExitPolicy:
+    """Fixed percent profit / stop for open equity (stocks only).
+
+    Config under ``trading.risk.fixed_pct_exit``. Evaluated on the ~15s
+    open-book poll while a stock position is open **inside the cash risk-exit
+    window** (default 09:15–15:40 IST trading days). **Not an entry filter** —
+    manages existing opens only.
+
+    Defaults: **+2%** profit / **−2%** stop from entry (long/short via uPnL %):
+
+    - Long: mark ≥ entry×(1+profit/100) → ``pct_profit_2``;
+      mark ≤ entry×(1−stop/100) → ``pct_stop_2``
+    - Short: mark ≤ entry×(1−profit/100) → ``pct_profit_2``;
+      mark ≥ entry×(1+stop/100) → ``pct_stop_2``
+    """
+
+    enabled: bool = True
+    profit_pct: float = DEFAULT_FIXED_PCT_PROFIT
+    stop_pct: float = DEFAULT_FIXED_PCT_STOP
+
+    @classmethod
+    def from_config(cls, config: dict[str, Any]) -> FixedPctExitPolicy:
+        trading = config.get("trading") or {}
+        risk = dict(trading.get("risk") or {})
+        raw = dict(
+            risk.get("fixed_pct_exit")
+            or trading.get("fixed_pct_exit")
+            or {}
+        )
+        return cls(
+            enabled=bool(raw.get("enabled", True)),
+            profit_pct=float(raw.get("profit_pct", DEFAULT_FIXED_PCT_PROFIT)),
+            stop_pct=float(raw.get("stop_pct", DEFAULT_FIXED_PCT_STOP)),
+        )
+
+    def reason_tags(self) -> tuple[str, str]:
+        """Stable reason strings — ``pct_profit_2`` / ``pct_stop_2`` at defaults."""
+        profit_tag = f"pct_profit_{_pct_reason_suffix(self.profit_pct)}"
+        stop_tag = f"pct_stop_{_pct_reason_suffix(self.stop_pct)}"
+        return profit_tag, stop_tag
+
+
+def _pct_reason_suffix(pct: float) -> str:
+    """Format 2.0 → ``2``, 2.5 → ``2_5`` for reason tags."""
+    value = abs(float(pct))
+    if abs(value - round(value)) < 1e-9:
+        return str(int(round(value)))
+    return str(value).replace(".", "_")
+
+
+def _empty_fixed_pct_result(
+    *,
+    active: bool,
+    action: str,
+    reason: str,
+) -> dict[str, Any]:
+    return {
+        "active": active,
+        "action": action,
+        "reason": reason,
+        "exit_qty": 0,
+        "unrealized_pct": None,
+        "unrealized_rupees": None,
+        "thresholds": None,
+    }
+
+
+def fixed_pct_exit_decision(
+    *,
+    open_side: PositionSide | None,
+    open_qty: int,
+    entry_avg: float | None,
+    mark: float | None,
+    policy: FixedPctExitPolicy,
+    now: datetime | None = None,
+    is_index: bool = False,
+    session_policy: SoftEodPolicy | None = None,
+    trading_day: bool | None = None,
+) -> dict[str, Any]:
+    """Evaluate fixed ±pct profit/stop for an open equity position.
+
+    Returns keys: active, action (``pct_profit_2``|``pct_stop_2``|``none``),
+    reason, exit_qty, unrealized_pct, unrealized_rupees, thresholds.
+
+    Same-tick priority inside this helper: stop before profit. When ``now`` /
+    ``trading_day`` are supplied, refuses fills outside the cash risk-exit
+    window. Threshold-only unit tests may omit ``now``.
+    """
+    if is_index:
+        return _empty_fixed_pct_result(
+            active=False,
+            action="none",
+            reason="index_not_equity — fixed pct exits stocks only",
+        )
+    if not policy.enabled:
+        return _empty_fixed_pct_result(
+            active=False,
+            action="none",
+            reason="fixed_pct_exit disabled",
+        )
+    if open_side is None or int(open_qty) <= 0:
+        return _empty_fixed_pct_result(
+            active=False,
+            action="none",
+            reason="no open position",
+        )
+    if now is not None or trading_day is not None:
+        if not allow_open_book_risk_exits(
+            now, policy=session_policy, trading_day=trading_day
+        ):
+            soft = session_policy or SoftEodPolicy()
+            return _empty_fixed_pct_result(
+                active=False,
+                action="none",
+                reason=(
+                    f"outside_risk_exit_window: "
+                    f"{soft.open_ist}-{soft.soft_flatten_until_ist} IST "
+                    f"(fixed pct exits refused; marks may still refresh)"
+                ),
+            )
+    if entry_avg is None or float(entry_avg) <= 0 or mark is None or float(mark) <= 0:
+        return _empty_fixed_pct_result(
+            active=True,
+            action="none",
+            reason="fixed_pct_exit: missing entry_avg/mark",
+        )
+
+    entry = float(entry_avg)
+    px = float(mark)
+    pct = unrealized_pnl_pct(open_side, entry, px)
+    upnl_rs = pct / 100.0 * entry
+    profit_thr = abs(float(policy.profit_pct))
+    stop_thr = abs(float(policy.stop_pct))
+    profit_tag, stop_tag = policy.reason_tags()
+    thr = {
+        "profit_pct": profit_thr,
+        "stop_pct": stop_thr,
+        "profit_mark_long": entry * (1.0 + profit_thr / 100.0),
+        "stop_mark_long": entry * (1.0 - stop_thr / 100.0),
+        "profit_mark_short": entry * (1.0 - profit_thr / 100.0),
+        "stop_mark_short": entry * (1.0 + stop_thr / 100.0),
+    }
+    qty = profit_book_exit_qty(int(open_qty), fraction=1.0)
+    side = str(open_side).strip().lower()
+
+    # Stop before profit (mutually exclusive for a single mark, but keep order).
+    if pct <= -stop_thr + 1e-12:
+        return {
+            "active": True,
+            "action": stop_tag,
+            "reason": (
+                f"{stop_tag}: {side} uPnL={pct:.3f}% ≤ −{stop_thr:g}% "
+                f"(entry={entry:.4f} mark={px:.4f})"
+            ),
+            "exit_qty": qty,
+            "unrealized_pct": pct,
+            "unrealized_rupees": upnl_rs,
+            "thresholds": thr,
+        }
+    if pct >= profit_thr - 1e-12:
+        return {
+            "active": True,
+            "action": profit_tag,
+            "reason": (
+                f"{profit_tag}: {side} uPnL={pct:.3f}% ≥ +{profit_thr:g}% "
+                f"(entry={entry:.4f} mark={px:.4f})"
+            ),
+            "exit_qty": qty,
+            "unrealized_pct": pct,
+            "unrealized_rupees": upnl_rs,
+            "thresholds": thr,
+        }
+    return {
+        "active": True,
+        "action": "none",
+        "reason": (
+            f"fixed_pct_exit hold: {side} uPnL={pct:.3f}% "
+            f"inside ±{profit_thr:g}%/{stop_thr:g}% "
+            f"(entry={entry:.4f} mark={px:.4f})"
         ),
         "exit_qty": 0,
         "unrealized_pct": pct,
@@ -1087,7 +1269,7 @@ def allow_open_book_risk_exits(
     policy: SoftEodPolicy | None = None,
     trading_day: bool | None = None,
 ) -> bool:
-    """True when ATR/morning open-book risk exits may place fills.
+    """True when open-book risk exits may place fills.
 
     Requires an NSE trading day and IST clock in
     ``[policy.open_ist, policy.soft_flatten_until_ist]`` inclusive
@@ -1097,8 +1279,9 @@ def allow_open_book_risk_exits(
     - ``in_soft_flatten_window`` — soft flatten only ``[15:28, 15:40]``
     - ``is_cash_market_open`` — UI badge ``[09:15, 15:30)``
 
-    Outside this window: mark polls / news / TA OK; no ``profit_book`` /
-    ``atr_stop`` / ``atr_trail`` / ``morning_*`` fills or exit Gmail.
+    Outside this window: mark polls / news / TA OK; no ``pct_profit_2`` /
+    ``pct_stop_2`` / ``profit_book`` / ``atr_*`` / ``morning_*`` fills or
+    exit Gmail.
     """
     pol = policy or SoftEodPolicy()
     clock = _ist_clock(now)

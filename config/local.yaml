@@ -48,7 +48,7 @@ trading:
     soft_flatten_poll_interval_sec: 15
     overnight_hold_min_hybrid_abs: 0.85
     morning_profit_book:
-      enabled: true
+      enabled: false
       start_ist: "09:15"
       until_ist: "10:00"
       tp_min_pct: 1.0
@@ -57,7 +57,7 @@ trading:
       stop_atr_mult: 1.25
       atr_period: 14
       exit_fraction: 1.0
-    user_hours_note: "09:15–15:40 IST (entries 09:15–15:20; soft flatten 15:28–15:40; overnight |h|≥0.85 + trend; no hard 15:40 square-off)"
+    user_hours_note: "09:15–15:40 IST (entries 09:15–15:20; soft flatten 15:28–15:40; overnight |h|≥0.85 + trend; fixed ±2% open exits; no hard 15:40 square-off)"
   # EMA13/21 cross + next 15m open confirm (ST/ADX/vol not entry gates).
   pine_signals:
     enabled: true
@@ -83,15 +83,19 @@ trading:
     avoid_expiry_after_ist: "15:00"  # same-day expiry cut-off unless overridden
   risk:
     max_lots_per_symbol: 2
-    max_open_symbols: 6
+    max_open_symbols: 10
     max_day_loss_inr: 25000
     max_premium_spread_pct: 2.0
     min_option_oi: 50000
     equity_share_qty: 1
     max_equity_qty_per_symbol: 1
     require_news_context: false  # if true, skip orders when news pipeline degraded
-    atr_trail_scale_out:
+    fixed_pct_exit:
       enabled: true
+      profit_pct: 2.0
+      stop_pct: 2.0
+    atr_trail_scale_out:
+      enabled: false
       atr_period: 14
       stop_atr_mult: 2.0
       stop_pct: 1.2
@@ -131,7 +135,7 @@ trading:
         minutes: 120
         same_session_only: true
       capacity:
-        max_open: 6
+        max_open: 10
         max_open_low_wr: 4
       win_rate:
         threshold: 0.50
@@ -162,7 +166,7 @@ trading:
       dynamic_capacity:
         enabled: true
         floor: 2
-        ceiling: 6
+        ceiling: 10
         min_hybrid_abs: 0.75
         afternoon_after_ist: "12:00"
         afternoon_min_hybrid_abs: 0.75

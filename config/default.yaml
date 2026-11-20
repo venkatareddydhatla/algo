@@ -53,13 +53,10 @@ trading:
     soft_flatten_until_ist: "15:40"  # inclusive end; refuse soft_flatten after this HH:MM
     soft_flatten_poll_interval_sec: 15  # open-book loop; independent of full scan
     overnight_hold_min_hybrid_abs: 0.85  # |hybrid| ≥ this + same-side + trend → overnight
-    # Morning first-hour dynamic TP/stop (stocks only; indices blocked separately).
-    # Window 09:15–10:00 IST. ATR-aware; % floors if ATR14 unavailable.
-    # Prefer hold through noise: raised vs Day3 scalp thresholds.
-    # TP:  uPnL ≥ max(1.0% entry, 1.5×ATR14) → morning_profit_book
-    # Stop: uPnL ≤ −max(1.0% entry, 1.25×ATR14) → morning_stop
+    # Morning first-hour dynamic TP/stop — OFF while fixed ±2% is primary.
+    # Kept for rollback (set enabled: true + fixed_pct_exit.enabled: false).
     morning_profit_book:
-      enabled: true
+      enabled: false
       start_ist: "09:15"
       until_ist: "10:00"           # inclusive HH:MM; after 10:00 no morning TP/stop
       tp_min_pct: 1.0
@@ -68,7 +65,7 @@ trading:
       stop_atr_mult: 1.25
       atr_period: 14
       exit_fraction: 1.0           # 1.0 full exit; 0.5 later for scale-out when qty>1
-    user_hours_note: "09:15–15:40 IST (entries 09:15–15:20; soft flatten 15:28–15:40; overnight |h|≥0.85 + trend; no hard 15:40 square-off)"
+    user_hours_note: "09:15–15:40 IST (entries 09:15–15:20; soft flatten 15:28–15:40; overnight |h|≥0.85 + trend; fixed ±2% open exits; no hard 15:40 square-off)"
   # Pine equity dry-run (primary): EMA13/21 cross + next 15m open confirm.
   # buy  = prior crossover  AND open > both EMAs; sell = prior crossunder AND open < both.
   # ST/ADX/vol kept for diagnostics only (not buy/sell gate). Stocks-only dry_run.
@@ -97,21 +94,25 @@ trading:
     avoid_expiry_after_ist: "15:00"  # same-day expiry cut-off unless overridden
   risk:
     max_lots_per_symbol: 2
-    max_open_symbols: 6        # high-conviction hard cap (4 when rolling WR < 50%)
+    max_open_symbols: 10       # simultaneous open trades/symbols ceiling
     max_day_loss_inr: 25000
     max_premium_spread_pct: 2.0
     min_option_oi: 50000
     equity_share_qty: 1        # mirror of trading.equity.share_qty (risk gate default)
     max_equity_qty_per_symbol: 1
     require_news_context: false  # if true, skip orders when news pipeline degraded
-    # All-day ATR trail + profit scale-out for open equity (stocks only; ~15s poll).
-    # Priority same tick: atr_stop/atr_trail > profit_book|profit_scale_out > soft_flatten.
-    # Wider stops + higher profit_book so tiny scalp books stop firing.
-    # qty=1 (current): profit threshold → full exit reason profit_book (locks winners).
-    # qty>1: scale_out_fraction (0.5) → profit_scale_out. Morning TP/stop separate.
-    # Discretionary profit exits require min_rrr ≥ 1.2 (profit ≥ 1.2× stop distance).
-    atr_trail_scale_out:
+    # Fixed ±2% profit/stop on OPEN equity only (not an entry filter; ~15s poll).
+    # Long: mark≥entry×1.02 → pct_profit_2; mark≤entry×0.98 → pct_stop_2
+    # Short: mark≤entry×0.98 → pct_profit_2; mark≥entry×1.02 → pct_stop_2
+    # Priority same tick: pct_stop/profit > (disabled ATR/morning) > soft_flatten.
+    fixed_pct_exit:
       enabled: true
+      profit_pct: 2.0
+      stop_pct: 2.0
+    # All-day ATR trail + profit scale-out — OFF while fixed ±2% is primary.
+    # Kept for rollback (set enabled: true + fixed_pct_exit.enabled: false).
+    atr_trail_scale_out:
+      enabled: false
       atr_period: 14
       stop_atr_mult: 2.0       # initial stop: uPnL ≤ −2.0×ATR → atr_stop
       stop_pct: 1.2            # ATR missing → −1.2% of entry
@@ -156,7 +157,7 @@ trading:
         minutes: 120             # after any trade on symbol (same session)
         same_session_only: true
       capacity:
-        max_open: 6
+        max_open: 10
         max_open_low_wr: 4       # when rolling WR < threshold
       win_rate:
         threshold: 0.50
@@ -188,7 +189,7 @@ trading:
       dynamic_capacity:
         enabled: true
         floor: 2
-        ceiling: 6               # mirrors max_open_symbols
+        ceiling: 10              # mirrors max_open_symbols
         min_hybrid_abs: 0.75     # base; session_min_hybrid_abs by clock (+ late WR)
         afternoon_after_ist: "12:00"
         afternoon_min_hybrid_abs: 0.75
