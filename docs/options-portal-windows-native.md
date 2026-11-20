@@ -248,9 +248,31 @@ git pull origin cursor/trades-page-round-trips-cb5e
 
 Open http://127.0.0.1:5173/trades — Open positions unchanged; Closed trades show Symbol, Side LONG/SHORT, Entry/Exit IST, Entry/Exit px, PnL, Reason, dry_run.
 
-### Pull fixed ±2% open exits (stacked) — tip
+### Pull Day start purge + 09:30 entry gate (stacked) — tip
 
-Open equity dry-run only: exit at **+2%** profit or **−2%** stop from entry (`pct_profit_2` / `pct_stop_2`). Not an entry filter. ATR trail + morning dynamic TP **off** as primary; soft EOD flatten stays. Pine buy/sell entry + stocks-only + `dry_run` unchanged. **max_open_symbols / capacity ceiling = 10**. Stacked on `cursor/pine-next-candle-confirm-99ae` (PR #46).
+Clean Day start: full Windows purge of paper closed+open so the portal is empty for today. **No new entries before 09:30 IST** (first 15m 09:15–09:30 must complete); entry window **09:30–15:20**. Open-book **±2%** exits still run from cash open **09:15**. Pine next-candle, max open **10**, stocks-only, `dry_run` unchanged. Stacked on `cursor/fixed-2pct-exits-d814` (PR #47).
+
+```powershell
+cd C:\algo
+Set-ExecutionPolicy -Scope Process Bypass
+.\deploy\windows\native\stop-native.ps1
+git fetch origin
+git checkout cursor/purge-930-entry-gate-5e77
+git pull origin cursor/purge-930-entry-gate-5e77
+.\deploy\windows\native\setup-native.ps1
+
+# Clean Day start — preview then wipe all paper fills + opens
+.\.venv\Scripts\python.exe scripts\purge_paper_ledger.py
+.\.venv\Scripts\python.exe scripts\purge_paper_ledger.py --yes
+
+.\deploy\windows\native\start-native.ps1 -WithWorker
+```
+
+Confirm `config/local.yaml`: `trading.session.entries_open: "09:30"`, `no_new_entries_after: "15:20"`, `open: "09:15"`. Worker before 09:30: `outside_entry_session: before entries_open_ist=09:30` while open-book ticks may still show `fixed_pct=…`. Still `dry_run` only.
+
+### Pull fixed ±2% open exits (stacked)
+
+Open equity dry-run only: exit at **+2%** profit or **−2%** stop from entry (`pct_profit_2` / `pct_stop_2`). Not an entry filter. ATR trail + morning dynamic TP **off** as primary; soft EOD flatten stays. Pine buy/sell entry + stocks-only + `dry_run` unchanged. **max_open_symbols / capacity ceiling = 10**. Prefer the 09:30 gate tip above. Stacked on `cursor/pine-next-candle-confirm-99ae` (PR #46).
 
 ```powershell
 cd C:\algo

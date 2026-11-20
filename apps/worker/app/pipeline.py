@@ -384,6 +384,7 @@ async def run_symbol_tick(
     )
     result["session"] = {
         "open_ist": soft_policy.open_ist,
+        "entries_open_ist": soft_policy.entries_open_ist,
         "soft_flatten_ist": soft_policy.soft_flatten_ist,
         "soft_flatten_until_ist": soft_policy.soft_flatten_until_ist,
         "morning_tp_ist": soft_policy.morning_tp_ist,
@@ -398,6 +399,7 @@ async def run_symbol_tick(
         "past_soft_flatten_until": soft_policy.past_soft_flatten_until(ist_now),
         "past_no_new_entries": soft_policy.past_no_new_entries(ist_now),
         "before_session_open": soft_policy.before_session_open(ist_now),
+        "before_entries_open": soft_policy.before_entries_open(ist_now),
         "allow_new_entries": soft_policy.allow_new_entries(ist_now),
         "is_trading_session": entry_session,
         "allow_open_book_risk_exits": risk_exit_session,
@@ -793,15 +795,16 @@ async def run_symbol_tick(
         if any(getattr(i, "action_kind", None) in {"entry", "flip_open"} for i in intents):
             clear_atr_trail_state(symbol)
 
-    # Cash entry window only: [open_ist, no_new_entries_after) on trading days.
-    # Nights / pre-open / after soft-flatten start → drop entry/flip_open; exits kept.
-    # Soft flatten + overnight hold use separate gates above (unchanged).
+    # Cash entry window only: [entries_open_ist, no_new_entries_after) on trading days.
+    # Nights / pre-09:30 / after cutoff → drop entry/flip_open; exits kept.
+    # Soft flatten + overnight hold / ±2% risk exits use separate gates (unchanged).
     if not entry_session:
         before = len(intents)
         intents = filter_entry_intents(intents, allow_entries=False)
-        if soft_policy.before_session_open(ist_now):
+        if soft_policy.before_entries_open(ist_now):
             gate_note = (
-                f"outside_entry_session: before open_ist={soft_policy.open_ist} IST"
+                f"outside_entry_session: before entries_open_ist="
+                f"{soft_policy.entries_open_ist} IST"
             )
         elif soft_policy.past_no_new_entries(ist_now):
             gate_note = (

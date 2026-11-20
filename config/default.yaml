@@ -42,11 +42,12 @@ trading:
   # longer with live broker ratelimit_rpm. Keep batch size modest to avoid hangs.
   session:
     # NSE equity/F&O regular session (IST); calendar holidays applied in code.
-    # High-conviction multi-factor entries [open, no_new_entries_after) IST
-    # (09:15–15:20) via is_trading_session. Floors/filters in high_conviction.
-    # Risk exits / soft flatten still run all cash session (to soft_flatten_until).
+    # New entries [entries_open, no_new_entries_after) IST (09:30–15:20) via
+    # is_trading_session — wait for first 15m candle (09:15–09:30) to complete.
+    # Cash open + open-book ±2% risk exits still from open (09:15) to soft_flatten_until.
     # Soft flatten 15:28–15:40 IST. Overnight |h|≥0.85 + trend confirmed.
-    open: "09:15"
+    open: "09:15"                  # cash / risk-exit window start
+    entries_open: "09:30"          # no new entries before 09:30 IST
     close: "15:30"                 # NSE regular close
     no_new_entries_after: "15:20"  # no new opens after 15:20 IST
     soft_flatten_ist: "15:28"      # close unless overnight conviction + trend
@@ -65,7 +66,7 @@ trading:
       stop_atr_mult: 1.25
       atr_period: 14
       exit_fraction: 1.0           # 1.0 full exit; 0.5 later for scale-out when qty>1
-    user_hours_note: "09:15–15:40 IST (entries 09:15–15:20; soft flatten 15:28–15:40; overnight |h|≥0.85 + trend; fixed ±2% open exits; no hard 15:40 square-off)"
+    user_hours_note: "09:15–15:40 IST (entries 09:30–15:20; soft flatten 15:28–15:40; overnight |h|≥0.85 + trend; fixed ±2% open exits; no hard 15:40 square-off)"
   # Pine equity dry-run (primary): EMA13/21 cross + next 15m open confirm.
   # buy  = prior crossover  AND open > both EMAs; sell = prior crossunder AND open < both.
   # ST/ADX/vol kept for diagnostics only (not buy/sell gate). Stocks-only dry_run.

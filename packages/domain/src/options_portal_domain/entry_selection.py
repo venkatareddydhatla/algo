@@ -6,7 +6,7 @@ Policy (high-conviction multi-factor — entry-hurdle ease)
 - Time-of-day |hybrid| floors (see ``high_conviction``): ≥0.75 before 12:00
   **and** after 12:00 until 14:20; after 14:20 ≥0.85 when rolling WR < 55%,
   else base ≥0.75. Score OR: top 10% of scan |hybrid|. Adaptive ±0.05.
-- Entry window **09:15–15:20 IST**; multi-factor filters applied in the worker
+- Entry window **09:30–15:20 IST**; multi-factor filters applied in the worker
   before staging (MTF, RVOL≥1.0×, ATR%>1.0%, proximity 0.1×ATR skip until
   10:30 IST, news 1h fail-open, cooloff).
 - **Max open 6** (4 when rolling WR < 50% over last 20 closed trips).

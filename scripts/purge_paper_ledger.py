@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
-"""Archive and purge equity dry-run paper fills before starting live orders.
+"""Archive and purge equity dry-run paper fills (full wipe / Day start).
 
-Dry-run week: do **not** run this — keep all paper fills for review.
-Only run when you are ready to clean the ledger before real orders.
+Also used for a **clean Day start**: wipe closed + open paper so the portal
+is empty for today's session (Windows: see docs/options-portal-paper-retention.md).
+Before live: same full wipe when ready for real orders.
 
 Usage (from repo root, with venv / editable installs):
 
   # Dry-run preview (no writes)
   python scripts/purge_paper_ledger.py
 
-  # Actually archive + purge dry_run mode ledger
+  # Actually archive + purge dry_run mode ledger (full wipe / Day start)
   python scripts/purge_paper_ledger.py --yes
 
   # Closed round-trips only (keep open positions + open entry fills)
@@ -22,6 +23,11 @@ Usage (from repo root, with venv / editable installs):
 
   # Purge without copying to paper_fills_archive
   python scripts/purge_paper_ledger.py --yes --no-archive
+
+Windows PowerShell (C:\\algo):
+
+  .\\.venv\\Scripts\\python.exe scripts\\purge_paper_ledger.py
+  .\\.venv\\Scripts\\python.exe scripts\\purge_paper_ledger.py --yes
 
 Config gate: trading.equity.paper_retention.allow_purge_before_live (default true).
 Policy: docs/options-portal-paper-retention.md

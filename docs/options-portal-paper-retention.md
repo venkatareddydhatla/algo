@@ -31,9 +31,37 @@ paper fills while reviewing the dry-run week.
 
 | Goal | Script | Keeps | Removes |
 |------|--------|-------|---------|
+| **Clean Day start** — empty portal (no closed history, no opens) | `scripts/purge_paper_ledger.py --yes` | Nothing in live ledger | All fills + all positions |
 | Empty **Open** list; keep closed history (e.g. 16 Nov completed rows) | `scripts/purge_open_positions.py --confirm` | Closed round-trips | Open positions + unpaired entry fills |
 | Clear **bad closed** history; keep opens | `scripts/purge_closed_trades.py --confirm` | Open positions + unpaired entries | Completed round-trip fill legs |
-| Wipe **everything** (before live) | `scripts/purge_paper_ledger.py --yes` | Nothing in live ledger | All fills + all positions |
+| Wipe **everything** (before live / same as Day start) | `scripts/purge_paper_ledger.py --yes` | Nothing in live ledger | All fills + all positions |
+
+## Clean Day start (purge all paper trades + opens)
+
+Use a **full wipe** so Trades / Open positions are empty for today’s dry-run
+session. Prefer this over open-only or closed-only when Venkata wants a clean
+portal for the day. Archives to `paper_fills_archive` unless `--no-archive`.
+
+### Windows PowerShell (from repo root)
+
+```powershell
+cd C:\algo
+# Preview: fills / open_positions counts (no writes)
+.\.venv\Scripts\python.exe scripts\purge_paper_ledger.py
+
+# Archive + purge ALL dry_run fills and open positions
+.\.venv\Scripts\python.exe scripts\purge_paper_ledger.py --yes
+```
+
+Optional: skip archive copy with `--no-archive`. Equivalent open+closed pair:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\purge_closed_trades.py --confirm
+.\.venv\Scripts\python.exe scripts\purge_open_positions.py --confirm
+```
+
+After `--yes`, Open positions and Closed trades are empty in the UI. Restart
+the worker if it was running so marks/session state refresh.
 
 ## Purge open positions only (keep closed round-trips)
 
