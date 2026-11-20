@@ -1,4 +1,4 @@
-"""Soft EOD flatten + morning profit book + light index market-sentiment (IST).
+"""Soft EOD flatten + morning profit book + ATR trail/scale-out (IST).
 
 Product rules (equity dry-run):
 - **New entries (open/add / flip_open)** only on NSE trading days inside the
@@ -7,6 +7,15 @@ Product rules (equity dry-run):
   pre-open, and post-cutoff must not persist entry fills or send entry Gmail.
 - **Index underlyings** (NIFTY, BANKNIFTY, … / NSE_INDEX|BSE_INDEX) never use
   stock hybrid entry; open index paper is soft-closed with ``index_not_equity``.
+- **ATR trailing stop + profit scale-out** (stocks only; all day while open) on
+  the ~15s open-book poll (`trading.risk.atr_trail_scale_out`):
+  - Initial stop: uPnL ≤ −1.5×ATR14 (or −0.8% if ATR missing) → ``atr_stop``
+  - Trail activates at uPnL ≥ +1.0×ATR (or +0.5%): trail = extreme − 1.0×ATR
+    (long high−ATR; short low+ATR); extreme updates each poll; never loosen;
+    touch → ``atr_trail``
+  - Profit: uPnL ≥ +1.5×ATR (or +0.8%): qty>1 → 50% ``profit_scale_out``;
+    **qty=1 → full exit ``profit_book``** (current dry-run size)
+  - Same-tick priority: stop/trail > scale/profit > soft_flatten
 - **Morning dynamic TP/stop** [morning_tp_ist, morning_tp_until_ist] inclusive
   by HH:MM (default **09:15–10:00 IST**), stocks only (not indices), on the
   ~15s open-book poll:
@@ -54,6 +63,17 @@ DEFAULT_MORNING_TP_ATR_MULT = 0.5
 DEFAULT_MORNING_STOP_MIN_PCT = 0.5  # stop ≤ −max(0.5% entry, 0.75×ATR14)
 DEFAULT_MORNING_STOP_ATR_MULT = 0.75
 DEFAULT_MORNING_ATR_PERIOD = 14
+
+# All-day ATR trail + profit scale-out (trading.risk.atr_trail_scale_out).
+DEFAULT_ATR_TRAIL_ATR_PERIOD = 14
+DEFAULT_ATR_INITIAL_STOP_ATR_MULT = 1.5
+DEFAULT_ATR_INITIAL_STOP_PCT = 0.8  # % of entry when ATR missing
+DEFAULT_ATR_TRAIL_ACTIVATE_ATR_MULT = 1.0
+DEFAULT_ATR_TRAIL_ACTIVATE_PCT = 0.5
+DEFAULT_ATR_TRAIL_ATR_MULT = 1.0  # distance from extreme
+DEFAULT_ATR_PROFIT_ATR_MULT = 1.5
+DEFAULT_ATR_PROFIT_PCT = 0.8
+DEFAULT_ATR_SCALE_OUT_FRACTION = 0.5
 
 
 def parse_hhmm(value: str) -> time:
@@ -491,6 +511,330 @@ def morning_profit_book_decision(
         "exit_qty": 0,
         "unrealized_pct": pct,
         "unrealized_rupees": upnl_rs,
+        "thresholds": thr,
+    }
+
+
+@dataclass(frozen=True)
+class AtrTrailScaleOutPolicy:
+    """All-day ATR initial stop + trailing stop + profit scale-out (stocks).
+
+    Config under ``trading.risk.atr_trail_scale_out``. Evaluated on the ~15s
+    open-book poll while a stock position is open (indices excluded).
+
+    Thresholds (per-share vs entry; ATR path uses ATR×mult; missing ATR → %):
+
+    - **Initial stop** ``atr_stop``: uPnL ≤ −stop_atr_mult×ATR (or −stop_pct%)
+    - **Trail activate** at uPnL ≥ activate_atr_mult×ATR (or +activate_pct%);
+      trail stop = extreme − trail_atr_mult×ATR (long) / extreme + (short);
+      extreme updates each poll; trail never loosens; touch → ``atr_trail``
+    - **Profit** ≥ profit_atr_mult×ATR (or +profit_pct%): qty>1 → 50%
+      ``profit_scale_out``; **qty=1 → full exit ``profit_book``**
+    """
+
+    enabled: bool = True
+    atr_period: int = DEFAULT_ATR_TRAIL_ATR_PERIOD
+    stop_atr_mult: float = DEFAULT_ATR_INITIAL_STOP_ATR_MULT
+    stop_pct: float = DEFAULT_ATR_INITIAL_STOP_PCT
+    trail_activate_atr_mult: float = DEFAULT_ATR_TRAIL_ACTIVATE_ATR_MULT
+    trail_activate_pct: float = DEFAULT_ATR_TRAIL_ACTIVATE_PCT
+    trail_atr_mult: float = DEFAULT_ATR_TRAIL_ATR_MULT
+    profit_atr_mult: float = DEFAULT_ATR_PROFIT_ATR_MULT
+    profit_pct: float = DEFAULT_ATR_PROFIT_PCT
+    scale_out_fraction: float = DEFAULT_ATR_SCALE_OUT_FRACTION
+
+    @classmethod
+    def from_config(cls, config: dict[str, Any]) -> AtrTrailScaleOutPolicy:
+        trading = config.get("trading") or {}
+        risk = dict(trading.get("risk") or {})
+        raw = dict(
+            risk.get("atr_trail_scale_out")
+            or trading.get("atr_trail_scale_out")
+            or {}
+        )
+        return cls(
+            enabled=bool(raw.get("enabled", True)),
+            atr_period=int(raw.get("atr_period", DEFAULT_ATR_TRAIL_ATR_PERIOD)),
+            stop_atr_mult=float(
+                raw.get("stop_atr_mult", DEFAULT_ATR_INITIAL_STOP_ATR_MULT)
+            ),
+            stop_pct=float(raw.get("stop_pct", DEFAULT_ATR_INITIAL_STOP_PCT)),
+            trail_activate_atr_mult=float(
+                raw.get(
+                    "trail_activate_atr_mult", DEFAULT_ATR_TRAIL_ACTIVATE_ATR_MULT
+                )
+            ),
+            trail_activate_pct=float(
+                raw.get("trail_activate_pct", DEFAULT_ATR_TRAIL_ACTIVATE_PCT)
+            ),
+            trail_atr_mult=float(
+                raw.get("trail_atr_mult", DEFAULT_ATR_TRAIL_ATR_MULT)
+            ),
+            profit_atr_mult=float(
+                raw.get("profit_atr_mult", DEFAULT_ATR_PROFIT_ATR_MULT)
+            ),
+            profit_pct=float(raw.get("profit_pct", DEFAULT_ATR_PROFIT_PCT)),
+            scale_out_fraction=float(
+                raw.get("scale_out_fraction", DEFAULT_ATR_SCALE_OUT_FRACTION)
+            ),
+        )
+
+    def distance_rupees(
+        self, entry_avg: float, atr14: float | None, *, kind: str
+    ) -> tuple[float, str]:
+        """Per-share ₹ distance for stop / activate / trail / profit.
+
+        Returns ``(rupees, mode)`` where mode is ``atr`` or ``pct_only``.
+        """
+        entry = float(entry_avg)
+        atr_val = float(atr14) if atr14 is not None and float(atr14) > 0 else None
+        if kind == "stop":
+            atr_mult, pct = self.stop_atr_mult, self.stop_pct
+        elif kind == "activate":
+            atr_mult, pct = self.trail_activate_atr_mult, self.trail_activate_pct
+        elif kind == "trail":
+            atr_mult, pct = self.trail_atr_mult, self.trail_activate_pct
+        elif kind == "profit":
+            atr_mult, pct = self.profit_atr_mult, self.profit_pct
+        else:
+            raise ValueError(f"unknown distance kind={kind!r}")
+        pct_leg = abs(float(pct)) / 100.0 * entry
+        if atr_val is not None:
+            return abs(float(atr_mult)) * atr_val, "atr"
+        return pct_leg, "pct_only"
+
+
+def _empty_atr_trail_result(
+    *,
+    active: bool,
+    action: str,
+    reason: str,
+    trail_state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "active": active,
+        "action": action,
+        "reason": reason,
+        "exit_qty": 0,
+        "unrealized_pct": None,
+        "unrealized_rupees": None,
+        "trail_state": dict(trail_state) if trail_state else None,
+        "thresholds": None,
+    }
+
+
+def atr_trail_scale_out_decision(
+    *,
+    open_side: PositionSide | None,
+    open_qty: int,
+    entry_avg: float | None,
+    mark: float | None,
+    policy: AtrTrailScaleOutPolicy,
+    atr14: float | None = None,
+    is_index: bool = False,
+    trail_state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Evaluate all-day ATR stop / trail / profit scale-out.
+
+    Mutates ``trail_state`` in place when provided (keys: activated, extreme,
+    trail_stop). Same-tick priority inside this helper: ``atr_stop`` >
+    ``atr_trail`` > ``profit_scale_out``/``profit_book``.
+
+    **qty=1 profit behavior:** at the profit threshold, exit the full open qty
+    with reason ``profit_book`` (dry-run share_qty is currently 1). When
+    ``open_qty > 1``, exit ``scale_out_fraction`` (default 50%) as
+    ``profit_scale_out``.
+    """
+    state = trail_state if trail_state is not None else {
+        "activated": False,
+        "extreme": None,
+        "trail_stop": None,
+    }
+
+    if is_index:
+        return _empty_atr_trail_result(
+            active=False,
+            action="none",
+            reason="index_not_equity — ATR trail/scale-out stocks only",
+            trail_state=state,
+        )
+    if not policy.enabled:
+        return _empty_atr_trail_result(
+            active=False,
+            action="none",
+            reason="atr_trail_scale_out disabled",
+            trail_state=state,
+        )
+    if open_side is None or int(open_qty) <= 0:
+        return _empty_atr_trail_result(
+            active=False,
+            action="none",
+            reason="no open position",
+            trail_state=state,
+        )
+    if entry_avg is None or float(entry_avg) <= 0 or mark is None or float(mark) <= 0:
+        return _empty_atr_trail_result(
+            active=True,
+            action="none",
+            reason="atr_trail: missing entry_avg/mark",
+            trail_state=state,
+        )
+
+    entry = float(entry_avg)
+    px = float(mark)
+    pct = unrealized_pnl_pct(open_side, entry, px)
+    upnl_rs = pct / 100.0 * entry
+    stop_dist, stop_mode = policy.distance_rupees(entry, atr14, kind="stop")
+    act_dist, act_mode = policy.distance_rupees(entry, atr14, kind="activate")
+    trail_dist, trail_mode = policy.distance_rupees(entry, atr14, kind="trail")
+    profit_dist, profit_mode = policy.distance_rupees(entry, atr14, kind="profit")
+    atr_val = float(atr14) if atr14 is not None and float(atr14) > 0 else None
+    atr_note = (
+        f"ATR{policy.atr_period}={atr_val:.4f}"
+        if atr_val is not None
+        else f"ATR{policy.atr_period}=unavailable→pct_only"
+    )
+    thr = {
+        "stop_rupees": stop_dist,
+        "activate_rupees": act_dist,
+        "trail_rupees": trail_dist,
+        "profit_rupees": profit_dist,
+        "stop_mode": stop_mode,
+        "activate_mode": act_mode,
+        "trail_mode": trail_mode,
+        "profit_mode": profit_mode,
+        "atr": atr_val,
+    }
+
+    # 1) Initial stop — all day while open.
+    if upnl_rs <= -float(stop_dist):
+        return {
+            "active": True,
+            "action": "atr_stop",
+            "reason": (
+                f"atr_stop: uPnL={pct:.3f}% ({upnl_rs:.4f}/sh) ≤ "
+                f"-{stop_dist:.4f} "
+                f"[{stop_mode}; {atr_note}; "
+                f"stop={policy.stop_atr_mult}×ATR|{policy.stop_pct}%]"
+            ),
+            "exit_qty": int(open_qty),
+            "unrealized_pct": pct,
+            "unrealized_rupees": upnl_rs,
+            "trail_state": dict(state),
+            "thresholds": thr,
+        }
+
+    # 2) Trail activate + never-loosen update + touch check.
+    activated = bool(state.get("activated"))
+    if (not activated) and upnl_rs >= float(act_dist):
+        activated = True
+        state["activated"] = True
+        state["extreme"] = px
+        if open_side == "long":
+            state["trail_stop"] = px - float(trail_dist)
+        else:
+            state["trail_stop"] = px + float(trail_dist)
+
+    if activated:
+        prev_extreme = state.get("extreme")
+        prev_stop = state.get("trail_stop")
+        if open_side == "long":
+            extreme = px if prev_extreme is None else max(float(prev_extreme), px)
+            raw_stop = extreme - float(trail_dist)
+            # Never loosen: trail stop only ratchets up for longs.
+            trail_stop = (
+                raw_stop
+                if prev_stop is None
+                else max(float(prev_stop), raw_stop)
+            )
+        else:
+            extreme = px if prev_extreme is None else min(float(prev_extreme), px)
+            raw_stop = extreme + float(trail_dist)
+            # Never loosen: trail stop only ratchets down for shorts.
+            trail_stop = (
+                raw_stop
+                if prev_stop is None
+                else min(float(prev_stop), raw_stop)
+            )
+        state["activated"] = True
+        state["extreme"] = extreme
+        state["trail_stop"] = trail_stop
+
+        touched = (
+            px <= float(trail_stop)
+            if open_side == "long"
+            else px >= float(trail_stop)
+        )
+        if touched:
+            return {
+                "active": True,
+                "action": "atr_trail",
+                "reason": (
+                    f"atr_trail: mark={px:.4f} touched trail_stop={trail_stop:.4f} "
+                    f"(extreme={extreme:.4f}; trail={policy.trail_atr_mult}×ATR|"
+                    f"{policy.trail_activate_pct}% dist={trail_dist:.4f}) "
+                    f"[{trail_mode}; {atr_note}]"
+                ),
+                "exit_qty": int(open_qty),
+                "unrealized_pct": pct,
+                "unrealized_rupees": upnl_rs,
+                "trail_state": dict(state),
+                "thresholds": thr,
+            }
+
+    # 3) Profit book / scale-out.
+    if upnl_rs >= float(profit_dist):
+        qty = int(open_qty)
+        if qty > 1:
+            exit_qty = profit_book_exit_qty(
+                qty, fraction=float(policy.scale_out_fraction)
+            )
+            action = "profit_scale_out"
+            qty_note = (
+                f"scale_out {exit_qty}/{qty} "
+                f"(fraction={policy.scale_out_fraction})"
+            )
+        else:
+            # qty=1 (current dry-run): full exit so winners lock.
+            exit_qty = qty
+            action = "profit_book"
+            qty_note = "qty=1 full exit profit_book"
+        return {
+            "active": True,
+            "action": action,
+            "reason": (
+                f"{action}: uPnL={pct:.3f}% ({upnl_rs:.4f}/sh) ≥ "
+                f"{profit_dist:.4f} "
+                f"[{profit_mode}; {atr_note}; "
+                f"profit={policy.profit_atr_mult}×ATR|{policy.profit_pct}%; "
+                f"{qty_note}]"
+            ),
+            "exit_qty": exit_qty,
+            "unrealized_pct": pct,
+            "unrealized_rupees": upnl_rs,
+            "trail_state": dict(state),
+            "thresholds": thr,
+        }
+
+    hold_bits = [f"uPnL={pct:.3f}%"]
+    if activated:
+        hold_bits.append(
+            f"trail_active extreme={state.get('extreme')} "
+            f"stop={state.get('trail_stop')}"
+        )
+    else:
+        hold_bits.append(f"trail_inactive (need ≥+{act_dist:.4f})")
+    return {
+        "active": True,
+        "action": "none",
+        "reason": (
+            f"atr_trail hold: {'; '.join(hold_bits)} "
+            f"[stop=-{stop_dist:.4f}; profit=+{profit_dist:.4f}; {atr_note}]"
+        ),
+        "exit_qty": 0,
+        "unrealized_pct": pct,
+        "unrealized_rupees": upnl_rs,
+        "trail_state": dict(state),
         "thresholds": thr,
     }
 

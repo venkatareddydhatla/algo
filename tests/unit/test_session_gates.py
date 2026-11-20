@@ -12,10 +12,12 @@ from options_portal_domain.equity import (
     unrealized_pnl_pct,
 )
 from options_portal_domain.session_gates import (
+    AtrTrailScaleOutPolicy,
     MarketSentimentPolicy,
     MorningProfitBookPolicy,
     SoftEodPolicy,
     at_or_after_ist,
+    atr_trail_scale_out_decision,
     compute_index_bias,
     entry_conflicts_with_index,
     filter_entry_intents,
@@ -460,3 +462,256 @@ def test_profit_book_exit_qty_full_and_scale_out():
     assert len(intents) == 1
     assert intents[0].qty == 2
     assert intents[0].action_kind == "exit"
+
+
+def test_atr_trail_policy_from_config_under_trading_risk():
+    policy = AtrTrailScaleOutPolicy.from_config(
+        {
+            "trading": {
+                "risk": {
+                    "atr_trail_scale_out": {
+                        "enabled": True,
+                        "stop_atr_mult": 1.5,
+                        "stop_pct": 0.8,
+                        "trail_activate_atr_mult": 1.0,
+                        "trail_activate_pct": 0.5,
+                        "trail_atr_mult": 1.0,
+                        "profit_atr_mult": 1.5,
+                        "profit_pct": 0.8,
+                        "scale_out_fraction": 0.5,
+                    }
+                }
+            }
+        }
+    )
+    assert policy.enabled is True
+    assert policy.stop_atr_mult == 1.5
+    assert policy.profit_atr_mult == 1.5
+    assert policy.scale_out_fraction == 0.5
+
+
+def test_atr_trail_activation_and_never_loosen():
+    """Trail activates at +1.0×ATR; extreme updates; trail stop never loosens."""
+    # ATR=4 → activate +4, profit +6, trail dist 4 — room to ratchet without booking.
+    policy = AtrTrailScaleOutPolicy()
+    state: dict = {"activated": False, "extreme": None, "trail_stop": None}
+
+    hold = atr_trail_scale_out_decision(
+        open_side="long",
+        open_qty=1,
+        entry_avg=100.0,
+        mark=103.00,  # +3 < +4 activate
+        policy=policy,
+        atr14=4.0,
+        trail_state=state,
+    )
+    assert hold["action"] == "none"
+    assert state["activated"] is False
+
+    act = atr_trail_scale_out_decision(
+        open_side="long",
+        open_qty=1,
+        entry_avg=100.0,
+        mark=104.00,  # +4 = 1.0×ATR → activate; trail_stop=100
+        policy=policy,
+        atr14=4.0,
+        trail_state=state,
+    )
+    assert act["action"] == "none"
+    assert state["activated"] is True
+    assert state["extreme"] == pytest.approx(104.0)
+    assert state["trail_stop"] == pytest.approx(100.0)
+
+    # New high still below profit (+6) → extreme + trail ratchet up
+    higher = atr_trail_scale_out_decision(
+        open_side="long",
+        open_qty=1,
+        entry_avg=100.0,
+        mark=105.50,
+        policy=policy,
+        atr14=4.0,
+        trail_state=state,
+    )
+    assert higher["action"] == "none"
+    assert state["extreme"] == pytest.approx(105.50)
+    assert state["trail_stop"] == pytest.approx(101.50)  # 105.5 − 4
+    stop_after_high = float(state["trail_stop"])
+
+    # Pullback that does not touch trail — trail must not loosen
+    pullback = atr_trail_scale_out_decision(
+        open_side="long",
+        open_qty=1,
+        entry_avg=100.0,
+        mark=104.50,
+        policy=policy,
+        atr14=4.0,
+        trail_state=state,
+    )
+    assert pullback["action"] == "none"
+    assert state["extreme"] == pytest.approx(105.50)
+    assert state["trail_stop"] == pytest.approx(stop_after_high)
+
+    # Touch trail → atr_trail full exit
+    touch = atr_trail_scale_out_decision(
+        open_side="long",
+        open_qty=1,
+        entry_avg=100.0,
+        mark=101.50,  # ≤ trail_stop 101.50
+        policy=policy,
+        atr14=4.0,
+        trail_state=state,
+    )
+    assert touch["action"] == "atr_trail"
+    assert touch["exit_qty"] == 1
+    assert "atr_trail" in touch["reason"]
+
+
+def test_atr_trail_qty1_profit_book_and_scale_out():
+    """qty=1 at +1.5×ATR → full profit_book; qty>1 → 50% profit_scale_out."""
+    policy = AtrTrailScaleOutPolicy()
+    # entry 100, ATR=2 → profit at +3.0
+    qty1 = atr_trail_scale_out_decision(
+        open_side="long",
+        open_qty=1,
+        entry_avg=100.0,
+        mark=103.00,
+        policy=policy,
+        atr14=2.0,
+        trail_state={"activated": False, "extreme": None, "trail_stop": None},
+    )
+    assert qty1["action"] == "profit_book"
+    assert qty1["exit_qty"] == 1
+    assert "qty=1 full exit profit_book" in qty1["reason"]
+
+    qty4 = atr_trail_scale_out_decision(
+        open_side="long",
+        open_qty=4,
+        entry_avg=100.0,
+        mark=103.00,
+        policy=policy,
+        atr14=2.0,
+        trail_state={"activated": False, "extreme": None, "trail_stop": None},
+    )
+    assert qty4["action"] == "profit_scale_out"
+    assert qty4["exit_qty"] == 2
+
+    intents = plan_equity_intents(
+        "APOLLOHOSP",
+        SignalAction.EXIT,
+        open_side="long",
+        open_qty=4,
+        qty=1,
+        price=103.0,
+        reason=qty4["reason"],
+        exit_qty=qty4["exit_qty"],
+    )
+    assert intents[0].qty == 2
+
+
+def test_atr_trail_missing_atr_pct_fallback_and_initial_stop():
+    """ATR missing → % floors; initial stop at −0.8%; stop beats profit same tick."""
+    policy = AtrTrailScaleOutPolicy()
+    state: dict = {"activated": False, "extreme": None, "trail_stop": None}
+
+    # −0.8% stop with no ATR: use mark clearly through the floor (float-safe)
+    stop = atr_trail_scale_out_decision(
+        open_side="long",
+        open_qty=1,
+        entry_avg=100.0,
+        mark=99.10,  # −0.9% ≤ −0.8%
+        policy=policy,
+        atr14=None,
+        trail_state=state,
+    )
+    assert stop["action"] == "atr_stop"
+    assert stop["thresholds"]["stop_mode"] == "pct_only"
+    assert "atr_stop" in stop["reason"]
+
+    # Just above stop (−0.5%) — hold / no activate yet (+0.5% needed)
+    hold = atr_trail_scale_out_decision(
+        open_side="long",
+        open_qty=1,
+        entry_avg=100.0,
+        mark=99.50,
+        policy=policy,
+        atr14=None,
+        trail_state={"activated": False, "extreme": None, "trail_stop": None},
+    )
+    assert hold["action"] == "none"
+
+    # Activate at +0.5% with no ATR
+    act_state: dict = {"activated": False, "extreme": None, "trail_stop": None}
+    atr_trail_scale_out_decision(
+        open_side="long",
+        open_qty=1,
+        entry_avg=100.0,
+        mark=100.50,
+        policy=policy,
+        atr14=None,
+        trail_state=act_state,
+    )
+    assert act_state["activated"] is True
+    assert act_state["trail_stop"] == pytest.approx(100.0)  # 100.5 − 0.5%
+
+    # Profit book pct fallback +0.8% (mark above floor for float safety)
+    book = atr_trail_scale_out_decision(
+        open_side="long",
+        open_qty=1,
+        entry_avg=100.0,
+        mark=100.90,
+        policy=policy,
+        atr14=None,
+        trail_state={"activated": False, "extreme": None, "trail_stop": None},
+    )
+    assert book["action"] == "profit_book"
+    assert book["thresholds"]["profit_mode"] == "pct_only"
+
+    # ATR path initial stop: −1.5×ATR=−3.0 on entry 100
+    atr_stop = atr_trail_scale_out_decision(
+        open_side="long",
+        open_qty=1,
+        entry_avg=100.0,
+        mark=97.00,
+        policy=policy,
+        atr14=2.0,
+        trail_state={"activated": False, "extreme": None, "trail_stop": None},
+    )
+    assert atr_stop["action"] == "atr_stop"
+    assert atr_stop["thresholds"]["stop_mode"] == "atr"
+
+    # Indices skipped
+    idx = atr_trail_scale_out_decision(
+        open_side="long",
+        open_qty=1,
+        entry_avg=100.0,
+        mark=97.00,
+        policy=policy,
+        atr14=2.0,
+        is_index=True,
+    )
+    assert idx["action"] == "none"
+    assert "index_not_equity" in idx["reason"]
+
+
+def test_atr_trail_priority_stop_over_profit_same_tick():
+    """If somehow both bands could apply, stop wins (checked first)."""
+    # Pathological: use a custom policy where stop is positive? Not realistic.
+    # Instead: activated trail touch at a mark that is also above profit —
+    # trail checked before profit. Seed trail_stop above profit mark geometry.
+    policy = AtrTrailScaleOutPolicy()
+    state = {
+        "activated": True,
+        "extreme": 110.0,
+        "trail_stop": 108.0,  # already tight; mark 108 touches trail and is +profit
+    }
+    # mark 108 = +8% >> profit 1.5×ATR, but also touches trail
+    hit = atr_trail_scale_out_decision(
+        open_side="long",
+        open_qty=1,
+        entry_avg=100.0,
+        mark=108.0,
+        policy=policy,
+        atr14=2.0,
+        trail_state=state,
+    )
+    assert hit["action"] == "atr_trail"

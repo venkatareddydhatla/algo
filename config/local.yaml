@@ -80,6 +80,18 @@ trading:
     equity_share_qty: 1
     max_equity_qty_per_symbol: 1
     require_news_context: false  # if true, skip orders when news pipeline degraded
+    # All-day ATR trail + profit scale-out (stocks); ops-tunable multipliers.
+    atr_trail_scale_out:
+      enabled: true
+      atr_period: 14
+      stop_atr_mult: 1.5
+      stop_pct: 0.8
+      trail_activate_atr_mult: 1.0
+      trail_activate_pct: 0.5
+      trail_atr_mult: 1.0
+      profit_atr_mult: 1.5
+      profit_pct: 0.8
+      scale_out_fraction: 0.5
     # Rank by |hybrid|; dynamic floor/ceiling; empty_slots_only anti-churn.
     entry_selection:
       enabled: true
