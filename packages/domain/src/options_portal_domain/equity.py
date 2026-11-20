@@ -14,7 +14,16 @@ when market data is available:
 When today's session high/low is known (15m bars and/or LTP feed OHLC), reject
 LTP / candle-close candidates outside ``[session_low, session_high]``. Never use
 a stale candle close that prints above the session high (e.g. HINDZINC 529 vs
-day high ~520).
+day high ~520). Session H/L is a **sanity reject only** — never substitute
+session high or low as the exit / uPnL mark itself.
+
+Also reject candidates that jump more than ``~3%`` vs the symbol's last good
+live LTP (or entry when no recent LTP) so a day-low / stale print cannot fire
+``pct_profit_2`` on a short (APOLLOHOSP 8738 vs LTP ~9230).
+
+Risk exits (±2%, profit_candle, ATR/morning) must use **live equity LTP** only;
+missing / rejected marks skip the exit rather than falling through to candle
+low or entry.
 
 Never silently reuse entry price when LTP succeeded.
 Never apply another symbol's LTP / candle close / entry avg to this symbol's fill —
@@ -43,6 +52,139 @@ EquityMarkSource = Literal["ltp", "candle_close", "entry_avg", "fallback"]
 
 # Skip scoring / new entries when LTP or last close is below this (INR).
 DEFAULT_MIN_EQUITY_PRICE = 40.0
+
+# Refuse risk-exit marks that jump more than this vs last good LTP / entry.
+# ±2% profit/stop clears the gate; a ~5.6% day-low false mark (APOLLOHOSP) does not.
+DEFAULT_MARK_JUMP_PCT = 3.0
+
+# Process-local last accepted live LTP per symbol (worker + tests).
+_LAST_GOOD_LTP: dict[str, float] = {}
+
+
+def clear_last_good_ltp_cache() -> None:
+    """Test helper — wipe retained last-good LTP marks."""
+    _LAST_GOOD_LTP.clear()
+
+
+def remember_last_good_ltp(symbol: str, price: float) -> None:
+    """Retain a positive live LTP for later consistency checks."""
+    sym = str(symbol or "").strip().upper()
+    if not sym:
+        return
+    try:
+        px = float(price)
+    except (TypeError, ValueError):
+        return
+    if px > 0:
+        _LAST_GOOD_LTP[sym] = px
+
+
+def last_good_ltp(symbol: str) -> float | None:
+    """Return previously retained live LTP for ``symbol``, if any."""
+    sym = str(symbol or "").strip().upper()
+    if not sym:
+        return None
+    px = _LAST_GOOD_LTP.get(sym)
+    if px is None or px <= 0:
+        return None
+    return float(px)
+
+
+def mark_jump_pct(reference: float, candidate: float) -> float:
+    """Absolute percent jump of ``candidate`` vs ``reference`` (0 if invalid)."""
+    try:
+        ref = float(reference)
+        px = float(candidate)
+    except (TypeError, ValueError):
+        return 0.0
+    if ref <= 0 or px <= 0:
+        return 0.0
+    return abs(px - ref) / ref * 100.0
+
+
+def mark_consistent_with_recent(
+    candidate: float,
+    reference: float | None,
+    *,
+    max_jump_pct: float = DEFAULT_MARK_JUMP_PCT,
+) -> bool:
+    """True when ``candidate`` is missing-ref (no guard) or within ``max_jump_pct``.
+
+    A missing / non-positive reference → True (bootstrap: accept first live LTP).
+    """
+    if reference is None:
+        return True
+    try:
+        ref = float(reference)
+        px = float(candidate)
+        cap = float(max_jump_pct)
+    except (TypeError, ValueError):
+        return True
+    if ref <= 0 or px <= 0:
+        return False
+    if cap <= 0:
+        return True
+    return mark_jump_pct(ref, px) <= cap + 1e-12
+
+
+def risk_exit_mark_accepted(
+    *,
+    mark: float | None,
+    mark_source: str | None,
+    recent_ltp: float | None = None,
+    entry_avg: float | None = None,
+    max_jump_pct: float = DEFAULT_MARK_JUMP_PCT,
+) -> tuple[bool, str]:
+    """Whether ``mark`` may fire open-book risk exits (±2% / profit_candle / …).
+
+    Requires live ``ltp`` source and consistency vs last good LTP (else entry).
+    """
+    src = str(mark_source or "").strip().lower()
+    if src != "ltp":
+        return (
+            False,
+            f"risk exits require live LTP mark (got source={src or 'none'})",
+        )
+    if mark is None:
+        return False, "risk exits require live LTP mark (missing)"
+    try:
+        px = float(mark)
+    except (TypeError, ValueError):
+        return False, "risk exits require live LTP mark (invalid)"
+    if px <= 0:
+        return False, "risk exits require live LTP mark (non-positive)"
+
+    reference: float | None = None
+    ref_label = "recent_ltp"
+    if recent_ltp is not None:
+        try:
+            recent = float(recent_ltp)
+        except (TypeError, ValueError):
+            recent = 0.0
+        if recent > 0:
+            reference = recent
+    if reference is None and entry_avg is not None:
+        try:
+            entry = float(entry_avg)
+        except (TypeError, ValueError):
+            entry = 0.0
+        if entry > 0:
+            reference = entry
+            ref_label = "entry_avg"
+
+    if reference is not None and not mark_consistent_with_recent(
+        px, reference, max_jump_pct=max_jump_pct
+    ):
+        jump = mark_jump_pct(reference, px)
+        return (
+            False,
+            (
+                f"risk exit mark inconsistent vs {ref_label}: "
+                f"mark={px:.4f} ref={reference:.4f} jump={jump:.3f}% "
+                f"> {float(max_jump_pct):g}%"
+            ),
+        )
+    return True, "ok"
 
 
 @dataclass(frozen=True)
@@ -215,42 +357,78 @@ def resolve_equity_mark(
     min_price: float = 0.01,
     session_high: float | None = None,
     session_low: float | None = None,
+    recent_ltp: float | None = None,
+    max_jump_pct: float = DEFAULT_MARK_JUMP_PCT,
 ) -> EquityMark:
     """Pick an equity mark: LTP → candle close → entry avg → min fallback.
 
     When ``session_high`` / ``session_low`` are set, skip LTP or candle-close
     prints outside that band (stale/corrupt closes must not exceed the session
-    high). Entry avg remains a last resort even if outside the band so paper
-    exits can still complete.
+    high). Session extremes are never used as the mark itself.
+
+    When ``recent_ltp`` (last good live LTP) is set, also skip candidates that
+    jump more than ``max_jump_pct`` vs that reference — blocks day-low / stale
+    ticks that still sit inside the session band (APOLLOHOSP 8738 vs ~9230).
+
+    Entry avg remains a last resort even if outside the band so paper
+    exits can still complete (manual close). Risk exits must require ``ltp``.
 
     Callers must log when ``source != "ltp"`` so stale/entry-copy is never silent
     while market data is expected to be healthy.
     """
     rejected: list[str] = []
 
+    def _reject_jump(label: str, px: float) -> bool:
+        if recent_ltp is None:
+            return False
+        try:
+            recent = float(recent_ltp)
+        except (TypeError, ValueError):
+            return False
+        if recent <= 0:
+            return False
+        if mark_consistent_with_recent(px, recent, max_jump_pct=max_jump_pct):
+            return False
+        jump = mark_jump_pct(recent, px)
+        rejected.append(
+            f"{label}={px:.4f} jump={jump:.3f}% vs recent_ltp={recent:.4f} "
+            f"(max {float(max_jump_pct):g}%)"
+        )
+        return True
+
     if ltp is not None and float(ltp) > 0:
         px = float(ltp)
-        if mark_within_session_hl(px, session_high, session_low):
+        if not mark_within_session_hl(px, session_high, session_low):
+            rejected.append(
+                f"ltp={px:.4f} outside session H/L "
+                f"[{float(session_low):.4f}, {float(session_high):.4f}]"
+            )
+        elif _reject_jump("ltp", px):
+            pass
+        else:
             return EquityMark(
                 price=px,
                 source="ltp",
                 detail="live market last/LTP",
             )
-        rejected.append(
-            f"ltp={px:.4f} outside session H/L "
-            f"[{float(session_low):.4f}, {float(session_high):.4f}]"
-        )
 
     if candle_close is not None and float(candle_close) > 0:
         px = float(candle_close)
-        if mark_within_session_hl(px, session_high, session_low):
+        if not mark_within_session_hl(px, session_high, session_low):
+            rejected.append(
+                f"candle_close={px:.4f} outside session H/L "
+                f"[{float(session_low):.4f}, {float(session_high):.4f}]"
+            )
+        elif _reject_jump("candle_close", px):
+            pass
+        else:
             detail = (
                 "LTP unavailable — using last candle close "
                 "(may match entry if historical bars are stale)"
             )
             if rejected:
                 detail = (
-                    "LTP rejected vs session H/L — using last candle close; "
+                    "LTP rejected — using last candle close; "
                     + "; ".join(rejected)
                 )
             return EquityMark(
@@ -258,10 +436,6 @@ def resolve_equity_mark(
                 source="candle_close",
                 detail=detail,
             )
-        rejected.append(
-            f"candle_close={px:.4f} outside session H/L "
-            f"[{float(session_low):.4f}, {float(session_high):.4f}]"
-        )
 
     if entry_avg is not None and float(entry_avg) > 0:
         detail = (
@@ -270,7 +444,7 @@ def resolve_equity_mark(
         )
         if rejected:
             detail = (
-                "LTP/candle rejected vs session H/L — reusing entry avg "
+                "LTP/candle rejected — reusing entry avg "
                 f"({'; '.join(rejected)})"
             )
         return EquityMark(
