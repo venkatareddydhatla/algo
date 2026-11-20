@@ -73,6 +73,7 @@ services:
       CONFIG_PATH: /config/local.yaml
       TRADING_MODE: dry_run
       WORKER_INTERVAL_SEC: "60"
+      WORKER_SCAN_ON_BAR_CLOSE: "1"
     volumes:
       - ../config/local.yaml:/config/local.yaml:ro
     depends_on:
