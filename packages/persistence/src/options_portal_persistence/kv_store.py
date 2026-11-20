@@ -85,3 +85,17 @@ class KvStore:
         except Exception:  # noqa: BLE001
             logger.exception("kv_store set failed key=%s", key)
             return False
+
+    def delete(self, key: str) -> bool:
+        """Remove a key. Returns True when a row was deleted or key was absent."""
+        if not self.available:
+            return False
+        try:
+            with self._connect() as conn:
+                apply_kv_schema(conn)
+                conn.execute("DELETE FROM kv_store WHERE key = ?", (str(key),))
+                conn.commit()
+            return True
+        except Exception:  # noqa: BLE001
+            logger.exception("kv_store delete failed key=%s", key)
+            return False

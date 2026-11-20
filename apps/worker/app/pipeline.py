@@ -237,6 +237,20 @@ async def run_symbol_tick(
             f"₹{min_equity_price:g} — skip watchlist score and new entry"
         )
         logger.info("%s %s", symbol, note)
+        # Drop stale pine.signal KV so watchlist / TOP BUY cannot show this name.
+        pine_kv_cleared = False
+        try:
+            from options_portal_persistence.kv_store import KvStore
+
+            kv = KvStore()
+            if kv.available:
+                pine_kv_cleared = bool(kv.delete(f"pine.signal.{symbol.upper()}"))
+                if pine_kv_cleared:
+                    logger.info(
+                        "%s cleared pine.signal KV (price_floor)", symbol.upper()
+                    )
+        except Exception:  # noqa: BLE001
+            logger.exception("%s pine.signal KV clear failed", symbol)
         return {
             "symbol": symbol.upper(),
             "hybrid_action": SignalAction.HOLD.value,
@@ -247,6 +261,7 @@ async def run_symbol_tick(
             "min_equity_price": min_equity_price,
             "candle_close": candle_close_early,
             "market_data_source": market_data_source,
+            "pine_kv_cleared": pine_kv_cleared,
         }
 
     features = registry.compute_all(candles)
@@ -891,22 +906,38 @@ async def run_symbol_tick(
     floor_px = ltp_px if ltp_px is not None else (
         float(fill_price) if may_trade and fill_price else candle_close_early
     )
-    if below_min_equity_price(floor_px, min_price=min_equity_price) and any(
-        getattr(i, "action_kind", None) in {"entry", "flip_open"} for i in intents
-    ):
-        floor_note = (
-            f"price_floor — {float(floor_px):.2f} < ₹{min_equity_price:g} "
-            "— new entry refused"
-        )
-        logger.info("%s %s", symbol, floor_note)
-        before_floor = len(intents)
-        intents = filter_entry_intents(intents, allow_entries=False)
-        result["price_floor"] = True
-        if before_floor and not intents:
-            result["order"] = None
-            result["note"] = floor_note
-            return result
-        result["note"] = f"{floor_note} — entry legs dropped; exits kept"
+    if below_min_equity_price(floor_px, min_price=min_equity_price):
+        # Always clear stale watchlist KV when mark is under the floor (even if
+        # we already scored this tick from a candle close ≥ ₹20).
+        try:
+            from options_portal_persistence.kv_store import KvStore
+
+            kv = KvStore()
+            if kv.available and kv.delete(f"pine.signal.{symbol.upper()}"):
+                result["pine_kv_cleared"] = True
+                logger.info(
+                    "%s cleared pine.signal KV (price_floor mark=%.2f)",
+                    symbol.upper(),
+                    float(floor_px),
+                )
+        except Exception:  # noqa: BLE001
+            logger.exception("%s pine.signal KV clear failed", symbol)
+        if any(
+            getattr(i, "action_kind", None) in {"entry", "flip_open"} for i in intents
+        ):
+            floor_note = (
+                f"price_floor — {float(floor_px):.2f} < ₹{min_equity_price:g} "
+                "— new entry refused"
+            )
+            logger.info("%s %s", symbol, floor_note)
+            before_floor = len(intents)
+            intents = filter_entry_intents(intents, allow_entries=False)
+            result["price_floor"] = True
+            if before_floor and not intents:
+                result["order"] = None
+                result["note"] = floor_note
+                return result
+            result["note"] = f"{floor_note} — entry legs dropped; exits kept"
 
     # Cash entry window only: [entries_open_ist, no_new_entries_after) on trading days.
     # Nights / pre-09:30 / after cutoff → drop entry/flip_open; exits kept.

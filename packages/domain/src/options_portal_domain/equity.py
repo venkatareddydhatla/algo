@@ -91,6 +91,39 @@ def below_min_equity_price(
     return px > 0 and px < floor
 
 
+def filter_rows_below_min_equity_price(
+    rows: list[dict[str, Any]],
+    *,
+    min_price: float = DEFAULT_MIN_EQUITY_PRICE,
+    price_keys: tuple[str, ...] = ("price", "ltp"),
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Split signal rows into (kept, dropped) by ``min_equity_price``.
+
+    A row is dropped only when a positive mark on ``price_keys`` is strictly
+    below the floor. Missing/unknown prices are kept (fail-open for display).
+    """
+    kept: list[dict[str, Any]] = []
+    dropped: list[dict[str, Any]] = []
+    for row in rows:
+        px: float | None = None
+        for key in price_keys:
+            raw = row.get(key)
+            if raw is None:
+                continue
+            try:
+                candidate = float(raw)
+            except (TypeError, ValueError):
+                continue
+            if candidate > 0:
+                px = candidate
+                break
+        if below_min_equity_price(px, min_price=min_price):
+            dropped.append(row)
+        else:
+            kept.append(row)
+    return kept, dropped
+
+
 def resolve_equity_mark(
     *,
     ltp: float | None = None,

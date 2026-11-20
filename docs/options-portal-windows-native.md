@@ -263,7 +263,7 @@ git pull origin cursor/price-cooloff-profit-candle-548e
 .\deploy\windows\native\start-native.ps1 -WithWorker
 ```
 
-Confirm `config/local.yaml`: `min_equity_price: 20`, `reentry_cooloff.minutes: 120`, `profit_candle_protect.enabled: true`, `fixed_pct_exit`, `entries_open: "09:30"`, `max_open_symbols: 10`, `dry_run`. Worker open-book log may show `profit_candle=profit_candle_protect` or `price_floor` skips. After merge into the tip chain / `main`, pull that branch instead.
+Confirm `config/local.yaml`: `min_equity_price: 20`, `reentry_cooloff.minutes: 120`, `profit_candle_protect.enabled: true`, `fixed_pct_exit`, `entries_open: "09:30"`, `max_open_symbols: 10`, `dry_run`. Worker open-book log may show `profit_candle=profit_candle_protect` or `price_floor` skips. Watchlist table + TOP BUY/SELL omit names under ₹20 (e.g. IDEA @ ₹12.05) and clear stale `pine.signal` KV — refresh Signals after stop/start. After merge into the tip chain / `main`, pull that branch instead.
 
 ### Pull manual Sell/Close on open trades (stacked)
 
