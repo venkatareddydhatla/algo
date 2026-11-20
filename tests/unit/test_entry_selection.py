@@ -8,12 +8,15 @@ import pytest
 
 from options_portal_domain.entry_selection import (
     EntryCandidate,
+    count_morning_entries_from_fills,
     dynamic_target_open,
     effective_min_hybrid_abs,
     entry_selection_config,
     free_open_slots,
+    in_morning_entry_window,
     in_reentry_cooloff,
     last_exit_times_from_fills,
+    morning_entry_slots_remaining,
     rank_entry_candidates,
     select_entries_for_empty_slots,
     symbols_in_reentry_cooloff,
@@ -302,8 +305,8 @@ def test_dynamic_afternoon_floor_filters_mid_scores():
     assert [c.symbol for c in afternoon] == ["STRONG", "MID75"]
 
 
-def test_day3_floor_rejects_065_admits_072():
-    """Day3 |hybrid| floor 0.72: 0.65/0.70 fail; 0.72+ pass under cap 5."""
+def test_rest_of_day_floor_rejects_065_admits_072():
+    """Rest-of-day |hybrid| floor 0.72: 0.65/0.70 fail; 0.72+ pass under ceiling 12."""
     candidates = [
         EntryCandidate("LOW65", 0.65),
         EntryCandidate("MID70", -0.70),
@@ -314,31 +317,143 @@ def test_day3_floor_rejects_065_admits_072():
     picked = select_entries_for_empty_slots(
         candidates,
         open_symbols=[],
-        max_open_symbols=5,
+        max_open_symbols=12,
         dynamic=True,
         floor=3,
-        ceiling=5,
+        ceiling=12,
         min_hybrid_abs=0.72,
     )
     assert [c.symbol for c in picked] == ["STRONG", "EDGE72"]
 
 
-def test_day3_hard_cap_five_empty_slots_only():
-    """Max opens 5 + empty_slots_only: never admit when book already full."""
-    opens = ["A", "B", "C", "D", "E"]
+def test_ceiling_twelve_empty_slots_only_when_full():
+    """Max opens 12 + empty_slots_only: never admit when book already full."""
+    opens = [f"S{i}" for i in range(12)]
     picked = select_entries_for_empty_slots(
         [EntryCandidate("STRONG", 0.99)],
         open_symbols=opens,
-        max_open_symbols=5,
+        max_open_symbols=12,
         dynamic=True,
         floor=3,
-        ceiling=5,
+        ceiling=12,
         min_hybrid_abs=0.72,
     )
     assert picked == []
 
 
-def test_day3_reentry_cooloff_180m():
+def test_morning_max_new_entries_budget_not_refill():
+    """Morning max 3 new entries — strongest first; budget is not perpetual refill."""
+    candidates = [
+        EntryCandidate(f"S{i}", 0.80 + i * 0.01) for i in range(10)
+    ]
+    picked = select_entries_for_empty_slots(
+        candidates,
+        open_symbols=[],
+        max_open_symbols=12,
+        dynamic=True,
+        floor=3,
+        ceiling=12,
+        min_hybrid_abs=0.75,
+        max_new_entries=3,
+    )
+    assert len(picked) == 3
+    assert [c.symbol for c in picked] == ["S9", "S8", "S7"]
+
+    # Remaining 0 after 3 used → no more morning admits even with empty slots
+    assert morning_entry_slots_remaining(morning_entries_used=3, max_new_entries=3) == 0
+    blocked = select_entries_for_empty_slots(
+        candidates,
+        open_symbols=[],
+        max_open_symbols=12,
+        dynamic=True,
+        floor=3,
+        ceiling=12,
+        min_hybrid_abs=0.75,
+        max_new_entries=0,
+    )
+    assert blocked == []
+
+
+def test_morning_floor_075_rejects_072():
+    """Morning |hybrid| ≥ 0.75: 0.72 fails; 0.75+ pass."""
+    candidates = [
+        EntryCandidate("EDGE72", 0.72),
+        EntryCandidate("MID75", 0.75),
+        EntryCandidate("STRONG", -0.90),
+    ]
+    picked = select_entries_for_empty_slots(
+        candidates,
+        open_symbols=[],
+        max_open_symbols=12,
+        dynamic=True,
+        floor=3,
+        ceiling=12,
+        min_hybrid_abs=0.75,
+        max_new_entries=3,
+    )
+    assert [c.symbol for c in picked] == ["STRONG", "MID75"]
+
+
+def test_in_morning_entry_window_and_effective_floor():
+    z = ist()
+    morning = datetime(2026, 11, 18, 9, 40, tzinfo=z)
+    rest = datetime(2026, 11, 18, 10, 15, tzinfo=z)
+    assert in_morning_entry_window(morning) is True
+    assert in_morning_entry_window(rest) is False
+    assert (
+        effective_min_hybrid_abs(
+            0.72,
+            now=morning,
+            morning_until_ist="10:00",
+            morning_min_hybrid_abs=0.75,
+        )
+        == 0.75
+    )
+    assert (
+        effective_min_hybrid_abs(
+            0.72,
+            now=rest,
+            morning_until_ist="10:00",
+            morning_min_hybrid_abs=0.75,
+        )
+        == 0.72
+    )
+
+
+def test_count_morning_entries_from_fills():
+    z = ist()
+    now = datetime(2026, 11, 18, 9, 50, tzinfo=z)
+    fills = [
+        {
+            "symbol": "A",
+            "action_kind": "entry",
+            "ts_ist": "2026-11-18T09:20:00+05:30",
+        },
+        {
+            "symbol": "B",
+            "action_kind": "entry",
+            "ts_ist": "2026-11-18T09:45:00+05:30",
+        },
+        {
+            "symbol": "C",
+            "action_kind": "entry",
+            "ts_ist": "2026-11-18T10:15:00+05:30",  # rest-of-day — not morning
+        },
+        {
+            "symbol": "D",
+            "action_kind": "exit",
+            "ts_ist": "2026-11-18T09:30:00+05:30",
+        },
+        {
+            "symbol": "E",
+            "action_kind": "entry",
+            "ts_ist": "2026-11-17T09:30:00+05:30",  # prior session
+        },
+    ]
+    assert count_morning_entries_from_fills(fills, now=now) == 2
+
+
+def test_dual_session_reentry_cooloff_180m():
     """180m cooloff blocks same-session re-entry; clears after window."""
     z = ist()
     closed = datetime(2026, 11, 18, 9, 40, tzinfo=z)
@@ -350,24 +465,24 @@ def test_day3_reentry_cooloff_180m():
     assert not in_reentry_cooloff(
         last_close=closed, now=after, cooloff_minutes=180, same_session_only=True
     )
-    # 90m would have cleared by 12:30 — Day3 keeps blocking
-    assert in_reentry_cooloff(
-        last_close=closed, now=within, cooloff_minutes=180, same_session_only=True
-    )
 
 
 def test_entry_selection_config_defaults():
-    cfg = {"trading": {"risk": {"max_open_symbols": 10}}}
+    cfg = {"trading": {"risk": {"max_open_symbols": 12}}}
     sel = entry_selection_config(cfg)
     assert sel["enabled"] is True
     assert sel["rank_by"] == "abs_hybrid"
     assert sel["anti_churn"] == "empty_slots_only"
-    assert sel["max_open_symbols"] == 10
+    assert sel["max_open_symbols"] == 12
     assert sel["dynamic_capacity"]["enabled"] is False
     # Cooloff defaults on even when YAML omits the block
     assert sel["reentry_cooloff"]["enabled"] is True
     assert sel["reentry_cooloff"]["minutes"] == 180
-    # Day3 omitted-YAML floors when dynamic_capacity present
+    # Dual-session morning defaults when omitted
+    assert sel["morning_session"]["enabled"] is True
+    assert sel["morning_session"]["until_ist"] == "10:00"
+    assert sel["morning_session"]["min_hybrid_abs"] == 0.75
+    assert sel["morning_session"]["max_new_entries"] == 3
     assert sel["dynamic_capacity"]["min_hybrid_abs"] == 0.72
 
 
@@ -375,7 +490,7 @@ def test_entry_selection_config_dynamic_knobs():
     cfg = {
         "trading": {
             "risk": {
-                "max_open_symbols": 5,
+                "max_open_symbols": 12,
                 "entry_selection": {
                     "enabled": True,
                     "rank_by": "abs_hybrid",
@@ -385,13 +500,17 @@ def test_entry_selection_config_dynamic_knobs():
                         "minutes": 180,
                         "same_session_only": True,
                     },
+                    "morning_session": {
+                        "enabled": True,
+                        "until_ist": "10:00",
+                        "min_hybrid_abs": 0.75,
+                        "max_new_entries": 3,
+                    },
                     "dynamic_capacity": {
                         "enabled": True,
                         "floor": 3,
-                        "ceiling": 5,
+                        "ceiling": 12,
                         "min_hybrid_abs": 0.72,
-                        "afternoon_after_ist": "12:00",
-                        "afternoon_min_hybrid_abs": 0.75,
                     },
                 },
             }
@@ -401,15 +520,16 @@ def test_entry_selection_config_dynamic_knobs():
     dyn = sel["dynamic_capacity"]
     assert dyn["enabled"] is True
     assert dyn["floor"] == 3
-    assert dyn["ceiling"] == 5
+    assert dyn["ceiling"] == 12
     assert dyn["min_hybrid_abs"] == 0.72
-    assert dyn["afternoon_after_ist"] == "12:00"
-    assert dyn["afternoon_min_hybrid_abs"] == 0.75
+    assert dyn["afternoon_after_ist"] is None
+    assert sel["morning_session"]["max_new_entries"] == 3
+    assert sel["morning_session"]["min_hybrid_abs"] == 0.75
     assert sel["reentry_cooloff"]["minutes"] == 180
     # ceiling cannot exceed hard cap
     cfg["trading"]["risk"]["entry_selection"]["dynamic_capacity"]["ceiling"] = 99
     sel2 = entry_selection_config(cfg)
-    assert sel2["dynamic_capacity"]["ceiling"] == 5
+    assert sel2["dynamic_capacity"]["ceiling"] == 12
 
 
 def test_entry_selection_config_can_disable():
@@ -472,20 +592,24 @@ def test_admission_from_config_none_when_disabled():
         {
             "trading": {
                 "risk": {
-                    "max_open_symbols": 5,
+                    "max_open_symbols": 12,
                     "entry_selection": {
                         "reentry_cooloff": {
                             "enabled": True,
                             "minutes": 180,
                             "same_session_only": True,
                         },
+                        "morning_session": {
+                            "enabled": True,
+                            "until_ist": "10:00",
+                            "min_hybrid_abs": 0.75,
+                            "max_new_entries": 3,
+                        },
                         "dynamic_capacity": {
                             "enabled": True,
                             "floor": 3,
-                            "ceiling": 5,
+                            "ceiling": 12,
                             "min_hybrid_abs": 0.72,
-                            "afternoon_after_ist": "12:00",
-                            "afternoon_min_hybrid_abs": 0.75,
                         },
                     },
                 }
@@ -493,29 +617,32 @@ def test_admission_from_config_none_when_disabled():
         }
     )
     assert adm is not None
-    assert adm.max_open_symbols == 5
+    assert adm.max_open_symbols == 12
     assert adm.anti_churn == "empty_slots_only"
     assert adm.dynamic_enabled is True
     assert adm.floor == 3
-    assert adm.ceiling == 5
+    assert adm.ceiling == 12
     assert adm.min_hybrid_abs == 0.72
     assert adm.cooloff_enabled is True
     assert adm.cooloff_minutes == 180
-    assert adm.afternoon_after_ist == "12:00"
-    assert adm.afternoon_min_hybrid_abs == 0.75
+    assert adm.morning_enabled is True
+    assert adm.morning_max_new_entries == 3
+    assert adm.morning_min_hybrid_abs == 0.75
+    assert adm.afternoon_after_ist is None
 
 
-def test_admission_effective_min_hybrid_afternoon():
+def test_admission_effective_min_hybrid_morning_vs_rest():
     EntryCycleAdmission = _load_worker_entry_admission().EntryCycleAdmission
     adm = EntryCycleAdmission(
-        max_open_symbols=5,
+        max_open_symbols=12,
         min_hybrid_abs=0.72,
-        afternoon_after_ist="12:00",
-        afternoon_min_hybrid_abs=0.75,
+        morning_enabled=True,
+        morning_until_ist="10:00",
+        morning_min_hybrid_abs=0.75,
     )
     z = ist()
-    assert adm._effective_min_hybrid(datetime(2026, 11, 17, 11, 59, tzinfo=z)) == 0.72
-    assert adm._effective_min_hybrid(datetime(2026, 11, 17, 12, 0, tzinfo=z)) == 0.75
+    assert adm._effective_min_hybrid(datetime(2026, 11, 18, 9, 40, tzinfo=z)) == 0.75
+    assert adm._effective_min_hybrid(datetime(2026, 11, 18, 10, 15, tzinfo=z)) == 0.72
 
 
 @pytest.mark.asyncio

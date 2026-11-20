@@ -34,11 +34,10 @@ trading:
   scan_batch_size: 8     # concurrent symbols/batch; ~2-5 min/full dry-run pass on one machine
   session:
     # NSE equity/F&O regular session (IST); calendar holidays applied in code.
-    # New entries only on trading days in [open, no_new_entries_after) IST
-    # (first-hour-ish 09:15–10:30). Risk exits / soft flatten still all session.
+    # Dual-session entries 09:15–11:30. Risk exits / soft flatten still all session.
     open: "09:15"
     close: "15:30"
-    no_new_entries_after: "10:30"
+    no_new_entries_after: "11:30"
     soft_flatten_ist: "15:20"
     soft_flatten_until_ist: "15:40"
     soft_flatten_poll_interval_sec: 15
@@ -47,13 +46,13 @@ trading:
       enabled: true
       start_ist: "09:15"
       until_ist: "10:00"
-      tp_min_pct: 0.6
-      tp_atr_mult: 1.0
-      stop_min_pct: 0.5
-      stop_atr_mult: 0.75
+      tp_min_pct: 1.0
+      tp_atr_mult: 1.5
+      stop_min_pct: 1.0
+      stop_atr_mult: 1.25
       atr_period: 14
       exit_fraction: 1.0
-    user_hours_note: "09:15–15:40 IST (entries 09:15–10:30; morning TP/stop 09:15–10:00; soft flatten 15:20–15:40; no hard 15:40 square-off)"
+    user_hours_note: "09:15–15:40 IST (entries 09:15–11:30; morning session 09:15–10:00; soft flatten 15:20–15:40; no hard 15:40 square-off)"
   market_sentiment:
     enabled: true
     symbols: [NIFTY, BANKNIFTY]
@@ -65,7 +64,7 @@ trading:
     avoid_expiry_after_ist: "15:00"  # same-day expiry cut-off unless overridden
   risk:
     max_lots_per_symbol: 2
-    max_open_symbols: 5        # hard ceiling; far fewer Day3 trades
+    max_open_symbols: 12       # hard ceiling restored — conviction floors choke
     max_day_loss_inr: 25000
     max_premium_spread_pct: 2.0
     min_option_oi: 50000
@@ -73,21 +72,21 @@ trading:
     max_equity_qty_per_symbol: 1
     require_news_context: false  # if true, skip orders when news pipeline degraded
     # ATR trail + profit scale-out (stocks only; cash risk-exit 09:15–15:40 IST).
-    # qty=1 → full profit_book. Overnight: no atr/profit exit fills.
+    # Wider stops + higher profit_book. Overnight: no atr/profit exit fills.
     atr_trail_scale_out:
       enabled: true
       atr_period: 14
-      stop_atr_mult: 1.5
-      stop_pct: 0.8
-      trail_activate_atr_mult: 1.0
-      trail_activate_pct: 0.5
-      trail_atr_mult: 1.0
-      profit_atr_mult: 1.5
-      profit_pct: 0.8
+      stop_atr_mult: 2.0
+      stop_pct: 1.2
+      trail_activate_atr_mult: 1.5
+      trail_activate_pct: 0.8
+      trail_atr_mult: 1.2
+      profit_atr_mult: 2.5
+      profit_pct: 1.2
       scale_out_fraction: 0.5
-    # Rank by |hybrid|; dynamic floor/ceiling; empty_slots_only anti-churn.
+    # Rank by |hybrid|; dual-session morning vs rest; empty_slots_only anti-churn.
     # Soft flatten / overnight |hybrid| ≥ 0.70 unchanged (session_gates).
-    # 180m same-session re-entry cooloff; |hybrid| ≥ 0.72 (0.75 after 12:00).
+    # Morning |h|≥0.75 / max 3 new; rest |h|≥0.72; cooloff 180m; ceiling 12.
     entry_selection:
       enabled: true
       rank_by: abs_hybrid
@@ -96,13 +95,16 @@ trading:
         enabled: true
         minutes: 180
         same_session_only: true
+      morning_session:
+        enabled: true
+        until_ist: "10:00"
+        min_hybrid_abs: 0.75
+        max_new_entries: 3
       dynamic_capacity:
         enabled: true
         floor: 3                 # min target when enough qualify
-        ceiling: 5               # ≤ max_open_symbols
-        min_hybrid_abs: 0.72     # admit only |hybrid| ≥ this
-        afternoon_after_ist: "12:00"
-        afternoon_min_hybrid_abs: 0.75
+        ceiling: 12              # ≤ max_open_symbols
+        min_hybrid_abs: 0.72     # rest-of-day admit floor
 
 hybrid:
   weights:

@@ -1,18 +1,25 @@
 """Equity dry-run entry selection: rank by |hybrid|, dynamic capacity, anti-churn.
 
-Policy (v1)
------------
+Policy (dual-session high conviction)
+-------------------------------------
 - Rank **new** entry candidates by ``|hybrid_score|`` (strongest first).
-- **Dynamic capacity** (optional): target open-book size scales with how many
-  fresh candidates clear ``min_hybrid_abs``, clamped to ``[floor, ceiling]``.
-  Admit only candidates above that |hybrid| threshold.
+- **Morning session** [open, morning_until_ist) (default **09:15–10:00 IST**):
+  admit only ``|hybrid| ≥ morning_min_hybrid_abs`` (default **0.75**);
+  **max_new_entries** total for the morning window (default **3**) — not a
+  perpetual refill when names exit.
+- **Rest of day** until ``no_new_entries_after`` (default **11:30 IST**):
+  admit ``|hybrid| ≥ min_hybrid_abs`` (default **0.72**); empty_slots_only;
+  cooloff **180m**.
+- **Dynamic capacity**: target open-book size scales with how many fresh
+  candidates clear the effective |hybrid| floor, clamped to ``[floor, ceiling]``
+  (default floor **3**, ceiling **12**). Conviction floors + entry cutoffs +
+  cooloff + higher exit thresholds do the work — do **not** use a tiny hard
+  open-cap as the main filter.
 - Fill only **empty** slots under the effective target — never rotate an
   existing open for a tiny / modest score edge (brokerage / churn control).
 - **Re-entry cooloff:** after closing a symbol (any reason), block new entry
   on the same symbol for ``reentry_cooloff.minutes`` within the same IST
   NSE session day.
-- **Afternoon floor (optional):** after ``afternoon_after_ist``, raise the
-  admit threshold to ``afternoon_min_hybrid_abs`` (stricter midday/afternoon).
 - Soft flatten and overnight ``|hybrid| >= 0.70`` stay in session_gates;
   this module does not change exit / overnight rules.
 - ``max_open_symbols`` / dynamic ``ceiling`` is the hard risk cap.
@@ -33,11 +40,14 @@ from options_portal_domain.tz import ist
 AntiChurnMode = Literal["empty_slots_only"]
 RankBy = Literal["abs_hybrid"]
 
-# Sensible defaults when YAML omits knobs (ops can manage the list in config).
-# 2026-11-18 Day3: far fewer / higher conviction (was ceiling 8 / 0.65 / 90m).
-DEFAULT_CEILING = 5
+# Dual-session defaults: conviction floors + entry cutoffs do the work;
+# open-book ceiling restored so best symbols are not blocked (was Day3 hard 5).
+DEFAULT_CEILING = 12
 DEFAULT_FLOOR = 3
 DEFAULT_MIN_HYBRID_ABS = 0.72
+DEFAULT_MORNING_UNTIL_IST = "10:00"
+DEFAULT_MORNING_MIN_HYBRID_ABS = 0.75
+DEFAULT_MORNING_MAX_NEW_ENTRIES = 3
 DEFAULT_AFTERNOON_MIN_HYBRID_ABS = 0.75
 DEFAULT_AFTERNOON_AFTER_IST = "12:00"
 DEFAULT_REENTRY_COOLOFF_MINUTES = 180
@@ -149,19 +159,49 @@ def at_or_after_hhmm(hhmm: str, now: datetime) -> bool:
     return (ch, cm) >= (th, tm)
 
 
+def before_hhmm(hhmm: str, now: datetime) -> bool:
+    """True when IST clock HH:MM is strictly before ``hhmm``."""
+    return not at_or_after_hhmm(hhmm, now)
+
+
+def in_morning_entry_window(
+    now: datetime,
+    *,
+    open_ist: str = "09:15",
+    morning_until_ist: str = DEFAULT_MORNING_UNTIL_IST,
+) -> bool:
+    """True during morning entry session ``[open_ist, morning_until_ist)`` IST."""
+    return at_or_after_hhmm(open_ist, now) and before_hhmm(morning_until_ist, now)
+
+
 def effective_min_hybrid_abs(
     base_min: float,
     *,
     now: datetime,
+    morning_until_ist: str | None = None,
+    morning_min_hybrid_abs: float | None = None,
+    open_ist: str = "09:15",
     afternoon_after_ist: str | None = None,
     afternoon_min_hybrid_abs: float | None = None,
 ) -> float:
-    """Raise |hybrid| floor after afternoon cutover when configured.
+    """Session-aware |hybrid| floor for **new entry admission**.
 
-    Soft flatten / overnight hold threshold (0.70) is separate — this only
-    affects **new entry admission**.
+    Morning (before ``morning_until_ist``): raise to ``morning_min_hybrid_abs``
+    when configured higher than base. Afternoon raise still available as a
+    belt (usually moot when entries cut at 11:30). Soft flatten / overnight
+    hold threshold (0.70) is separate.
     """
     base = float(base_min)
+    if (
+        morning_until_ist is not None
+        and morning_min_hybrid_abs is not None
+        and in_morning_entry_window(
+            now, open_ist=open_ist, morning_until_ist=str(morning_until_ist)
+        )
+    ):
+        morn = float(morning_min_hybrid_abs)
+        if morn > base:
+            return morn
     if afternoon_after_ist is None or afternoon_min_hybrid_abs is None:
         return base
     aft = float(afternoon_min_hybrid_abs)
@@ -259,6 +299,57 @@ def last_exit_times_from_fills(
     return out
 
 
+def count_morning_entries_from_fills(
+    fills: Sequence[Mapping[str, Any]] | Iterable[Mapping[str, Any]],
+    *,
+    now: datetime,
+    open_ist: str = "09:15",
+    morning_until_ist: str = DEFAULT_MORNING_UNTIL_IST,
+    session_day: date | None = None,
+) -> int:
+    """Count new entry / flip_open fills in today's morning window.
+
+    Used for the morning **max_new_entries** budget (not perpetual refill).
+    Prior-session fills and rest-of-day entries do not count.
+    """
+    _ENTRY = frozenset({"entry", "flip_open"})
+    now_ist = _as_ist(now)
+    day = session_day if session_day is not None else pnl_ist_day(now_ist)
+    open_hm = parse_hhmm(open_ist)
+    until_hm = parse_hhmm(morning_until_ist)
+    count = 0
+    for fill in fills:
+        kind = str(fill.get("action_kind") or "").strip().lower()
+        if kind not in _ENTRY:
+            continue
+        raw = (
+            fill.get("ts_ist")
+            or fill.get("ts")
+            or fill.get("ts_utc")
+            or fill.get("ts_ist_display")
+        )
+        parsed = _parse_fill_ts(raw)
+        if parsed is None:
+            continue
+        if pnl_ist_day(parsed) != day:
+            continue
+        hm = (parsed.hour, parsed.minute)
+        if open_hm <= hm < until_hm:
+            count += 1
+    return count
+
+
+def morning_entry_slots_remaining(
+    *,
+    morning_entries_used: int,
+    max_new_entries: int,
+) -> int:
+    """How many morning-window new entries may still be admitted today."""
+    budget = max(0, int(max_new_entries))
+    used = max(0, int(morning_entries_used))
+    return max(0, budget - used)
+
+
 def _parse_fill_ts(raw: Any) -> datetime | None:
     if raw is None:
         return None
@@ -292,6 +383,7 @@ def select_entries_for_empty_slots(
     ceiling: int | None = None,
     dynamic: bool = False,
     cooloff_symbols: Collection[str] | None = None,
+    max_new_entries: int | None = None,
 ) -> list[EntryCandidate]:
     """Admit strongest |hybrid| candidates into free slots only (anti-churn).
 
@@ -300,6 +392,9 @@ def select_entries_for_empty_slots(
 
     ``cooloff_symbols`` are treated like already-open for admission (blocked
     re-entry) but do not consume open-book slots.
+
+    ``max_new_entries`` (optional): hard cap on how many may be admitted this
+    call — used for morning budget remaining (not perpetual refill).
 
     When ``dynamic`` is True:
     - drop candidates with ``|hybrid| < min_hybrid_abs``;
@@ -314,6 +409,9 @@ def select_entries_for_empty_slots(
     # Cooloff symbols cannot enter; still not counted as open for capacity.
     blocked = open_set | cooloff_set
     fresh = _dedupe_fresh(candidates, blocked)
+    budget_cap = (
+        max(0, int(max_new_entries)) if max_new_entries is not None else None
+    )
 
     if dynamic:
         thr = float(min_hybrid_abs if min_hybrid_abs is not None else DEFAULT_MIN_HYBRID_ABS)
@@ -332,10 +430,14 @@ def select_entries_for_empty_slots(
             ceiling=ceiling_n,
         )
         slots = max(0, target - len(open_set))
+        if budget_cap is not None:
+            slots = min(slots, budget_cap)
         ranked = rank_entry_candidates(qualifying)
         return ranked[:slots]
 
     slots = free_open_slots(open_set, hard_cap)
+    if budget_cap is not None:
+        slots = min(slots, budget_cap)
     if slots <= 0:
         return []
     ranked = rank_entry_candidates(fresh)
@@ -372,16 +474,45 @@ def entry_selection_config(cfg: dict[str, Any] | None) -> dict[str, Any]:
     floor_n = max(0, min(floor_n, ceiling_n if ceiling_n > 0 else floor_n))
     min_h = float(dyn.get("min_hybrid_abs", DEFAULT_MIN_HYBRID_ABS))
 
-    aft_raw = dyn.get("afternoon_after_ist", DEFAULT_AFTERNOON_AFTER_IST)
-    aft_hhmm = str(aft_raw).strip() if aft_raw is not None else ""
-    aft_min_raw = dyn.get("afternoon_min_hybrid_abs", DEFAULT_AFTERNOON_MIN_HYBRID_ABS)
-    # Explicit null / empty disables afternoon raise; otherwise use defaults.
-    if aft_hhmm and aft_min_raw is not None:
-        afternoon_after_ist: str | None = aft_hhmm
-        afternoon_min: float | None = float(aft_min_raw)
+    # Morning session: higher conviction + hard new-entry budget (not refill).
+    morn_raw = sel.get("morning_session")
+    if morn_raw is None and isinstance(dyn.get("morning_session"), dict):
+        morn_raw = dyn.get("morning_session")
+    morn: dict[str, Any] = dict(morn_raw) if isinstance(morn_raw, dict) else {}
+    if morn_raw is None:
+        # Defaults on when omitted — dual-session model.
+        morning_enabled = True
+        morning_until = DEFAULT_MORNING_UNTIL_IST
+        morning_min = DEFAULT_MORNING_MIN_HYBRID_ABS
+        morning_max_new = DEFAULT_MORNING_MAX_NEW_ENTRIES
     else:
-        afternoon_after_ist = None
-        afternoon_min = None
+        morning_enabled = bool(morn.get("enabled", True))
+        morning_until = str(
+            morn.get("until_ist", DEFAULT_MORNING_UNTIL_IST)
+        ).strip() or DEFAULT_MORNING_UNTIL_IST
+        morning_min = float(
+            morn.get("min_hybrid_abs", DEFAULT_MORNING_MIN_HYBRID_ABS)
+        )
+        morning_max_new = int(
+            morn.get("max_new_entries", DEFAULT_MORNING_MAX_NEW_ENTRIES)
+        )
+
+    aft_raw = dyn.get("afternoon_after_ist")
+    # Dual-session tip: afternoon raise optional; omit / null disables.
+    # Keep explicit YAML values when set (belt if entry window extended).
+    if "afternoon_after_ist" not in dyn and "afternoon_min_hybrid_abs" not in dyn:
+        # No afternoon keys → disabled (entries cut at 11:30; morning owns raise).
+        afternoon_after_ist: str | None = None
+        afternoon_min: float | None = None
+    else:
+        aft_hhmm = str(aft_raw).strip() if aft_raw is not None else ""
+        aft_min_raw = dyn.get("afternoon_min_hybrid_abs", DEFAULT_AFTERNOON_MIN_HYBRID_ABS)
+        if aft_hhmm and aft_min_raw is not None:
+            afternoon_after_ist = aft_hhmm
+            afternoon_min = float(aft_min_raw)
+        else:
+            afternoon_after_ist = None
+            afternoon_min = None
 
     cool_raw = sel.get("reentry_cooloff")
     cool: dict[str, Any] = dict(cool_raw) if isinstance(cool_raw, dict) else {}
@@ -407,6 +538,12 @@ def entry_selection_config(cfg: dict[str, Any] | None) -> dict[str, Any]:
             "min_hybrid_abs": min_h,
             "afternoon_after_ist": afternoon_after_ist,
             "afternoon_min_hybrid_abs": afternoon_min,
+        },
+        "morning_session": {
+            "enabled": morning_enabled,
+            "until_ist": morning_until,
+            "min_hybrid_abs": morning_min,
+            "max_new_entries": max(0, morning_max_new),
         },
         "reentry_cooloff": {
             "enabled": cooloff_enabled,

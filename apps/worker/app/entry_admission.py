@@ -1,11 +1,13 @@
-"""Cycle-scoped equity entry admission — |hybrid| rank + dynamic capacity.
+"""Cycle-scoped equity entry admission — |hybrid| rank + dual-session capacity.
 
 During a full-universe scan, new ``entry`` intents are staged instead of
 first-fill by CSV/scan order. After the batch, strongest |hybrid| candidates
 fill free slots under a dynamic target (floor/ceiling + min |hybrid|).
+
+**Morning session** (default 09:15–10:00 IST): higher |hybrid| floor + hard
+max-new-entries budget (not perpetual refill). **Rest of day** until entry
+cutoff (default 11:30): base |hybrid| floor, cooloff, empty_slots_only.
 Existing opens are kept (anti-churn ``empty_slots_only``).
-Re-entry cooloff blocks same-symbol entries for N minutes after a close
-(same IST session). Afternoon may raise the |hybrid| floor.
 """
 
 from __future__ import annotations
@@ -18,9 +20,12 @@ from typing import Any
 from options_portal_domain.calendar import pnl_ist_day
 from options_portal_domain.entry_selection import (
     EntryCandidate,
+    count_morning_entries_from_fills,
     effective_min_hybrid_abs,
     entry_selection_config,
+    in_morning_entry_window,
     last_exit_times_from_fills,
+    morning_entry_slots_remaining,
     select_entries_for_empty_slots,
     symbols_in_reentry_cooloff,
 )
@@ -56,10 +61,14 @@ class EntryCycleAdmission:
     anti_churn: str = "empty_slots_only"
     dynamic_enabled: bool = False
     floor: int = 3
-    ceiling: int = 5
+    ceiling: int = 12
     min_hybrid_abs: float = 0.72
-    afternoon_after_ist: str | None = "12:00"
-    afternoon_min_hybrid_abs: float | None = 0.75
+    afternoon_after_ist: str | None = None
+    afternoon_min_hybrid_abs: float | None = None
+    morning_enabled: bool = True
+    morning_until_ist: str = "10:00"
+    morning_min_hybrid_abs: float = 0.75
+    morning_max_new_entries: int = 3
     cooloff_enabled: bool = True
     cooloff_minutes: int = 180
     cooloff_same_session: bool = True
@@ -73,6 +82,7 @@ class EntryCycleAdmission:
             return None
         dyn = dict(sel.get("dynamic_capacity") or {})
         cool = dict(sel.get("reentry_cooloff") or {})
+        morn = dict(sel.get("morning_session") or {})
         hard = int(sel["max_open_symbols"])
         ceiling = int(dyn.get("ceiling", hard))
         aft_after = dyn.get("afternoon_after_ist")
@@ -89,6 +99,10 @@ class EntryCycleAdmission:
             afternoon_min_hybrid_abs=(
                 float(aft_min) if aft_min is not None else None
             ),
+            morning_enabled=bool(morn.get("enabled", True)),
+            morning_until_ist=str(morn.get("until_ist", "10:00")),
+            morning_min_hybrid_abs=float(morn.get("min_hybrid_abs", 0.75)),
+            morning_max_new_entries=int(morn.get("max_new_entries", 3)),
             cooloff_enabled=bool(cool.get("enabled", True)),
             cooloff_minutes=int(cool.get("minutes", 180)),
             cooloff_same_session=bool(cool.get("same_session_only", True)),
@@ -130,10 +144,17 @@ class EntryCycleAdmission:
             for p in self._pending.values()
         ]
 
-    def _effective_min_hybrid(self, ist_now: Any) -> float:
+    def _effective_min_hybrid(self, ist_now: Any, *, open_ist: str = "09:15") -> float:
         return effective_min_hybrid_abs(
             self.min_hybrid_abs,
             now=ist_now,
+            morning_until_ist=(
+                self.morning_until_ist if self.morning_enabled else None
+            ),
+            morning_min_hybrid_abs=(
+                self.morning_min_hybrid_abs if self.morning_enabled else None
+            ),
+            open_ist=open_ist,
             afternoon_after_ist=self.afternoon_after_ist,
             afternoon_min_hybrid_abs=self.afternoon_min_hybrid_abs,
         )
@@ -199,6 +220,7 @@ class EntryCycleAdmission:
 
         open_symbols: list[str] = []
         cooloff_blocked: set[str] = set()
+        morning_entries_used = 0
         paper = None
         try:
             from options_portal_persistence.paper_trades import PaperTradeStore
@@ -208,14 +230,22 @@ class EntryCycleAdmission:
                 # Prefer dry_run ledger mode (same as pipeline)
                 snap = paper.portfolio_snapshot(mode="dry_run")
                 open_symbols = list(snap.get("open_symbols") or [])
+                fills = paper.list_all_fills(mode="dry_run")
                 if self.cooloff_enabled and self.cooloff_minutes > 0:
-                    fills = paper.list_all_fills(mode="dry_run")
                     last_exits = last_exit_times_from_fills(fills)
                     cooloff_blocked = symbols_in_reentry_cooloff(
                         last_exits,
                         now=ist_now,
                         cooloff_minutes=self.cooloff_minutes,
                         same_session_only=self.cooloff_same_session,
+                        session_day=pnl_ist_day(ist_now),
+                    )
+                if self.morning_enabled:
+                    morning_entries_used = count_morning_entries_from_fills(
+                        fills,
+                        now=ist_now,
+                        open_ist=soft_policy.open_ist,
+                        morning_until_ist=self.morning_until_ist,
                         session_day=pnl_ist_day(ist_now),
                     )
         except Exception:  # noqa: BLE001
@@ -226,7 +256,18 @@ class EntryCycleAdmission:
         for sym in cooloff_skipped:
             pending.pop(sym, None)
 
-        eff_min = self._effective_min_hybrid(ist_now)
+        eff_min = self._effective_min_hybrid(ist_now, open_ist=soft_policy.open_ist)
+        in_morning = self.morning_enabled and in_morning_entry_window(
+            ist_now,
+            open_ist=soft_policy.open_ist,
+            morning_until_ist=self.morning_until_ist,
+        )
+        morning_remaining: int | None = None
+        if in_morning:
+            morning_remaining = morning_entry_slots_remaining(
+                morning_entries_used=morning_entries_used,
+                max_new_entries=self.morning_max_new_entries,
+            )
 
         if not pending:
             return {
@@ -238,7 +279,34 @@ class EntryCycleAdmission:
                 "dynamic": self.dynamic_enabled,
                 "cooloff_blocked": cooloff_skipped,
                 "min_hybrid_abs_effective": eff_min,
+                "morning_session": in_morning,
+                "morning_entries_used": morning_entries_used,
+                "morning_remaining": morning_remaining,
                 "reason": "reentry_cooloff — all deferred entries blocked",
+            }
+
+        if in_morning and morning_remaining == 0:
+            skipped = sorted(
+                set(index_skipped) | set(cooloff_skipped) | set(pending)
+            )
+            reason = (
+                f"morning_entry_budget_exhausted max_new={self.morning_max_new_entries} "
+                f"used={morning_entries_used} until={self.morning_until_ist} IST"
+            )
+            logger.info("Entry selection flush skipped: %s", reason)
+            return {
+                "admitted": [],
+                "skipped": skipped,
+                "open_before": open_symbols,
+                "slots": 0,
+                "target_open": len(open_symbols),
+                "dynamic": self.dynamic_enabled,
+                "cooloff_blocked": cooloff_skipped,
+                "min_hybrid_abs_effective": eff_min,
+                "morning_session": True,
+                "morning_entries_used": morning_entries_used,
+                "morning_remaining": 0,
+                "reason": reason,
             }
 
         selected = select_entries_for_empty_slots(
@@ -253,6 +321,7 @@ class EntryCycleAdmission:
             ceiling=self.ceiling,
             dynamic=self.dynamic_enabled,
             cooloff_symbols=cooloff_blocked,
+            max_new_entries=morning_remaining,
         )
         admitted_syms = {c.symbol.upper() for c in selected}
         skipped = sorted(
@@ -268,7 +337,8 @@ class EntryCycleAdmission:
         logger.info(
             "Entry selection anti_churn=%s dynamic=%s floor=%d ceiling=%d "
             "min_|hybrid|=%.2f (base=%.2f) hard_cap=%d cooloff=%s/%dm "
-            "open=%d candidates=%d admitted=%s skipped=%d cooloff_blocked=%d",
+            "morning=%s used=%d remaining=%s open=%d candidates=%d "
+            "admitted=%s skipped=%d cooloff_blocked=%d",
             self.anti_churn,
             self.dynamic_enabled,
             self.floor,
@@ -278,6 +348,9 @@ class EntryCycleAdmission:
             self.max_open_symbols,
             self.cooloff_enabled,
             self.cooloff_minutes,
+            in_morning,
+            morning_entries_used,
+            morning_remaining if morning_remaining is not None else "-",
             len(open_symbols),
             len(pending) + len(cooloff_skipped),
             [c.symbol for c in selected],
@@ -287,7 +360,7 @@ class EntryCycleAdmission:
         if skipped:
             logger.info(
                 "Entry selection skipped "
-                "(index / cooloff / below |hybrid| / weaker / no slots): %s",
+                "(index / cooloff / below |hybrid| / weaker / no slots / morning budget): %s",
                 ", ".join(
                     (
                         f"{s}|index"
@@ -338,6 +411,9 @@ class EntryCycleAdmission:
             "min_hybrid_abs": self.min_hybrid_abs,
             "min_hybrid_abs_effective": eff_min,
             "cooloff_blocked": cooloff_skipped,
+            "morning_session": in_morning,
+            "morning_entries_used": morning_entries_used,
+            "morning_remaining": morning_remaining,
             "anti_churn": self.anti_churn,
         }
 

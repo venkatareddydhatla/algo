@@ -299,9 +299,26 @@ git pull origin cursor/fewer-high-conviction-entries-4334
 
 Verify worker log: `Entry selection enabled ... ceiling=8 min_|hybrid|=0.65 cooloff=True/90m afternoon_after=12:00` and flush lines with `cooloff_blocked`. Still `dry_run` only.
 
-### Pull stricter fewer trades Day3 (stacked) — tip
+### Pull dual-session high conviction (stacked) — tip
 
-Day3 still too many morning round-trips. Tip: **`|hybrid| ≥ 0.72`** (after **12:00 → 0.75**), hard ceiling **5**, **180 min** cooloff, **no new entries after 10:30 IST**, morning TP **max(0.6% entry, 1.0×ATR)**. Risk exits / soft flatten / ATR trail / stocks-only / after-hours gates unchanged. Stacked on `cursor/after-hours-risk-exits-1f31` (PR #39).
+Day3 still too chatty: morning scalp churn from low TP/stops, not from needing a tiny open-cap. Tip: **morning 09:15–10:00** `|hybrid| ≥ 0.75` + **max 3 new** (not refill); morning TP/stop **max(1.0%, 1.5×ATR)** / **−max(1.0%, 1.25×ATR)**; **rest of day** until **11:30** `|h| ≥ 0.72`, cooloff **180m**, ceiling **12** (floor 3); ATR stop **−2.0×**, trail act **+1.5×** / dist **1.2×**, profit_book **+2.5×** (or +1.2%). Soft flatten / stocks-only / after-hours gates unchanged. Stacked on `cursor/stricter-fewer-trades-day3-ffcc` (PR #40).
+
+```powershell
+cd C:\algo
+Set-ExecutionPolicy -Scope Process Bypass
+.\deploy\windows\native\stop-native.ps1
+git fetch origin
+git checkout cursor/dual-session-high-conviction-2224
+git pull origin cursor/dual-session-high-conviction-2224
+.\deploy\windows\native\setup-native.ps1
+.\deploy\windows\native\start-native.ps1 -WithWorker
+```
+
+Verify worker log: `Entry selection enabled ... ceiling=12 min_|hybrid|=0.72 cooloff=True/180m morning=True until=10:00 morning_min=0.75 morning_max_new=3` and session `no_new_entries_after=11:30`. Still `dry_run` only.
+
+### Pull stricter fewer trades Day3 (stacked)
+
+Day3 still too many morning round-trips. Tip: **`|hybrid| ≥ 0.72`** (after **12:00 → 0.75**), hard ceiling **5**, **180 min** cooloff, **no new entries after 10:30 IST**, morning TP **max(0.6% entry, 1.0×ATR)**. Prefer the dual-session tip above. Stacked on `cursor/after-hours-risk-exits-1f31` (PR #39).
 
 ```powershell
 cd C:\algo
@@ -318,7 +335,7 @@ Verify worker log: `Entry selection enabled ... ceiling=5 min_|hybrid|=0.72 cool
 
 ### Pull after-hours entry gate (stacked)
 
-**New equity entries** (open/add / flip_open + entry Gmail) only on NSE trading days inside the configured entry window (`trading.session.open` → `no_new_entries_after`; Day3 tip **`[09:15, 10:30)` IST**). Nights, pre-open, and post-cutoff no longer persist Action entry fills. Soft flatten / risk exits / overnight hold and news/TA scans are unchanged. Shared helper: `is_trading_session` in `session_gates`.
+**New equity entries** (open/add / flip_open + entry Gmail) only on NSE trading days inside the configured entry window (`trading.session.open` → `no_new_entries_after`; dual-session tip **`[09:15, 11:30)` IST**). Nights, pre-open, and post-cutoff no longer persist Action entry fills. Soft flatten / risk exits / overnight hold and news/TA scans are unchanged. Shared helper: `is_trading_session` in `session_gates`.
 
 ```powershell
 cd C:\algo
