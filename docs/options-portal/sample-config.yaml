@@ -96,15 +96,17 @@ trading:
         enabled: true
         pct: 0.10
       relative_volume:
-        mult: 1.2
+        mult: 1.0
         lookback_bars: 20
       atr:
         period: 14
         min_pct_of_price: 1.0
       proximity:
-        atr_mult: 0.2
+        atr_mult: 0.1
+        skip_until_ist: "10:30"
       news:
         lookback_minutes: 60
+        fail_open: true
       cooloff:
         minutes: 120
         same_session_only: true

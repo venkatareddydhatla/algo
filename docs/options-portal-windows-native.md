@@ -299,9 +299,26 @@ git pull origin cursor/fewer-high-conviction-entries-4334
 
 Verify worker log: `Entry selection enabled ... ceiling=8 min_|hybrid|=0.65 cooloff=True/90m afternoon_after=12:00` and flush lines with `cooloff_blocked`. Still `dry_run` only.
 
-### Pull high-conviction multi-factor gate (stacked) — tip
+### Pull ease entry hurdles (stacked) — tip
 
-Venkata exact multi-factor equity F&O stock gate (indices excluded). Supersedes looser dual-session entry floors: entries **09:15–15:20**; `|h|` **0.75 / 0.80 / 0.85** (before 12:00 / after 12:00 / after 14:20); MTF 15m+1h; RVOL 1.5×/20; ATR>1.2%; proximity 0.2×ATR; news 1h conflict; cooloff **120m** after any trade; max open **6** (4 if WR&lt;50% over last 20 trips); soft flatten **15:28** / overnight **0.85+trend**; adaptive ±0.05 clamp [0.70,0.90]. Stacked on `cursor/dual-session-high-conviction-2224` (PR #41).
+Day4 morning still empty: soften proximity / RVOL / news without a trade quota. Proximity **0.1×ATR**, **skip until 10:30 IST**; RVOL **≥1.0×**; news **fail-open** (hard block only on clear conflict). Keeps `|h|` floors / MTF / ATR>1% / cooloff 120m / max 6 / soft flatten 15:28 / adaptive / dry_run from tip #43. Stacked on `cursor/relax-afternoon-floors-9f4f` (PR #43).
+
+```powershell
+cd C:\algo
+Set-ExecutionPolicy -Scope Process Bypass
+.\deploy\windows\native\stop-native.ps1
+git fetch origin
+git checkout cursor/ease-entry-hurdles-ec02
+git pull origin cursor/ease-entry-hurdles-ec02
+.\deploy\windows\native\setup-native.ps1
+.\deploy\windows\native\start-native.ps1 -WithWorker
+```
+
+Verify worker log: `proximity_until=10:30 proximity=0.1×ATR rvol=1.0× news_fail_open=True` and per-symbol `proximity_until=…` / `news_fail_open=…` factor details. Still `dry_run` only.
+
+### Pull high-conviction multi-factor gate (stacked)
+
+Venkata exact multi-factor equity F&O stock gate (indices excluded). Supersedes looser dual-session entry floors: entries **09:15–15:20**; `|h|` **0.75 / 0.80 / 0.85** (before 12:00 / after 12:00 / after 14:20); MTF 15m+1h; RVOL 1.5×/20; ATR>1.2%; proximity 0.2×ATR; news 1h conflict; cooloff **120m** after any trade; max open **6** (4 if WR&lt;50% over last 20 trips); soft flatten **15:28** / overnight **0.85+trend**; adaptive ±0.05 clamp [0.70,0.90]. Prefer the ease-entry tip above. Stacked on `cursor/dual-session-high-conviction-2224` (PR #41).
 
 ```powershell
 cd C:\algo
