@@ -122,18 +122,16 @@ async def open_position_marks_for_symbols(
     return prices, sources
 
 
-async def candle_close_map(symbols: Sequence[str]) -> dict[str, float]:
-    """Last candle close per symbol when live candles are available.
-
-    Skips the synthetic path when there is no access token (caller should use
-    last-known/synthetic display marks instead of pretending these are live).
-    """
+async def _live_15m_candles_map(
+    symbols: Sequence[str],
+) -> dict[str, list[Any]]:
+    """Fetch Upstox 15m candles per symbol (empty map without access token)."""
     uniq = sorted({str(s).upper() for s in symbols if s})
     if not uniq:
         return {}
     if not (os.environ.get("UPSTOX_ACCESS_TOKEN") or "").strip():
         return {}
-    out: dict[str, float] = {}
+    out: dict[str, list[Any]] = {}
     try:
         from options_portal_broker.adapter import UpstoxAdapter
 
@@ -147,18 +145,59 @@ async def candle_close_map(symbols: Sequence[str]) -> dict[str, float]:
                     if (
                         candles
                         and getattr(broker, "last_candle_source", None) == "upstox"
-                        and candles[-1].close
                     ):
-                        px = float(candles[-1].close)
-                        if px > 0:
-                            out[sym] = px
+                        out[sym] = list(candles)
                 except Exception:  # noqa: BLE001
-                    logger.warning("candle close mark failed for %s", sym, exc_info=True)
+                    logger.warning(
+                        "15m candles fetch failed for %s", sym, exc_info=True
+                    )
         finally:
             await broker.aclose()
     except Exception:  # noqa: BLE001
-        logger.exception("candle close map unavailable")
+        logger.exception("15m candles map unavailable")
     return out
+
+
+async def candle_close_map(symbols: Sequence[str]) -> dict[str, float]:
+    """Last candle close per symbol when live candles are available.
+
+    Skips the synthetic path when there is no access token (caller should use
+    last-known/synthetic display marks instead of pretending these are live).
+    """
+    closes, _hl = await candle_close_and_session_hl_map(symbols)
+    return closes
+
+
+async def session_hl_map(
+    symbols: Sequence[str],
+) -> dict[str, tuple[float, float]]:
+    """Today's session (high, low) from live 15m bars per symbol."""
+    _closes, hl = await candle_close_and_session_hl_map(symbols)
+    return hl
+
+
+async def candle_close_and_session_hl_map(
+    symbols: Sequence[str],
+) -> tuple[dict[str, float], dict[str, tuple[float, float]]]:
+    """One 15m fetch → last close + today's session (high, low) per symbol."""
+    from options_portal_domain.equity import session_mark_bounds
+
+    closes: dict[str, float] = {}
+    hl: dict[str, tuple[float, float]] = {}
+    candles_by_sym = await _live_15m_candles_map(symbols)
+    for sym, candles in candles_by_sym.items():
+        if not candles:
+            continue
+        try:
+            px = float(candles[-1].close)
+        except (TypeError, ValueError, AttributeError):
+            px = 0.0
+        if px > 0:
+            closes[sym] = px
+        bounds = session_mark_bounds(candles)
+        if bounds is not None:
+            hl[sym] = bounds
+    return closes, hl
 
 
 def last_known_display_map(symbols: Sequence[str]) -> dict[str, float]:

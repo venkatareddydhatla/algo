@@ -11,6 +11,11 @@ when market data is available:
 3. **Last resort:** open position entry avg — logged loudly (realized PnL will be
    0; investigate MD rather than silently copying entry).
 
+When today's session high/low is known (15m bars and/or LTP feed OHLC), reject
+LTP / candle-close candidates outside ``[session_low, session_high]``. Never use
+a stale candle close that prints above the session high (e.g. HINDZINC 529 vs
+day high ~520).
+
 Never silently reuse entry price when LTP succeeded.
 Never apply another symbol's LTP / candle close / entry avg to this symbol's fill —
 marks are always resolved per instrument key / tradingsymbol.
@@ -25,9 +30,11 @@ run when a position is already open.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal, Mapping
+from datetime import date, datetime
+from typing import Any, Literal, Mapping, Sequence
 
-from options_portal_domain.types import SignalAction
+from options_portal_domain.candles_agg import session_daily_high_low
+from options_portal_domain.types import Candle, SignalAction
 
 EquitySide = Literal["BUY", "SELL"]
 PositionSide = Literal["long", "short"]
@@ -124,46 +131,161 @@ def filter_rows_below_min_equity_price(
     return kept, dropped
 
 
+def mark_within_session_hl(
+    price: float,
+    session_high: float | None,
+    session_low: float | None,
+) -> bool:
+    """True when ``price`` is inside ``[session_low, session_high]``.
+
+    Missing / invalid bounds → True (no guard). Requires ``high >= low > 0``.
+    """
+    try:
+        px = float(price)
+    except (TypeError, ValueError):
+        return False
+    if px <= 0:
+        return False
+    if session_high is None or session_low is None:
+        return True
+    try:
+        hi = float(session_high)
+        lo = float(session_low)
+    except (TypeError, ValueError):
+        return True
+    if hi <= 0 or lo <= 0 or hi < lo:
+        return True
+    return lo <= px <= hi
+
+
+def session_mark_bounds(
+    candles: Sequence[Candle] | None = None,
+    *,
+    session_day: date | None = None,
+    now: datetime | None = None,
+    feed_high: float | None = None,
+    feed_low: float | None = None,
+) -> tuple[float, float] | None:
+    """Today's session high/low for exit-mark guards.
+
+    Combines 15m (or any) bar extremes via ``session_daily_high_low`` with optional
+    LTP-feed day OHLC high/low. Returns ``(high, low)`` or ``None``.
+    """
+    highs: list[float] = []
+    lows: list[float] = []
+    if candles:
+        hl = session_daily_high_low(
+            candles, session_day=session_day, now=now
+        )
+        if hl is not None:
+            highs.append(float(hl[0]))
+            lows.append(float(hl[1]))
+    for raw in (feed_high,):
+        if raw is None:
+            continue
+        try:
+            px = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if px > 0:
+            highs.append(px)
+    for raw in (feed_low,):
+        if raw is None:
+            continue
+        try:
+            px = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if px > 0:
+            lows.append(px)
+    if not highs or not lows:
+        return None
+    hi = max(highs)
+    lo = min(lows)
+    if hi < lo:
+        return None
+    return hi, lo
+
+
 def resolve_equity_mark(
     *,
     ltp: float | None = None,
     candle_close: float | None = None,
     entry_avg: float | None = None,
     min_price: float = 0.01,
+    session_high: float | None = None,
+    session_low: float | None = None,
 ) -> EquityMark:
     """Pick an equity mark: LTP → candle close → entry avg → min fallback.
+
+    When ``session_high`` / ``session_low`` are set, skip LTP or candle-close
+    prints outside that band (stale/corrupt closes must not exceed the session
+    high). Entry avg remains a last resort even if outside the band so paper
+    exits can still complete.
 
     Callers must log when ``source != "ltp"`` so stale/entry-copy is never silent
     while market data is expected to be healthy.
     """
+    rejected: list[str] = []
+
     if ltp is not None and float(ltp) > 0:
-        return EquityMark(
-            price=float(ltp),
-            source="ltp",
-            detail="live market last/LTP",
+        px = float(ltp)
+        if mark_within_session_hl(px, session_high, session_low):
+            return EquityMark(
+                price=px,
+                source="ltp",
+                detail="live market last/LTP",
+            )
+        rejected.append(
+            f"ltp={px:.4f} outside session H/L "
+            f"[{float(session_low):.4f}, {float(session_high):.4f}]"
         )
+
     if candle_close is not None and float(candle_close) > 0:
-        return EquityMark(
-            price=float(candle_close),
-            source="candle_close",
-            detail=(
+        px = float(candle_close)
+        if mark_within_session_hl(px, session_high, session_low):
+            detail = (
                 "LTP unavailable — using last candle close "
                 "(may match entry if historical bars are stale)"
-            ),
+            )
+            if rejected:
+                detail = (
+                    "LTP rejected vs session H/L — using last candle close; "
+                    + "; ".join(rejected)
+                )
+            return EquityMark(
+                price=px,
+                source="candle_close",
+                detail=detail,
+            )
+        rejected.append(
+            f"candle_close={px:.4f} outside session H/L "
+            f"[{float(session_low):.4f}, {float(session_high):.4f}]"
         )
+
     if entry_avg is not None and float(entry_avg) > 0:
+        detail = (
+            "LTP and candle close unavailable — reusing entry avg "
+            "(PnL will be 0; investigate market data)"
+        )
+        if rejected:
+            detail = (
+                "LTP/candle rejected vs session H/L — reusing entry avg "
+                f"({'; '.join(rejected)})"
+            )
         return EquityMark(
             price=float(entry_avg),
             source="entry_avg",
-            detail=(
-                "LTP and candle close unavailable — reusing entry avg "
-                "(PnL will be 0; investigate market data)"
-            ),
+            detail=detail,
         )
+
+    detail = "no mark available — using minimum fallback price"
+    if rejected:
+        detail = f"no in-range mark — fallback ({'; '.join(rejected)})"
     return EquityMark(
         price=float(min_price),
         source="fallback",
-        detail="no mark available — using minimum fallback price",
+        detail=detail,
     )
 
 

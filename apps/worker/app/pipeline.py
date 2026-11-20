@@ -25,6 +25,7 @@ from options_portal_domain.equity import (
     min_equity_price_from_config,
     plan_equity_intents,
     resolve_equity_mark,
+    session_mark_bounds,
 )
 from options_portal_domain.high_conviction import (
     evaluate_entry_gate,
@@ -656,11 +657,24 @@ async def run_symbol_tick(
         # No token: synthetic / fixture candles are the only MD (local demo)
         live_candle_close = candle_close
 
+    # Session H/L from today's 15m bars — reject stale candle closes (and bad
+    # LTP ticks) outside the band for open-book ±2% / profit_candle / exits.
+    session_high: float | None = None
+    session_low: float | None = None
+    if candles:
+        bounds = session_mark_bounds(candles, now=ist_now)
+        if bounds is not None:
+            session_high, session_low = bounds
+            result["session_high"] = session_high
+            result["session_low"] = session_low
+
     mark = resolve_equity_mark(
         ltp=ltp_px,
         candle_close=live_candle_close,
         # entry_avg from get_position(symbol) — never a global last-fill price
         entry_avg=entry_avg if open_qty > 0 else None,
+        session_high=session_high,
+        session_low=session_low,
     )
     fill_price = mark.price
     result["mark_price"] = fill_price
