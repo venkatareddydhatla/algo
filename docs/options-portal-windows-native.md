@@ -248,9 +248,43 @@ git pull origin cursor/trades-page-round-trips-cb5e
 
 Open http://127.0.0.1:5173/trades — Open positions unchanged; Closed trades show Symbol, Side LONG/SHORT, Entry/Exit IST, Entry/Exit px, PnL, Reason, dry_run.
 
-### Pull scan all symbols each 15m bar (stacked) — tip
+### Pull fix short exit mark consistency (stacked) — tip
 
-Worker re-evaluates **all** `volatile_fno50` symbols on each **15m bar close** (Pine Action + entries/exits). `max_active_symbols: 0`, `scan_on_bar_close: true`, settle ~8s for Upstox candles. Keeps **120m** re-entry cooloff. Open-book ±2% / profit-candle still on the dedicated ~15s poll. Prefer this tip. Stacked on `cursor/fifty-volatile-watchlist-bc1e` (PR #54).
+APOLLOHOSP short dry-run falsely exited at mark **8738** (`pct_profit_2`) while live LTP was **~9230**. Session H/L alone was not enough (day-low can sit inside the band). Risk exits now require **live equity LTP**, refuse marks that jump **>~3%** vs last good LTP (else entry), and never use session high/low as the mark. Prefer this tip. Stacked on `cursor/custom-watchlist-symbols-e382` (PR #56).
+
+```powershell
+cd C:\algo
+Set-ExecutionPolicy -Scope Process Bypass -Force
+.\deploy\windows\native\stop-native.ps1
+git fetch origin
+git checkout cursor/fix-short-exit-mark-c41d
+git pull origin cursor/fix-short-exit-mark-c41d
+.\deploy\windows\native\setup-native.ps1
+.\deploy\windows\native\start-native.ps1 -WithWorker
+```
+
+**Must stop then start.** Worker should log `skipping risk exits` / `mark inconsistent` instead of `pct_profit_2` on a wild tick. Still `dry_run` only. After merge into the tip chain / `main`, pull that branch instead.
+
+### Pull custom watchlist equities (stacked)
+
+Portal UI + API to append extra NSE **equity** tickers on top of curated `volatile_fno50` (SQLite `watchlist.custom_equity_symbols`). Same 15m bar-close scan + dry-run gates. Prefer the short-exit-mark tip above. Stacked on `cursor/scan-all-15m-bar-811c` (PR #55).
+
+```powershell
+cd C:\algo
+Set-ExecutionPolicy -Scope Process Bypass -Force
+.\deploy\windows\native\stop-native.ps1
+git fetch origin
+git checkout cursor/custom-watchlist-symbols-e382
+git pull origin cursor/custom-watchlist-symbols-e382
+.\deploy\windows\native\setup-native.ps1
+.\deploy\windows\native\start-native.ps1 -WithWorker
+```
+
+**Must stop then start.** Signals → Custom equities add/remove; worker `Full scan starting symbols=` includes customs.
+
+### Pull scan all symbols each 15m bar (stacked)
+
+Worker re-evaluates **all** `volatile_fno50` symbols on each **15m bar close** (Pine Action + entries/exits). `max_active_symbols: 0`, `scan_on_bar_close: true`, settle ~8s for Upstox candles. Keeps **120m** re-entry cooloff. Open-book ±2% / profit-candle still on the dedicated ~15s poll. Prefer the short-exit-mark tip above. Stacked on `cursor/fifty-volatile-watchlist-bc1e` (PR #54).
 
 ```powershell
 cd C:\algo
