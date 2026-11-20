@@ -67,11 +67,15 @@ async def _run_batch(symbols: list[str], cfg: dict) -> None:
     sem = asyncio.Semaphore(batch)
     admission = EntryCycleAdmission.from_config(cfg)
     if admission is not None:
+        from options_portal_domain.high_conviction import high_conviction_config
+
+        hc = high_conviction_config(cfg)
         logger.info(
             "Entry selection enabled anti_churn=%s dynamic=%s floor=%d "
             "ceiling=%d min_|hybrid|=%.2f hard_cap=%d "
             "cooloff=%s/%dm morning=%s until=%s morning_min=%.2f "
-            "morning_max_new=%d (rank by |hybrid|; empty_slots_only)",
+            "morning_max_new=%d high_conviction=%s floors=%.2f/%.2f/%.2f "
+            "late_after=%s (rank by |hybrid|; empty_slots_only)",
             admission.anti_churn,
             admission.dynamic_enabled,
             admission.floor,
@@ -84,6 +88,11 @@ async def _run_batch(symbols: list[str], cfg: dict) -> None:
             admission.morning_until_ist,
             admission.morning_min_hybrid_abs,
             admission.morning_max_new_entries,
+            hc.get("enabled", True),
+            hc.get("min_hybrid_before_12", 0.75),
+            hc.get("min_hybrid_after_12", 0.80),
+            hc.get("min_hybrid_after_1420", 0.85),
+            hc.get("late_after_ist", "14:20"),
         )
 
     async def _one(symbol: str) -> None:

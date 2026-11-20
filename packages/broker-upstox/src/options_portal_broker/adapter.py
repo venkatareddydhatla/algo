@@ -40,6 +40,8 @@ TOKEN_URL = "https://api.upstox.com/v2/login/authorization/token"
 _TIMEFRAME_TO_V3: dict[Timeframe, tuple[str, int]] = {
     "5m": ("minutes", 5),
     "15m": ("minutes", 15),
+    # 1h bars are normally aggregated from 15m; map kept for completeness.
+    "1h": ("minutes", 60),
     "1d": ("days", 1),
 }
 
@@ -816,7 +818,7 @@ def _synthetic_candles(
     end: datetime,
 ) -> list[Candle]:
     base = _synthetic_base_price(symbol)
-    step_minutes = {"5m": 5, "15m": 15, "1d": 24 * 60}[timeframe]
+    step_minutes = {"5m": 5, "15m": 15, "1h": 60, "1d": 24 * 60}[timeframe]
     candles: list[Candle] = []
     ts = start.astimezone(timezone.utc)
     end_utc = end.astimezone(timezone.utc)

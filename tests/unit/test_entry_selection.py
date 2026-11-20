@@ -468,49 +468,53 @@ def test_dual_session_reentry_cooloff_180m():
 
 
 def test_entry_selection_config_defaults():
-    cfg = {"trading": {"risk": {"max_open_symbols": 12}}}
+    cfg = {"trading": {"risk": {"max_open_symbols": 6}}}
     sel = entry_selection_config(cfg)
     assert sel["enabled"] is True
     assert sel["rank_by"] == "abs_hybrid"
     assert sel["anti_churn"] == "empty_slots_only"
-    assert sel["max_open_symbols"] == 12
+    assert sel["max_open_symbols"] == 6
     assert sel["dynamic_capacity"]["enabled"] is False
-    # Cooloff defaults on even when YAML omits the block
+    # Cooloff defaults on even when YAML omits the block (120m multi-factor)
     assert sel["reentry_cooloff"]["enabled"] is True
-    assert sel["reentry_cooloff"]["minutes"] == 180
-    # Dual-session morning defaults when omitted
-    assert sel["morning_session"]["enabled"] is True
+    assert sel["reentry_cooloff"]["minutes"] == 120
+    # Morning budget off by default (high-conviction time floors supersede)
+    assert sel["morning_session"]["enabled"] is False
     assert sel["morning_session"]["until_ist"] == "10:00"
     assert sel["morning_session"]["min_hybrid_abs"] == 0.75
-    assert sel["morning_session"]["max_new_entries"] == 3
-    assert sel["dynamic_capacity"]["min_hybrid_abs"] == 0.72
+    assert sel["dynamic_capacity"]["min_hybrid_abs"] == 0.75
+    # Afternoon raise default on when omitted
+    assert sel["dynamic_capacity"]["afternoon_after_ist"] == "12:00"
+    assert sel["dynamic_capacity"]["afternoon_min_hybrid_abs"] == 0.80
 
 
 def test_entry_selection_config_dynamic_knobs():
     cfg = {
         "trading": {
             "risk": {
-                "max_open_symbols": 12,
+                "max_open_symbols": 6,
                 "entry_selection": {
                     "enabled": True,
                     "rank_by": "abs_hybrid",
                     "anti_churn": "empty_slots_only",
                     "reentry_cooloff": {
                         "enabled": True,
-                        "minutes": 180,
+                        "minutes": 120,
                         "same_session_only": True,
                     },
                     "morning_session": {
-                        "enabled": True,
+                        "enabled": False,
                         "until_ist": "10:00",
                         "min_hybrid_abs": 0.75,
                         "max_new_entries": 3,
                     },
                     "dynamic_capacity": {
                         "enabled": True,
-                        "floor": 3,
-                        "ceiling": 12,
-                        "min_hybrid_abs": 0.72,
+                        "floor": 2,
+                        "ceiling": 6,
+                        "min_hybrid_abs": 0.75,
+                        "afternoon_after_ist": "12:00",
+                        "afternoon_min_hybrid_abs": 0.80,
                     },
                 },
             }
@@ -519,17 +523,17 @@ def test_entry_selection_config_dynamic_knobs():
     sel = entry_selection_config(cfg)
     dyn = sel["dynamic_capacity"]
     assert dyn["enabled"] is True
-    assert dyn["floor"] == 3
-    assert dyn["ceiling"] == 12
-    assert dyn["min_hybrid_abs"] == 0.72
-    assert dyn["afternoon_after_ist"] is None
-    assert sel["morning_session"]["max_new_entries"] == 3
-    assert sel["morning_session"]["min_hybrid_abs"] == 0.75
-    assert sel["reentry_cooloff"]["minutes"] == 180
+    assert dyn["floor"] == 2
+    assert dyn["ceiling"] == 6
+    assert dyn["min_hybrid_abs"] == 0.75
+    assert dyn["afternoon_after_ist"] == "12:00"
+    assert dyn["afternoon_min_hybrid_abs"] == 0.80
+    assert sel["morning_session"]["enabled"] is False
+    assert sel["reentry_cooloff"]["minutes"] == 120
     # ceiling cannot exceed hard cap
     cfg["trading"]["risk"]["entry_selection"]["dynamic_capacity"]["ceiling"] = 99
     sel2 = entry_selection_config(cfg)
-    assert sel2["dynamic_capacity"]["ceiling"] == 12
+    assert sel2["dynamic_capacity"]["ceiling"] == 6
 
 
 def test_entry_selection_config_can_disable():
@@ -592,24 +596,26 @@ def test_admission_from_config_none_when_disabled():
         {
             "trading": {
                 "risk": {
-                    "max_open_symbols": 12,
+                    "max_open_symbols": 6,
                     "entry_selection": {
                         "reentry_cooloff": {
                             "enabled": True,
-                            "minutes": 180,
+                            "minutes": 120,
                             "same_session_only": True,
                         },
                         "morning_session": {
-                            "enabled": True,
+                            "enabled": False,
                             "until_ist": "10:00",
                             "min_hybrid_abs": 0.75,
                             "max_new_entries": 3,
                         },
                         "dynamic_capacity": {
                             "enabled": True,
-                            "floor": 3,
-                            "ceiling": 12,
-                            "min_hybrid_abs": 0.72,
+                            "floor": 2,
+                            "ceiling": 6,
+                            "min_hybrid_abs": 0.75,
+                            "afternoon_after_ist": "12:00",
+                            "afternoon_min_hybrid_abs": 0.80,
                         },
                     },
                 }
@@ -617,21 +623,35 @@ def test_admission_from_config_none_when_disabled():
         }
     )
     assert adm is not None
-    assert adm.max_open_symbols == 12
+    assert adm.max_open_symbols == 6
     assert adm.anti_churn == "empty_slots_only"
     assert adm.dynamic_enabled is True
-    assert adm.floor == 3
-    assert adm.ceiling == 12
-    assert adm.min_hybrid_abs == 0.72
+    assert adm.floor == 2
+    assert adm.ceiling == 6
+    assert adm.min_hybrid_abs == 0.75
     assert adm.cooloff_enabled is True
-    assert adm.cooloff_minutes == 180
-    assert adm.morning_enabled is True
-    assert adm.morning_max_new_entries == 3
-    assert adm.morning_min_hybrid_abs == 0.75
-    assert adm.afternoon_after_ist is None
+    assert adm.cooloff_minutes == 120
+    assert adm.morning_enabled is False
+    assert adm.afternoon_after_ist == "12:00"
 
 
-def test_admission_effective_min_hybrid_morning_vs_rest():
+def test_admission_effective_min_hybrid_high_conviction_clock():
+    """High-conviction floors: 0.75 / 0.80 / 0.85 by IST clock (+ adaptive)."""
+    EntryCycleAdmission = _load_worker_entry_admission().EntryCycleAdmission
+    adm = EntryCycleAdmission(max_open_symbols=6, min_hybrid_abs=0.75)
+    z = ist()
+    assert adm._effective_min_hybrid(datetime(2026, 11, 18, 9, 40, tzinfo=z)) == 0.75
+    assert adm._effective_min_hybrid(datetime(2026, 11, 18, 12, 15, tzinfo=z)) == 0.80
+    assert adm._effective_min_hybrid(datetime(2026, 11, 18, 14, 30, tzinfo=z)) == 0.85
+    assert (
+        adm._effective_min_hybrid(
+            datetime(2026, 11, 18, 10, 0, tzinfo=z), adaptive_delta=0.05
+        )
+        == 0.80
+    )
+
+
+def test_admission_effective_min_hybrid_legacy_when_hc_disabled():
     EntryCycleAdmission = _load_worker_entry_admission().EntryCycleAdmission
     adm = EntryCycleAdmission(
         max_open_symbols=12,
@@ -641,8 +661,19 @@ def test_admission_effective_min_hybrid_morning_vs_rest():
         morning_min_hybrid_abs=0.75,
     )
     z = ist()
-    assert adm._effective_min_hybrid(datetime(2026, 11, 18, 9, 40, tzinfo=z)) == 0.75
-    assert adm._effective_min_hybrid(datetime(2026, 11, 18, 10, 15, tzinfo=z)) == 0.72
+    cfg = {"trading": {"risk": {"high_conviction": {"enabled": False}}}}
+    assert (
+        adm._effective_min_hybrid(
+            datetime(2026, 11, 18, 9, 40, tzinfo=z), cfg=cfg
+        )
+        == 0.75
+    )
+    assert (
+        adm._effective_min_hybrid(
+            datetime(2026, 11, 18, 10, 15, tzinfo=z), cfg=cfg
+        )
+        == 0.72
+    )
 
 
 @pytest.mark.asyncio

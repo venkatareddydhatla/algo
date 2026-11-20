@@ -299,9 +299,26 @@ git pull origin cursor/fewer-high-conviction-entries-4334
 
 Verify worker log: `Entry selection enabled ... ceiling=8 min_|hybrid|=0.65 cooloff=True/90m afternoon_after=12:00` and flush lines with `cooloff_blocked`. Still `dry_run` only.
 
-### Pull dual-session high conviction (stacked) — tip
+### Pull high-conviction multi-factor gate (stacked) — tip
 
-Day3 still too chatty: morning scalp churn from low TP/stops, not from needing a tiny open-cap. Tip: **morning 09:15–10:00** `|hybrid| ≥ 0.75` + **max 3 new** (not refill); morning TP/stop **max(1.0%, 1.5×ATR)** / **−max(1.0%, 1.25×ATR)**; **rest of day** until **11:30** `|h| ≥ 0.72`, cooloff **180m**, ceiling **12** (floor 3); ATR stop **−2.0×**, trail act **+1.5×** / dist **1.2×**, profit_book **+2.5×** (or +1.2%). Soft flatten / stocks-only / after-hours gates unchanged. Stacked on `cursor/stricter-fewer-trades-day3-ffcc` (PR #40).
+Venkata exact multi-factor equity F&O stock gate (indices excluded). Supersedes looser dual-session entry floors: entries **09:15–15:20**; `|h|` **0.75 / 0.80 / 0.85** (before 12:00 / after 12:00 / after 14:20); MTF 15m+1h; RVOL 1.5×/20; ATR>1.2%; proximity 0.2×ATR; news 1h conflict; cooloff **120m** after any trade; max open **6** (4 if WR&lt;50% over last 20 trips); soft flatten **15:28** / overnight **0.85+trend**; adaptive ±0.05 clamp [0.70,0.90]. Stacked on `cursor/dual-session-high-conviction-2224` (PR #41).
+
+```powershell
+cd C:\algo
+Set-ExecutionPolicy -Scope Process Bypass
+.\deploy\windows\native\stop-native.ps1
+git fetch origin
+git checkout cursor/high-conviction-multi-factor-99e6
+git pull origin cursor/high-conviction-multi-factor-99e6
+.\deploy\windows\native\setup-native.ps1
+.\deploy\windows\native\start-native.ps1 -WithWorker
+```
+
+Verify worker log: `high_conviction=True floors=0.75/0.80/0.85 late_after=14:20`, `cooloff=True/120m`, `ceiling=6`, `no_new_entries_after=15:20`, and `SKIP`/`ENTRY` factor lines. Still `dry_run` only.
+
+### Pull dual-session high conviction (stacked)
+
+Day3 still too chatty: morning scalp churn from low TP/stops, not from needing a tiny open-cap. Tip: **morning 09:15–10:00** `|hybrid| ≥ 0.75` + **max 3 new** (not refill); morning TP/stop **max(1.0%, 1.5×ATR)** / **−max(1.0%, 1.25×ATR)**; **rest of day** until **11:30** `|h| ≥ 0.72`, cooloff **180m**, ceiling **12** (floor 3); ATR stop **−2.0×**, trail act **+1.5×** / dist **1.2×**, profit_book **+2.5×** (or +1.2%). Soft flatten / stocks-only / after-hours gates unchanged. Prefer the multi-factor tip above. Stacked on `cursor/stricter-fewer-trades-day3-ffcc` (PR #40).
 
 ```powershell
 cd C:\algo

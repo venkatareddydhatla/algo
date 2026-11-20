@@ -204,6 +204,30 @@ def maybe_send_daily_summary(
         mode=mode,
     )
     fills_today_count = len(fills_for_ist_day(recent_fills, today))
+
+    # Adaptive |hybrid| feedback from past-week WR (persist ±0.05 delta).
+    adaptive_status: dict[str, Any] = {"updated": False, "reason": "skipped"}
+    try:
+        from options_portal_domain.adaptive_hybrid import run_adaptive_feedback
+        from options_portal_domain.high_conviction import (
+            rolling_equity_win_rate,
+            skip_entry_log,
+        )
+
+        adaptive_status = run_adaptive_feedback(
+            recent_fills, cfg=config, now=current
+        )
+        wr, wins, n = rolling_equity_win_rate(recent_fills)
+        skip_snap = skip_entry_log().snapshot()
+        logger.info(
+            "Daily summary extras: rolling_wr=%s skip_log=%s adaptive=%s",
+            f"{wr:.0%}({wins}/{n})" if wr is not None else "n/a",
+            skip_snap,
+            adaptive_status,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("daily summary: adaptive / skip-log extras failed")
+
     if ok and should_mark:
         save_last_sent_day(today, path)
     return {
@@ -213,5 +237,6 @@ def maybe_send_daily_summary(
         "open_positions": len(positions),
         "day_realized": day_realized,
         "marked_sent": bool(ok and should_mark),
+        "adaptive": adaptive_status,
         "reason": "ok" if ok else "smtp_failed",
     }

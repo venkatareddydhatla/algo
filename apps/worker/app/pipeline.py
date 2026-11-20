@@ -8,9 +8,20 @@ from typing import Any
 
 from options_portal_broker.adapter import UpstoxAdapter
 from options_portal_broker.instruments import resolve_instrument_key
+from options_portal_domain.adaptive_hybrid import load_adaptive_delta
 from options_portal_domain.calendar import is_nse_trading_day
+from options_portal_domain.candles_agg import (
+    aggregate_15m_to_1h,
+    bar_direction,
+)
 from options_portal_domain.config import load_config, trading_mode
 from options_portal_domain.equity import plan_equity_intents, resolve_equity_mark
+from options_portal_domain.high_conviction import (
+    evaluate_entry_gate,
+    high_conviction_config,
+    last_trade_times_from_fills,
+    skip_entry_log,
+)
 from options_portal_domain.session_gates import (
     AtrTrailScaleOutPolicy,
     MarketSentimentPolicy,
@@ -311,13 +322,24 @@ async def run_symbol_tick(
         }
         return result
 
+    # Soft flatten overnight hold requires |h|≥0.85 + 15m/1h trend confirmed.
+    bars_1h = aggregate_15m_to_1h(candles) if candles else []
+    dir_15m = bar_direction(candles) if candles else "neutral"
+    dir_1h = bar_direction(bars_1h) if bars_1h else "neutral"
+    trend_ok = False
+    if open_side == "long":
+        trend_ok = dir_15m == "bullish" and dir_1h == "bullish"
+    elif open_side == "short":
+        trend_ok = dir_15m == "bearish" and dir_1h == "bearish"
     flatten = soft_flatten_decision(
         open_side=open_side,  # type: ignore[arg-type]
         open_qty=open_qty,
         hybrid_score=decision.hybrid_score,
         policy=soft_policy,
         now=ist_now,
+        trend_confirmed=trend_ok,
     )
+    result["mtf"] = {"dir_15m": dir_15m, "dir_1h": dir_1h, "trend_confirmed": trend_ok}
     # Index opens win over soft-flatten overnight hold — always clean the book.
     if index_underlying and open_side is not None and open_qty > 0:
         flatten = {
@@ -472,17 +494,27 @@ async def run_symbol_tick(
             return result
 
     atr14: float | None = None
+    hc_cfg = high_conviction_config(cfg)
     atr_period = (
         atr_trail_policy.atr_period
         if atr_mgmt_needed
-        else morning_policy.atr_period
+        else (
+            int(hc_cfg.get("atr_period", morning_policy.atr_period))
+            if hc_cfg.get("enabled", True)
+            else morning_policy.atr_period
+        )
     )
-    if (atr_mgmt_needed or morning_mgmt_needed) and candles:
+    # Always compute ATR when candles exist — entry gate needs ATR% + proximity.
+    if candles and (
+        atr_mgmt_needed
+        or morning_mgmt_needed
+        or (hc_cfg.get("enabled", True) and entry_session and not index_underlying)
+    ):
         try:
             atr14 = atr_indicator(candles, atr_period)
         except Exception:  # noqa: BLE001
             logger.exception(
-                "%s ATR%d compute failed for open-book exits", symbol, atr_period
+                "%s ATR%d compute failed", symbol, atr_period
             )
             atr14 = None
     result["atr14"] = atr14
@@ -673,6 +705,58 @@ async def run_symbol_tick(
     # Force dry_run path for safety even if config says otherwise in worker
     safe_mode = "dry_run" if mode == "live" else mode
     limits = {**risk_cfg, "halt": cfg.get("trading", {}).get("halt")}
+
+    # High-conviction multi-factor gate before staging new flat entries.
+    hc_enabled = bool(hc_cfg.get("enabled", True))
+    if hc_enabled and any(
+        getattr(i, "action_kind", None) == "entry"
+        and (open_side is None or open_qty <= 0)
+        for i in intents
+    ):
+        last_trade = None
+        try:
+            if paper is not None and paper.available:
+                fills = paper.list_all_fills(mode="dry_run")
+                last_trade = last_trade_times_from_fills(fills).get(symbol.upper())
+        except Exception:  # noqa: BLE001
+            logger.exception("%s cooloff lookup failed", symbol)
+        adaptive_delta = 0.0
+        try:
+            adaptive_delta = load_adaptive_delta(cfg=cfg)
+        except Exception:  # noqa: BLE001
+            pass
+        gate = evaluate_entry_gate(
+            symbol=symbol.upper(),
+            hybrid_score=float(decision.hybrid_score),
+            now=ist_now,
+            candles_15m=candles,
+            atr14=atr14,
+            price=float(fill_price or candle_close or 0.0),
+            news_items=news_items,
+            sentiments=sentiments,
+            last_trade=last_trade,
+            is_index=index_underlying,
+            in_entry_window=entry_session,
+            adaptive_delta=adaptive_delta,
+            cfg=cfg,
+        )
+        result["high_conviction"] = {
+            "admitted": gate.admitted,
+            "reason": gate.reason,
+            "floor": gate.effective_min_hybrid,
+            "factors": [
+                {"name": f.name, "passed": f.passed, "detail": f.detail}
+                for f in gate.factors
+            ],
+        }
+        skip_entry_log().record(gate)
+        logger.info("%s", gate.log_line(symbol.upper(), ts=ist_now))
+        if not gate.admitted:
+            intents = filter_entry_intents(intents, allow_entries=False)
+            if not intents:
+                result["order"] = None
+                result["note"] = f"high_conviction_skip: {gate.reason}"
+                return result
 
     # Cycle admission: defer flat→new entries for |hybrid| ranking into free slots.
     # Keep exits / flip_close / flip_open immediate (risk + signal continuity).

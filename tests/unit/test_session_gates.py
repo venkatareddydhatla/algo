@@ -153,6 +153,25 @@ def test_overnight_hold_same_side_conviction():
     assert overnight_hold_allowed("short", -0.80, min_abs=0.70) is True
     assert overnight_hold_allowed("short", 0.80, min_abs=0.70) is False
     assert overnight_hold_allowed(None, 0.99, min_abs=0.70) is False
+    # Trend must be confirmed when caller passes False
+    assert (
+        overnight_hold_allowed("long", 0.90, min_abs=0.85, trend_confirmed=False)
+        is False
+    )
+    assert (
+        overnight_hold_allowed("long", 0.90, min_abs=0.85, trend_confirmed=True)
+        is True
+    )
+
+
+def test_soft_eod_policy_high_conviction_defaults():
+    """Defaults: entries→15:20, soft flatten 15:28, overnight |h|≥0.85."""
+    policy = SoftEodPolicy()
+    assert policy.no_new_entries_after == "15:20"
+    assert policy.soft_flatten_ist == "15:28"
+    assert policy.overnight_hold_min_hybrid_abs == 0.85
+    assert policy.past_soft_flatten(datetime(2026, 11, 15, 15, 27, 0)) is False
+    assert policy.past_soft_flatten(datetime(2026, 11, 15, 15, 28, 0)) is True
 
 
 def test_soft_flatten_closes_without_conviction():
@@ -867,18 +886,18 @@ def test_atr_trail_missing_atr_pct_fallback_and_initial_stop():
     assert act_state["activated"] is True
     assert act_state["trail_stop"] == pytest.approx(100.05)  # 100.85 − 0.8%
 
-    # Profit book pct fallback +1.2% (mark above floor for float safety)
+    # Profit book: min_rrr 1.2 raises pct floor (stop 1.2% → need ≥1.44%)
     book = atr_trail_scale_out_decision(
         open_side="long",
         open_qty=1,
         entry_avg=100.0,
-        mark=101.30,
+        mark=101.50,
         policy=policy,
         atr14=None,
         trail_state={"activated": False, "extreme": None, "trail_stop": None},
     )
     assert book["action"] == "profit_book"
-    assert book["thresholds"]["profit_mode"] == "pct_only"
+    assert "pct_only" in str(book["thresholds"]["profit_mode"])
 
     # ATR path initial stop: −2.0×ATR=−4.0 on entry 100
     atr_stop_miss = atr_trail_scale_out_decision(
