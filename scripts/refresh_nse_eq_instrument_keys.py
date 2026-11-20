@@ -92,7 +92,7 @@ def main() -> int:
     upstox = _load_upstox_equity_map(raw)
     equities: list[str] = []
     seen: set[str] = set()
-    # Always merge active volatile watchlist so refresh keeps ASAHIINDIA / LTM / etc.
+    # Always merge active volatile watchlist so refresh keeps LTM / GUJENERGY / etc.
     extra_paths = [
         universe_path,
         root / "config" / "universe" / "volatile_fno50_underlyings.csv",

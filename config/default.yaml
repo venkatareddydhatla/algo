@@ -102,8 +102,8 @@ trading:
     equity_share_qty: 1        # mirror of trading.equity.share_qty (risk gate default)
     max_equity_qty_per_symbol: 1
     require_news_context: false  # if true, skip orders when news pipeline degraded
-    # Skip watchlist scoring + new entries when LTP/last close < ₹20.
-    min_equity_price: 20.0
+    # Skip watchlist scoring + new entries when LTP/last close < ₹40.
+    min_equity_price: 40.0
     # Fixed ±2% profit/stop on OPEN equity only (not an entry filter; ~15s poll).
     # Long: mark≥entry×1.02 → pct_profit_2; mark≤entry×0.98 → pct_stop_2
     # Short: mark≤entry×0.98 → pct_profit_2; mark≥entry×1.02 → pct_stop_2

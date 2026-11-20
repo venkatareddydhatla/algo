@@ -77,6 +77,6 @@ async def list_watchlist(
         "note": (
             "Worker scores the configured universe when max_active_symbols is 0/null "
             f"(active_scan={len(active)}{' unlimited' if unlimited else ''}). "
-            "Batched via scan_batch_size; volatile_fno50 is ~48 equities (not full NSE F&O)."
+            "Batched via scan_batch_size; volatile_fno50 is ~49 equities (not full NSE F&O)."
         ),
     }

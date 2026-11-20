@@ -75,14 +75,21 @@ def test_resolve_volatile_fno50_universe():
     symbols = resolve_watchlist_symbols(
         {"universe": "volatile_fno50"}, config_dir=ROOT / "config"
     )
-    assert len(symbols) == len(rows) == 48
-    assert "ASAHIINDIA" in symbols  # Asahi India Glass (not ASHAI)
+    assert len(symbols) == len(rows) == 49
+    assert len(symbols) == len(set(symbols))  # PIIND once
     assert "TMPV" in symbols  # Tata Motors → TMPV
     assert "LTM" in symbols  # LTIMindtree LTIM → LTM
     assert "GUJENERGY" in symbols  # Gujarat Gas → GUJENERGY
-    assert "IDEA" in symbols  # kept; ₹20 floor still skips entry
-    assert "FINNIFTY" not in symbols  # Nifty Financial Services excluded
-    assert "IDFC" not in symbols  # delisted / merged into IDFCFIRSTB
+    assert "PIIND" in symbols
+    assert "BHEL" in symbols and "HAL" in symbols
+    assert "SYNGENE" in symbols and "MPHASIS" in symbols
+    # Dropped sub-₹40 / removed names
+    assert "IDEA" not in symbols
+    assert "ASAHIINDIA" not in symbols
+    assert "INDIACEM" not in symbols
+    assert "DELTACORP" not in symbols
+    assert "FINNIFTY" not in symbols
+    assert "IDFC" not in symbols
     assert "NIFTY" not in symbols
     assert all(r.kind == "equity" for r in rows)
 
@@ -124,8 +131,10 @@ def test_load_config_resolves_local_yaml(monkeypatch):
     wl = watchlist_symbols(cfg)
     active = scan_symbols(cfg)
     assert cfg["trading"].get("universe") == "volatile_fno50"
-    assert len(wl) == 48
-    assert "ASAHIINDIA" in wl
+    assert cfg["trading"]["risk"].get("min_equity_price") == 40.0
+    assert len(wl) == 49
+    assert "PIIND" in wl
+    assert "IDEA" not in wl
     assert "FINNIFTY" not in wl
     # Default: score entire configured universe (max_active_symbols 0/null)
     max_active = cfg["trading"].get("max_active_symbols", 0)

@@ -250,7 +250,7 @@ Open http://127.0.0.1:5173/trades — Open positions unchanged; Closed trades sh
 
 ### Pull fifty volatile F&O watchlist (stacked) — tip
 
-Replaces full NSE F&O with Venkata’s **~48 volatile equities** (`universe: volatile_fno50`). Excludes **Nifty Financial Services** (FINNIFTY). Maps: Asahi → **ASAHIINDIA**, Tata Motors → **TMPV**, LTIM → **LTM**, GUJGASLTD → **GUJENERGY**; skips delisted **IDFC** (IDFCFIRSTB kept). **IDEA** stays listed; **₹20 floor** still skips entry/UI when price &lt; 20. Stacked on `cursor/expire-stale-pine-action-7f07` (PR #53).
+Replaces full NSE F&O with Venkata’s **49 volatile equities** (`universe: volatile_fno50`). No sub-₹40 names on the list (dropped IDEA / Asahi / India Cements / Delta, etc.). Adds **BHEL, HAL, PIIND** (once), **SYNGENE, MPHASIS**. Maps: Tata Motors → **TMPV**, LTIM → **LTM**, GUJGASLTD → **GUJENERGY**. Excludes FINNIFTY. Floor **`min_equity_price: 40`**. Stacked on `cursor/expire-stale-pine-action-7f07` (PR #53).
 
 ```powershell
 cd C:\algo
@@ -263,7 +263,7 @@ git pull origin cursor/fifty-volatile-watchlist-bc1e
 .\deploy\windows\native\start-native.ps1 -WithWorker
 ```
 
-**Must stop then start.** Verify Signals/watchlist shows ~48 names (ASAHIINDIA, TMPV, LTM, GUJENERGY; no FINNIFTY / full F&O). IDEA may appear but will not enter while LTP &lt; ₹20. After merge into the tip chain / `main`, pull that branch instead.
+**Must stop then start.** Verify Signals/watchlist shows 49 names (TMPV, LTM, GUJENERGY, PIIND, HAL; no IDEA/ASAHIINDIA/FINNIFTY / full F&O). `config\local.yaml` has `min_equity_price: 40`. After merge into the tip chain / `main`, pull that branch instead.
 
 ### Pull expire stale Pine Action → HOLD (stacked)
 

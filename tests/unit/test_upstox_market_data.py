@@ -288,7 +288,9 @@ def test_volatile_fno50_equities_all_resolve_instrument_keys():
     assert resolve_instrument_key("TATAMOTORS") == resolve_instrument_key("TMPV")
     assert resolve_instrument_key("LTIM") == resolve_instrument_key("LTM")
     assert resolve_instrument_key("GUJGASLTD") == resolve_instrument_key("GUJENERGY")
-    assert resolve_instrument_key("ASAHIINDIA") == "NSE_EQ|INE439A01020"
+    assert resolve_instrument_key("PIIND") == "NSE_EQ|INE603J01030"
+    assert resolve_instrument_key("HAL") is not None
+    assert resolve_instrument_key("SYNGENE") is not None
 
 
 @pytest.mark.asyncio

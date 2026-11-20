@@ -23,7 +23,7 @@ marks are always resolved per instrument key / tradingsymbol.
 Price floor
 -----------
 Symbols with LTP (or last close) below ``trading.risk.min_equity_price`` (default
-₹20) are excluded from watchlist scoring and new entries. Open-book exits still
+₹40) are excluded from watchlist scoring and new entries. Open-book exits still
 run when a position is already open.
 """
 
@@ -42,7 +42,7 @@ EquityActionKind = Literal["entry", "exit", "flip_close", "flip_open"]
 EquityMarkSource = Literal["ltp", "candle_close", "entry_avg", "fallback"]
 
 # Skip scoring / new entries when LTP or last close is below this (INR).
-DEFAULT_MIN_EQUITY_PRICE = 20.0
+DEFAULT_MIN_EQUITY_PRICE = 40.0
 
 
 @dataclass(frozen=True)
@@ -70,7 +70,7 @@ class EquityMark:
 
 
 def min_equity_price_from_config(config: Mapping[str, Any] | None) -> float:
-    """``trading.risk.min_equity_price`` (default ₹20). ``0`` disables the floor."""
+    """``trading.risk.min_equity_price`` (default ₹40). ``0`` disables the floor."""
     root = dict(config or {})
     trading = dict(root.get("trading") or {})
     risk = dict(trading.get("risk") or {})

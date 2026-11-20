@@ -91,7 +91,7 @@ trading:
     equity_share_qty: 1
     max_equity_qty_per_symbol: 1
     require_news_context: false  # if true, skip orders when news pipeline degraded
-    min_equity_price: 20.0
+    min_equity_price: 40.0
     fixed_pct_exit:
       enabled: true
       profit_pct: 2.0
