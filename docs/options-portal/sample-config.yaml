@@ -62,7 +62,8 @@ trading:
     equity_share_qty: 1
     max_equity_qty_per_symbol: 1
     require_news_context: false  # if true, skip orders when news pipeline degraded
-    # All-day ATR trail + profit scale-out (stocks only). qty=1 → full profit_book.
+    # ATR trail + profit scale-out (stocks only; cash risk-exit 09:15–15:40 IST).
+    # qty=1 → full profit_book. Overnight: no atr/profit exit fills.
     atr_trail_scale_out:
       enabled: true
       atr_period: 14
