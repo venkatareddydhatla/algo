@@ -39,8 +39,9 @@ trading:
   # Expected cycle: ~2-5 min full dry-run pass on one Windows machine (synthetic MD);
   # longer with live broker ratelimit_rpm. Keep batch size modest to avoid hangs.
   session:
-    # High-conviction multi-factor: entries 09:15–15:20; soft flatten 15:28.
+    # Entries 09:30–15:20 (wait first 15m); cash/risk from 09:15; soft flatten 15:28.
     open: "09:15"
+    entries_open: "09:30"
     close: "15:30"
     no_new_entries_after: "15:20"
     soft_flatten_ist: "15:28"
@@ -57,7 +58,7 @@ trading:
       stop_atr_mult: 1.25
       atr_period: 14
       exit_fraction: 1.0
-    user_hours_note: "09:15–15:40 IST (entries 09:15–15:20; soft flatten 15:28–15:40; overnight |h|≥0.85 + trend; fixed ±2% open exits; no hard 15:40 square-off)"
+    user_hours_note: "09:15–15:40 IST (entries 09:30–15:20; soft flatten 15:28–15:40; overnight |h|≥0.85 + trend; fixed ±2% open exits; no hard 15:40 square-off)"
   # EMA13/21 cross + next 15m open confirm (ST/ADX/vol not entry gates).
   pine_signals:
     enabled: true

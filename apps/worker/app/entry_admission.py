@@ -235,7 +235,7 @@ class EntryCycleAdmission:
         if not is_trading_session(ist_now, policy=soft_policy):
             skipped = sorted(pending)
             reason = (
-                f"outside_entry_session open={soft_policy.open_ist} "
+                f"outside_entry_session entries_open={soft_policy.entries_open_ist} "
                 f"no_new_entries_after={soft_policy.no_new_entries_after} IST "
                 f"(dropped {len(skipped)} deferred entries)"
             )

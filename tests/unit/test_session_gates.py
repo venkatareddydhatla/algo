@@ -42,11 +42,15 @@ def test_at_or_after_ist_boundary():
 
 def test_allow_new_entries_blocks_night_and_preopen():
     """Regression: past_no_new_entries alone allowed 00:01 IST entries."""
-    policy = SoftEodPolicy(open_ist="09:15", no_new_entries_after="11:30")
+    # Explicit entries_open=09:15 keeps this dual-session regression on cash open.
+    policy = SoftEodPolicy(
+        open_ist="09:15", entries_open_ist="09:15", no_new_entries_after="11:30"
+    )
     # Monday 2026-11-16 — trading day; midnight must NOT allow entries
     midnight = datetime(2026, 11, 17, 0, 1, 0)  # Tue 00:01 IST (MUTHOOTFIN bug)
     assert policy.past_no_new_entries(midnight) is False  # old bug path
     assert policy.before_session_open(midnight) is True
+    assert policy.before_entries_open(midnight) is True
     assert policy.allow_new_entries(midnight) is False
     assert is_trading_session(midnight, policy=policy, trading_day=True) is False
 
@@ -79,6 +83,51 @@ def test_allow_new_entries_blocks_night_and_preopen():
     assert is_trading_session(before_cutoff, policy=policy, trading_day=False) is False
 
 
+def test_entries_open_0930_blocks_first_15m_keeps_risk_exits():
+    """Default: no new entries before 09:30 IST; ±2% risk exits from 09:15 OK."""
+    policy = SoftEodPolicy()  # entries_open_ist=09:30, open_ist=09:15
+    assert policy.entries_open_ist == "09:30"
+    assert policy.open_ist == "09:15"
+    assert policy.no_new_entries_after == "15:20"
+
+    cash_open = datetime(2026, 11, 20, 9, 15, 0)
+    assert policy.before_session_open(cash_open) is False
+    assert policy.before_entries_open(cash_open) is True
+    assert policy.allow_new_entries(cash_open) is False
+    assert is_trading_session(cash_open, policy=policy, trading_day=True) is False
+    assert allow_open_book_risk_exits(cash_open, policy=policy, trading_day=True) is True
+
+    mid_first_bar = datetime(2026, 11, 20, 9, 29, 0)
+    assert policy.allow_new_entries(mid_first_bar) is False
+    assert allow_open_book_risk_exits(
+        mid_first_bar, policy=policy, trading_day=True
+    ) is True
+
+    entries_open = datetime(2026, 11, 20, 9, 30, 0)
+    assert policy.before_entries_open(entries_open) is False
+    assert policy.allow_new_entries(entries_open) is True
+    assert is_trading_session(entries_open, policy=policy, trading_day=True) is True
+
+    cutoff = datetime(2026, 11, 20, 15, 20, 0)
+    assert policy.allow_new_entries(cutoff) is False
+    assert allow_open_book_risk_exits(cutoff, policy=policy, trading_day=True) is True
+
+    from_cfg = SoftEodPolicy.from_config(
+        {
+            "trading": {
+                "session": {
+                    "open": "09:15",
+                    "entries_open": "09:30",
+                    "no_new_entries_after": "15:20",
+                }
+            }
+        }
+    )
+    assert from_cfg.entries_open_ist == "09:30"
+    assert from_cfg.allow_new_entries(cash_open) is False
+    assert from_cfg.allow_new_entries(entries_open) is True
+
+
 def test_dual_session_entry_cutoff_1130_keeps_risk_exits():
     """Entries stop at 11:30; ATR/morning risk exits and soft flatten still allowed."""
     policy = SoftEodPolicy.from_config(
@@ -86,6 +135,7 @@ def test_dual_session_entry_cutoff_1130_keeps_risk_exits():
             "trading": {
                 "session": {
                     "open": "09:15",
+                    "entries_open": "09:15",
                     "close": "15:30",
                     "no_new_entries_after": "11:30",
                     "soft_flatten_ist": "15:20",
@@ -167,8 +217,9 @@ def test_overnight_hold_same_side_conviction():
 
 
 def test_soft_eod_policy_high_conviction_defaults():
-    """Defaults: entries→15:20, soft flatten 15:28, overnight |h|≥0.85."""
+    """Defaults: entries 09:30→15:20, soft flatten 15:28, overnight |h|≥0.85."""
     policy = SoftEodPolicy()
+    assert policy.entries_open_ist == "09:30"
     assert policy.no_new_entries_after == "15:20"
     assert policy.soft_flatten_ist == "15:28"
     assert policy.overnight_hold_min_hybrid_abs == 0.85
@@ -715,6 +766,7 @@ def test_risk_exit_window_aligns_soft_flatten_until():
     """Open-book risk exits: [09:15, 15:40] IST; entries stay [09:15, 11:30)."""
     policy = SoftEodPolicy(
         open_ist="09:15",
+        entries_open_ist="09:15",  # dual-session regression (prod default is 09:30)
         no_new_entries_after="11:30",
         soft_flatten_ist="15:20",
         soft_flatten_until_ist="15:40",
