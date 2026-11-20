@@ -33,7 +33,9 @@ INDEX_INSTRUMENT_KEYS: dict[str, str] = {
 
 # Renames / legacy tradingsymbols → current NSE cash symbol in the CSV map.
 EQUITY_SYMBOL_ALIASES: dict[str, str] = {
-    "TATAMOTORS": "TMPV",
+    "TATAMOTORS": "TMPV",  # Tata Motors → TMPV (passenger vehicles)
+    "LTIM": "LTM",  # LTIMindtree LTIM → LTM (Feb 2026)
+    "GUJGASLTD": "GUJENERGY",  # Gujarat Gas → Gujarat Energy (Jul 2026)
 }
 
 

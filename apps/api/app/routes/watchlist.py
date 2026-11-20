@@ -16,7 +16,7 @@ async def list_watchlist(
     limit: int = Query(50, ge=1, le=500),
     q: str | None = Query(None, description="Optional symbol substring filter"),
 ) -> dict:
-    """Return the full configured watchlist (NSE F&O universe when universe: nse_fno)."""
+    """Return the configured watchlist (volatile_fno50 or nse_fno alias)."""
     cfg = load_config()
     trading = cfg.get("trading", {})
     symbols = watchlist_symbols(cfg)
@@ -24,7 +24,10 @@ async def list_watchlist(
 
     meta_by_sym: dict[str, dict] = {}
     try:
-        path = resolve_universe_path("nse_fno", config_dir=None)
+        universe_spec = trading.get("universe") or trading.get("symbols") or "volatile_fno50"
+        if isinstance(universe_spec, list):
+            universe_spec = "volatile_fno50"
+        path = resolve_universe_path(str(universe_spec), config_dir=None)
         if path and path.exists():
             for u in load_universe_csv(path):
                 meta_by_sym[u.symbol] = {
@@ -72,9 +75,8 @@ async def list_watchlist(
         or trading.get("scan_batch_size", 8),
         "source": "config+universe",
         "note": (
-            "Worker scores the full NSE F&O watchlist when max_active_symbols is 0/null "
+            "Worker scores the configured universe when max_active_symbols is 0/null "
             f"(active_scan={len(active)}{' unlimited' if unlimited else ''}). "
-            "Batched via scan_batch_size; expect ~2-5 min per full dry-run pass on one "
-            "Windows machine (synthetic MD), longer under live broker rate limits."
+            "Batched via scan_batch_size; volatile_fno50 is ~49 equities (not full NSE F&O)."
         ),
     }

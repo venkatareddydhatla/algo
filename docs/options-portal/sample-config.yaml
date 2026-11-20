@@ -23,15 +23,15 @@ trading:
       auto_purge: false
       allow_purge_before_live: true
       live_min_retain_days: 90
-  universe: nse_fno       # full NSE F&O indices + equities (config/universe/)
+  universe: volatile_fno50  # Venkata’s volatile equities (not full NSE F&O)
   symbols_demo:          # quick-test set (set use_symbols_demo: true)
     - NIFTY
     - BANKNIFTY
     - RELIANCE
     - TCS
   use_symbols_demo: false
-  max_active_symbols: 0  # 0/null = score full NSE F&O universe; positive N = first-N cap
-  scan_batch_size: 8     # concurrent symbols/batch; ~2-5 min/full dry-run pass on one machine
+  max_active_symbols: 0  # 0/null = score entire configured universe; positive N = first-N cap
+  scan_batch_size: 8     # concurrent symbols/batch
   session:
     # Entries 09:30–15:20 (wait first 15m); cash/risk from 09:15; soft flatten 15:28.
     open: "09:15"
@@ -83,7 +83,7 @@ trading:
     equity_share_qty: 1
     max_equity_qty_per_symbol: 1
     require_news_context: false  # if true, skip orders when news pipeline degraded
-    min_equity_price: 20.0       # skip score/entry when LTP or last close < ₹20
+    min_equity_price: 40.0       # skip score/entry when LTP or last close < ₹40
     fixed_pct_exit:
       enabled: true
       profit_pct: 2.0
@@ -287,7 +287,7 @@ persistence:
 
 ui:
   guest_hide_pnl: true
-  default_symbols: nse_fno
+  default_symbols: volatile_fno50
   page_size: 50
 
 backtest:

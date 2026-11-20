@@ -25,6 +25,8 @@ UPSTOX_NSE_CSV_GZ = (
 ALIASES = {
     # Legacy / tests still reference Tata Motors pre-rename symbol
     "TATAMOTORS": "TMPV",
+    "LTIM": "LTM",
+    "GUJGASLTD": "GUJENERGY",
 }
 
 
@@ -89,13 +91,24 @@ def main() -> int:
 
     upstox = _load_upstox_equity_map(raw)
     equities: list[str] = []
-    with universe_path.open(newline="", encoding="utf-8") as fh:
-        for row in csv.DictReader(fh):
-            if str(row.get("kind") or "").strip().lower() != "equity":
-                continue
-            sym = str(row.get("symbol") or "").strip().upper()
-            if sym:
-                equities.append(sym)
+    seen: set[str] = set()
+    # Always merge active volatile watchlist so refresh keeps LTM / GUJENERGY / etc.
+    extra_paths = [
+        universe_path,
+        root / "config" / "universe" / "volatile_fno50_underlyings.csv",
+    ]
+    for path in extra_paths:
+        if not path.is_file():
+            continue
+        with path.open(newline="", encoding="utf-8") as fh:
+            for row in csv.DictReader(fh):
+                kind = str(row.get("kind") or "").strip().lower()
+                if kind and kind != "equity":
+                    continue
+                sym = str(row.get("symbol") or "").strip().upper()
+                if sym and sym not in seen:
+                    seen.add(sym)
+                    equities.append(sym)
 
     rows: list[tuple[str, str, str]] = []
     missing: list[str] = []

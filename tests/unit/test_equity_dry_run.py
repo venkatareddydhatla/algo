@@ -22,20 +22,20 @@ from options_portal_risk.gates import DefaultRiskGate
 from options_portal_risk.order_router import SafeOrderRouter
 
 
-def test_min_equity_price_floor_defaults_to_20():
-    """Symbols with LTP/close < ₹20 are excluded from score/entry."""
+def test_min_equity_price_floor_defaults_to_40():
+    """Symbols with LTP/close < ₹40 are excluded from score/entry."""
     from options_portal_domain.equity import filter_rows_below_min_equity_price
 
-    assert min_equity_price_from_config({}) == pytest.approx(20.0)
+    assert min_equity_price_from_config({}) == pytest.approx(40.0)
     assert min_equity_price_from_config(
-        {"trading": {"risk": {"min_equity_price": 20}}}
-    ) == pytest.approx(20.0)
+        {"trading": {"risk": {"min_equity_price": 40}}}
+    ) == pytest.approx(40.0)
     assert min_equity_price_from_config(
         {"trading": {"risk": {"min_equity_price": 0}}}
     ) == pytest.approx(0.0)
-    assert below_min_equity_price(19.99) is True
-    assert below_min_equity_price(20.0) is False
-    assert below_min_equity_price(20.01) is False
+    assert below_min_equity_price(39.99) is True
+    assert below_min_equity_price(40.0) is False
+    assert below_min_equity_price(40.01) is False
     assert below_min_equity_price(None) is False
     assert below_min_equity_price(15.0, min_price=0) is False
 
@@ -45,7 +45,7 @@ def test_min_equity_price_floor_defaults_to_20():
             {"symbol": "RELIANCE", "price": 1400.0, "action": "BUY"},
             {"symbol": "UNKNOWN", "action": "HOLD"},  # no mark → keep
         ],
-        min_price=20.0,
+        min_price=40.0,
     )
     assert [r["symbol"] for r in kept] == ["RELIANCE", "UNKNOWN"]
     assert [r["symbol"] for r in dropped] == ["IDEA"]

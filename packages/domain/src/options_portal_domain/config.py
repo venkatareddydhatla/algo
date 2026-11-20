@@ -97,7 +97,7 @@ def _default_config() -> dict[str, Any]:
             "mode": "dry_run",
             "halt": False,
             "timeframe": "15m",
-            "universe": "nse_fno",
+            "universe": "volatile_fno50",
             "symbols_demo": list(DEMO_SYMBOLS),
             "max_active_symbols": 0,  # 0/null = full universe
             "scan_batch_size": 8,

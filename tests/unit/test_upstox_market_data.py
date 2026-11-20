@@ -269,6 +269,30 @@ def test_fno_universe_equities_all_resolve_instrument_keys():
     assert missing == [], f"unmapped F&O equities (LTP will fail): {missing[:20]}"
 
 
+def test_volatile_fno50_equities_all_resolve_instrument_keys():
+    import csv
+    from pathlib import Path
+
+    from options_portal_broker.instruments import clear_instrument_key_cache
+
+    clear_instrument_key_cache()
+    path = Path("config/universe/volatile_fno50_underlyings.csv")
+    assert path.is_file()
+    missing: list[str] = []
+    for row in csv.DictReader(path.open(encoding="utf-8")):
+        sym = str(row.get("symbol") or "").strip().upper()
+        if resolve_instrument_key(sym) is None:
+            missing.append(sym)
+    assert missing == [], f"unmapped volatile equities (LTP will fail): {missing}"
+    # Legacy names resolve via aliases to current tradingsymbols
+    assert resolve_instrument_key("TATAMOTORS") == resolve_instrument_key("TMPV")
+    assert resolve_instrument_key("LTIM") == resolve_instrument_key("LTM")
+    assert resolve_instrument_key("GUJGASLTD") == resolve_instrument_key("GUJENERGY")
+    assert resolve_instrument_key("PIIND") == "NSE_EQ|INE603J01030"
+    assert resolve_instrument_key("HAL") is not None
+    assert resolve_instrument_key("SYNGENE") is not None
+
+
 @pytest.mark.asyncio
 async def test_get_ltp_ioc_ignores_360one_quote():
     """IOC must never take 360ONE's last_price from a multi-quote payload."""
