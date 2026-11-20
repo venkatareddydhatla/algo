@@ -664,3 +664,28 @@ button:disabled {
   margin: -0.25rem 0 0.55rem;
   font-size: 0.82rem;
 }
+
+.bt-advanced .bt-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.2rem;
+}
+
+.bt-synthetic-banner {
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--line));
+  background: color-mix(in srgb, var(--danger) 12%, var(--bg-elev));
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.bt-error {
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--line));
+}
+
+.bt-metric-synthetic {
+  color: var(--danger);
+  font-size: 0.78rem;
+  max-width: 11rem;
+  line-height: 1.25;
+}

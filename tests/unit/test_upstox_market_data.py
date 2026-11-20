@@ -51,6 +51,18 @@ async def test_synthetic_when_no_token():
 
 
 @pytest.mark.asyncio
+async def test_get_real_candles_empty_without_token():
+    """Backtest path must not receive synthetic bars from get_real_candles."""
+    adapter = UpstoxAdapter(access_token="", api_key="", api_secret="")
+    end = datetime(2024, 6, 3, 12, tzinfo=timezone.utc)
+    start = end - timedelta(days=1)
+    candles = await adapter.get_real_candles("RVNL", "15m", start, end)
+    assert candles == []
+    assert adapter.last_candle_source == "unavailable"
+    assert "token" in adapter.last_candle_detail.lower()
+
+
+@pytest.mark.asyncio
 async def test_live_candles_when_token_present():
     def handler(request: httpx.Request) -> httpx.Response:
         assert "Authorization" in request.headers
