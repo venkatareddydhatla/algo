@@ -49,6 +49,7 @@ from options_portal_domain.session_gates import (
     FixedPctExitPolicy,
     MarketSentimentPolicy,
     MorningProfitBookPolicy,
+    OppositePineExitPolicy,
     ProfitCandleProtectPolicy,
     SoftEodPolicy,
     allow_open_book_risk_exits,
@@ -59,6 +60,7 @@ from options_portal_domain.session_gates import (
     fixed_pct_exit_decision,
     is_trading_session,
     morning_profit_book_decision,
+    opposite_pine_exit_decision,
     profit_candle_protect_decision,
     soft_flatten_decision,
 )
@@ -488,6 +490,7 @@ async def run_symbol_tick(
     atr_trail_policy = AtrTrailScaleOutPolicy.from_config(cfg)
     fixed_pct_policy = FixedPctExitPolicy.from_config(cfg)
     profit_candle_policy = ProfitCandleProtectPolicy.from_config(cfg)
+    opposite_pine_policy = OppositePineExitPolicy.from_config(cfg)
     mkt_policy = MarketSentimentPolicy.from_config(cfg)
     _remember_index_hybrid(symbol, decision.hybrid_score, mkt_policy)
     # Resolve instrument key early for index segment check (NSE_INDEX/BSE_INDEX).
@@ -915,8 +918,32 @@ async def run_symbol_tick(
         }
     result["morning_tp"] = morning_tp
 
+    # Opposite fresh Pine BUY/SELL → close-only (no same-bar flip). Freshness
+    # matches watchlist expire-stale (signal bar current / latest closed 15m).
+    pine_bar_ts = getattr(decision, "bar_ts", None) if use_pine else None
+    opposite_pine = opposite_pine_exit_decision(
+        open_side=open_side,  # type: ignore[arg-type]
+        open_qty=open_qty,
+        pine_action=decision.action if use_pine else SignalAction.HOLD,
+        bar_ts=pine_bar_ts,
+        policy=opposite_pine_policy,
+        now=datetime.now(tz=timezone.utc),
+        timeframe_minutes=15,
+        is_index=index_underlying,
+    )
+    if not use_pine:
+        opposite_pine = {
+            **opposite_pine,
+            "active": False,
+            "action": "none",
+            "reason": "opposite_pine_exit skipped: hybrid path",
+            "exit_qty": 0,
+        }
+    result["opposite_pine_exit"] = opposite_pine
+
     # Same-tick priority: fixed ±2% > profit_candle_protect > atr stop/trail >
-    # scale/profit > morning > soft_flatten. ATR/morning stay wired but off.
+    # scale/profit > morning > opposite_pine > soft_flatten. ATR/morning stay
+    # wired but off.
     atr_exit_actions = {
         "atr_stop",
         "atr_trail",
@@ -925,6 +952,7 @@ async def run_symbol_tick(
     }
     fixed_pct_action = str(fixed_pct.get("action") or "none")
     profit_candle_action = str(profit_candle.get("action") or "none")
+    opposite_pine_action = str(opposite_pine.get("action") or "none")
     if fixed_pct_action not in {"none", ""} and fixed_pct.get("exit_qty"):
         logger.info("%s %s", symbol, fixed_pct["reason"])
         intents = plan_equity_intents(
@@ -980,6 +1008,20 @@ async def run_symbol_tick(
         )
         if int(morning_tp.get("exit_qty") or 0) >= int(open_qty):
             clear_atr_trail_state(symbol)
+    elif opposite_pine_action not in {"none", ""} and opposite_pine.get("exit_qty"):
+        # Close-only: EXIT intent (cooloff recorded like other closes).
+        logger.info("%s %s", symbol, opposite_pine["reason"])
+        intents = plan_equity_intents(
+            symbol,
+            SignalAction.EXIT,
+            open_side=open_side,  # type: ignore[arg-type]
+            open_qty=open_qty,
+            qty=share_qty,
+            price=fill_price,
+            reason=str(opposite_pine["reason"]),
+            exit_qty=int(opposite_pine.get("exit_qty") or open_qty),
+        )
+        clear_atr_trail_state(symbol)
     elif flatten["action"] == "flatten":
         logger.info("%s %s", symbol, flatten["reason"])
         intents = plan_equity_intents(
@@ -1023,6 +1065,17 @@ async def run_symbol_tick(
             price=fill_price,
             reason=reason_summary,
         )
+        # Pine path: prefer close-only on opposite signal (no same-bar flip).
+        # Primary path is opposite_pine_exit above; this strips flip_open if a
+        # flip still reached the signal planner (e.g. policy disabled).
+        if use_pine and any(
+            getattr(i, "action_kind", None) == "flip_close" for i in intents
+        ):
+            intents = [
+                i
+                for i in intents
+                if getattr(i, "action_kind", None) != "flip_open"
+            ]
         # Fresh entry / flip_open should start without stale trail state.
         if any(getattr(i, "action_kind", None) in {"entry", "flip_open"} for i in intents):
             clear_atr_trail_state(symbol)
