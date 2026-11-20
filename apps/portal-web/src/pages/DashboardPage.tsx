@@ -178,8 +178,8 @@ export default function DashboardPage() {
           <h1>Watchlist signals</h1>
           <p className="muted">
             Curated volatile_fno50 + custom equities ({total} symbols) — Pine NIFTY50ActiveV2
-            Action only (BUY / SELL / HOLD). Source: {source}. Hover Reason for EMA /
-            Supertrend / ADX / vol factors.
+            Action (BUY / SELL / HOLD); open dry-run trades keep BUY/SELL mode until close.
+            Source: {source}. Hover Reason for EMA / Supertrend / ADX / vol factors.
           </p>
         </div>
         <MarketIndexStrip />

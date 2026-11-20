@@ -137,7 +137,13 @@ export type SignalRow = {
   ltp?: number | null;
   price_source?: "ltp" | "candle_close" | "last_known" | string | null;
   timeframe: string;
+  /** User-facing Action: Pine BUY/SELL/HOLD, or sticky BUY/SELL while open. */
   action: string;
+  /** Expire-stale Pine Action (signal freshness); entries use this path, not sticky. */
+  pine_action?: string;
+  display_action?: string;
+  open_trade_mode?: string | null;
+  action_from_open_trade?: boolean;
   hybrid_score: number;
   tech_score: number;
   news_score: number;
