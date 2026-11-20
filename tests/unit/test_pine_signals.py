@@ -1,4 +1,4 @@
-"""Unit tests for Pine NIFTY50ActiveV2 signal math (exact buy/sell formulas)."""
+"""Unit tests for Pine EMA cross + next-candle open confirm signals."""
 
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ def _bar(
     i: int,
     *,
     close: float,
+    open_: float | None = None,
     high: float | None = None,
     low: float | None = None,
     volume: int = 100_000,
@@ -34,7 +35,7 @@ def _bar(
     c = float(close)
     h = float(high if high is not None else c * 1.002)
     l = float(low if low is not None else c * 0.998)
-    o = (h + l) / 2.0
+    o = float(open_ if open_ is not None else (h + l) / 2.0)
     return Candle(
         symbol=symbol,
         timeframe="15m",
@@ -54,9 +55,6 @@ def test_pine_config_defaults_match_script_inputs():
     assert p.su_len == 10
     assert p.su_mult == pytest.approx(3.0)
     assert p.adx_len == 14
-    assert p.use_adx is True
-    assert p.adx_min == pytest.approx(20.0)
-    assert p.vol_ratio == pytest.approx(1.2)
     assert pine_signals_enabled({}) is True
     assert pine_signals_enabled({"trading": {"pine_signals": {"enabled": False}}}) is False
 
@@ -67,15 +65,13 @@ def test_ema_series_sma_seed_then_ema():
     assert ema[3] is None
     assert ema[4] == pytest.approx(sum(vals[:5]) / 5)
     assert ema[-1] is not None
-    # Monotone rising input → rising EMA
     assert ema[-1] > ema[10]  # type: ignore[operator]
 
 
 def test_sma_volume_ratio_gate():
     vols = [100.0] * 20 + [200.0]
     sma = _sma_series(vols, 20)
-    assert sma[-1] == pytest.approx(105.0)  # (19*100 + 200)/20? wait last window is vols[1:21]
-    # Window ending at index 20: vols[1..20] = 19*100 + 200 = 2100/20 = 105
+    assert sma[-1] == pytest.approx(105.0)
     assert vols[-1] / sma[-1] > 1.2  # type: ignore[operator]
 
 
@@ -95,71 +91,251 @@ def test_adx_produces_values_after_warmup():
     assert di_p[-1] is not None or di_p[-2] is not None
 
 
-def test_buy_signal_requires_crossover_st_vol_adx():
-    """Craft a series that ends with EMA crossover + ST bull + high vol + ADX ok."""
-    # Long downtrend then sharp rally so EMA13 crosses EMA21 from below.
+def _find_crossover_index(
+    candles: list[Candle], params: PineParams
+) -> int | None:
+    """Return first bar index where crossover is True on that bar."""
+    for end in range(2, len(candles) + 1):
+        st = evaluate_pine_bar(candles[:end], params=params)
+        assert st is not None
+        if st.crossover:
+            return end - 1
+    return None
+
+
+def _find_crossunder_index(
+    candles: list[Candle], params: PineParams
+) -> int | None:
+    for end in range(2, len(candles) + 1):
+        st = evaluate_pine_bar(candles[:end], params=params)
+        assert st is not None
+        if st.crossunder:
+            return end - 1
+    return None
+
+
+def test_buy_does_not_fire_on_cross_bar():
+    """Crossover bar itself must not emit buy_signal."""
+    # Down then sharp rally → EMA2 crosses EMA3.
     closes: list[float] = []
     px = 120.0
-    for i in range(50):
-        px *= 0.997  # drift down
-        closes.append(px)
-    for i in range(25):
-        px *= 1.008  # strong rally
-        closes.append(px)
-    candles = [
-        _bar(i, close=c, volume=80_000 if i < 70 else 200_000)
-        for i, c in enumerate(closes)
-    ]
-    # Force last few volumes well above SMA20
-    forced = list(candles)
-    for j in range(-5, 0):
-        c = forced[j]
-        forced[j] = _bar(
-            len(forced) + j,
-            close=c.close,
-            high=c.high,
-            low=c.low,
-            volume=300_000,
-        )
-    state = evaluate_pine_bar(forced, params=PineParams())
-    assert state is not None
-    # May or may not fire depending on exact ADX/ST; assert formula shape:
-    expected_buy = (
-        state.crossover
-        and state.supertrend_bull
-        and state.high_volume
-        and state.adx_ok
-    )
-    assert state.buy_signal is expected_buy
-    # Sell must NOT require supertrend bear
-    expected_sell = state.crossunder and state.high_volume and state.adx_ok
-    assert state.sell_signal is expected_sell
-    if state.sell_signal:
-        # Explicit: sell can fire while ST is still bull
-        assert state.supertrend_bull or not state.supertrend_bull
-
-
-def test_sell_signal_ignores_supertrend_bear_requirement():
-    """sell_signal = crossunder AND high_volume AND adx_ok (no ST bear)."""
-    # Build state via monkeypatch-like constructed PineBarState path:
-    # Use evaluate on crafted bars where crossunder happens in uptrend ST.
-    closes = [100.0 + i * 0.3 for i in range(60)]  # uptrend (ST likely bull)
-    # Then sharp drop to force EMA crossunder
-    px = closes[-1]
     for _ in range(20):
-        px *= 0.985
+        px -= 1.0
         closes.append(px)
-    candles = [
-        _bar(i, close=c, volume=250_000 if i >= 70 else 90_000)
-        for i, c in enumerate(closes)
-    ]
-    state = evaluate_pine_bar(candles, params=PineParams(use_adx=False))
-    assert state is not None
-    if state.crossunder and state.high_volume:
-        # With use_adx=False, adx_ok is always True → sell must fire regardless of ST
-        assert state.sell_signal is True
-        # Document Pine asymmetry: sell does not need bearish ST
-        _ = state.supertrend_bull
+    for _ in range(15):
+        px += 2.5
+        closes.append(px)
+    candles = [_bar(i, close=c) for i, c in enumerate(closes)]
+    params = PineParams(ema_fast=2, ema_slow=3)
+    cross_i = _find_crossover_index(candles, params)
+    assert cross_i is not None
+    st = evaluate_pine_bar(candles[: cross_i + 1], params=params)
+    assert st is not None
+    assert st.crossover is True
+    assert st.buy_signal is False
+    assert st.prior_crossover is False
+
+
+def test_buy_fires_on_next_bar_when_open_above_both():
+    """After crossover, next bar open > both prior EMAs → buy_signal."""
+    closes: list[float] = []
+    px = 120.0
+    for _ in range(20):
+        px -= 1.0
+        closes.append(px)
+    for _ in range(15):
+        px += 2.5
+        closes.append(px)
+    base = [_bar(i, close=c) for i, c in enumerate(closes)]
+    params = PineParams(ema_fast=2, ema_slow=3)
+    cross_i = _find_crossover_index(base, params)
+    assert cross_i is not None
+    # Snapshot EMAs at cross bar
+    st_cross = evaluate_pine_bar(base[: cross_i + 1], params=params)
+    assert st_cross is not None
+    assert st_cross.ema_fast is not None and st_cross.ema_slow is not None
+    ef, es = float(st_cross.ema_fast), float(st_cross.ema_slow)
+    both_hi = max(ef, es)
+
+    # Append confirm bar with open well above both EMAs
+    confirm = _bar(
+        cross_i + 1,
+        close=both_hi + 5.0,
+        open_=both_hi + 3.0,
+        high=both_hi + 6.0,
+        low=both_hi + 2.0,
+    )
+    series = base[: cross_i + 1] + [confirm]
+    st = evaluate_pine_bar(series, params=params)
+    assert st is not None
+    assert st.prior_crossover is True
+    assert st.crossover is False
+    assert st.open_above_both is True
+    assert st.buy_signal is True
+    assert st.sell_signal is False
+
+    result = evaluate_pine_signal("RELIANCE", series, params=params)
+    assert result.action == SignalAction.BUY
+    assert result.buy_signal is True
+    assert "next open above both" in result.reason_summary
+
+
+def test_buy_does_not_fire_when_next_open_not_above_both():
+    """Prior crossover but open fails confirm → no buy."""
+    closes: list[float] = []
+    px = 120.0
+    for _ in range(20):
+        px -= 1.0
+        closes.append(px)
+    for _ in range(15):
+        px += 2.5
+        closes.append(px)
+    base = [_bar(i, close=c) for i, c in enumerate(closes)]
+    params = PineParams(ema_fast=2, ema_slow=3)
+    cross_i = _find_crossover_index(base, params)
+    assert cross_i is not None
+    st_cross = evaluate_pine_bar(base[: cross_i + 1], params=params)
+    assert st_cross is not None
+    ef, es = float(st_cross.ema_fast), float(st_cross.ema_slow)  # type: ignore[arg-type]
+    both_lo = min(ef, es)
+
+    # Open below both EMAs → fail buy confirm
+    confirm = _bar(
+        cross_i + 1,
+        close=both_lo - 1.0,
+        open_=both_lo - 2.0,
+        high=both_lo,
+        low=both_lo - 3.0,
+    )
+    series = base[: cross_i + 1] + [confirm]
+    st = evaluate_pine_bar(series, params=params)
+    assert st is not None
+    assert st.prior_crossover is True
+    assert st.open_above_both is False
+    assert st.buy_signal is False
+
+
+def test_sell_does_not_fire_on_cross_bar():
+    closes: list[float] = []
+    px = 80.0
+    for _ in range(20):
+        px += 1.0
+        closes.append(px)
+    for _ in range(15):
+        px -= 2.5
+        closes.append(px)
+    candles = [_bar(i, close=c) for i, c in enumerate(closes)]
+    params = PineParams(ema_fast=2, ema_slow=3)
+    cross_i = _find_crossunder_index(candles, params)
+    assert cross_i is not None
+    st = evaluate_pine_bar(candles[: cross_i + 1], params=params)
+    assert st is not None
+    assert st.crossunder is True
+    assert st.sell_signal is False
+
+
+def test_sell_fires_on_next_bar_when_open_below_both():
+    closes: list[float] = []
+    px = 80.0
+    for _ in range(20):
+        px += 1.0
+        closes.append(px)
+    for _ in range(15):
+        px -= 2.5
+        closes.append(px)
+    base = [_bar(i, close=c) for i, c in enumerate(closes)]
+    params = PineParams(ema_fast=2, ema_slow=3)
+    cross_i = _find_crossunder_index(base, params)
+    assert cross_i is not None
+    st_cross = evaluate_pine_bar(base[: cross_i + 1], params=params)
+    assert st_cross is not None
+    ef, es = float(st_cross.ema_fast), float(st_cross.ema_slow)  # type: ignore[arg-type]
+    both_lo = min(ef, es)
+
+    confirm = _bar(
+        cross_i + 1,
+        close=both_lo - 5.0,
+        open_=both_lo - 3.0,
+        high=both_lo - 1.0,
+        low=both_lo - 6.0,
+    )
+    series = base[: cross_i + 1] + [confirm]
+    st = evaluate_pine_bar(series, params=params)
+    assert st is not None
+    assert st.prior_crossunder is True
+    assert st.open_below_both is True
+    assert st.sell_signal is True
+    assert st.buy_signal is False
+
+    result = evaluate_pine_signal("RELIANCE", series, params=params)
+    assert result.action == SignalAction.SELL
+    assert "next open below both" in result.reason_summary
+
+
+def test_sell_does_not_fire_when_next_open_not_below_both():
+    closes: list[float] = []
+    px = 80.0
+    for _ in range(20):
+        px += 1.0
+        closes.append(px)
+    for _ in range(15):
+        px -= 2.5
+        closes.append(px)
+    base = [_bar(i, close=c) for i, c in enumerate(closes)]
+    params = PineParams(ema_fast=2, ema_slow=3)
+    cross_i = _find_crossunder_index(base, params)
+    assert cross_i is not None
+    st_cross = evaluate_pine_bar(base[: cross_i + 1], params=params)
+    assert st_cross is not None
+    ef, es = float(st_cross.ema_fast), float(st_cross.ema_slow)  # type: ignore[arg-type]
+    both_hi = max(ef, es)
+
+    confirm = _bar(
+        cross_i + 1,
+        close=both_hi + 1.0,
+        open_=both_hi + 2.0,
+        high=both_hi + 3.0,
+        low=both_hi,
+    )
+    series = base[: cross_i + 1] + [confirm]
+    st = evaluate_pine_bar(series, params=params)
+    assert st is not None
+    assert st.prior_crossunder is True
+    assert st.open_below_both is False
+    assert st.sell_signal is False
+
+
+def test_buy_sell_ignore_st_adx_vol():
+    """Gate uses only prior cross + open confirm (ST/ADX/vol unused)."""
+    closes: list[float] = []
+    px = 120.0
+    for _ in range(20):
+        px -= 1.0
+        closes.append(px)
+    for _ in range(15):
+        px += 2.5
+        closes.append(px)
+    base = [_bar(i, close=c, volume=1) for i, c in enumerate(closes)]  # dead vol
+    params = PineParams(ema_fast=2, ema_slow=3, use_adx=True, vol_ratio=1.2)
+    cross_i = _find_crossover_index(base, params)
+    assert cross_i is not None
+    st_cross = evaluate_pine_bar(base[: cross_i + 1], params=params)
+    assert st_cross is not None
+    both_hi = max(float(st_cross.ema_fast), float(st_cross.ema_slow))  # type: ignore[arg-type]
+    confirm = _bar(
+        cross_i + 1,
+        close=both_hi + 5.0,
+        open_=both_hi + 3.0,
+        high=both_hi + 6.0,
+        low=both_hi + 2.0,
+        volume=1,
+    )
+    st = evaluate_pine_bar(base[: cross_i + 1] + [confirm], params=params)
+    assert st is not None
+    # Dead volume → high_volume False; buy still fires
+    assert st.high_volume is False
+    assert st.buy_signal is True
+    assert st.buy_signal == (st.prior_crossover and st.open_above_both)
 
 
 def test_evaluate_pine_signal_maps_actions():
@@ -178,45 +354,12 @@ def test_evaluate_pine_signal_maps_actions():
         assert result.score == 0.0
 
 
-def test_golden_crossover_with_filters_disabled_fires_buy():
-    """When ADX filter off and vol gate loose, crossover+ST→buy."""
-    # Steady down then sharp up so EMA13 crosses EMA21 while ST bull.
-    closes: list[float] = []
-    px = 150.0
-    for _ in range(60):
-        px -= 0.5
-        closes.append(px)
-    for _ in range(40):
-        px += 1.2
-        closes.append(px)
-    candles = [_bar(i, close=c, volume=500_000) for i, c in enumerate(closes)]
-    params = PineParams(use_adx=False, vol_ratio=0.5)
-    found_buy = False
-    for end in range(50, len(candles) + 1):
-        st = evaluate_pine_bar(candles[:end], params=params)
-        assert st is not None
-        if st.buy_signal:
-            found_buy = True
-            assert st.crossover
-            assert st.supertrend_bull
-            assert st.high_volume
-            assert st.adx_ok  # use_adx=False → always ok
-            break
-    assert found_buy
-
-
-def test_buy_formula_components_and_sell_without_st_bear():
-    """Document exact Pine boolean formulas on a constructed state path."""
-    # Minimal assertion via evaluate: sell_signal never checks supertrend_bull==False
+def test_formula_shape_on_last_bar():
     candles = [_bar(i, close=100 + i * 0.05, volume=200_000) for i in range(50)]
     st = evaluate_pine_bar(candles, params=PineParams())
     assert st is not None
-    assert st.buy_signal == (
-        st.crossover and st.supertrend_bull and st.high_volume and st.adx_ok
-    )
-    assert st.sell_signal == (st.crossunder and st.high_volume and st.adx_ok)
-    # Asymmetry: sell formula has no `and not supertrend_bull` term
-    assert "supertrend" not in "crossunder and high_volume and adx_ok"
+    assert st.buy_signal == (st.prior_crossover and st.open_above_both)
+    assert st.sell_signal == (st.prior_crossunder and st.open_below_both)
 
 
 def test_atr_rma_warmup():

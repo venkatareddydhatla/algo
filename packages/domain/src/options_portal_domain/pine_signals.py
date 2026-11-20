@@ -1,16 +1,17 @@
-"""NIFTY50ActiveV2 Pine Script signal engine (exact buy/sell formulas).
+"""Pine equity signal engine — EMA cross + next-candle open confirm.
 
-Canonical script: docs/pine-nifty50-active-v2.pine (Project store).
+On 15m bars; green = fast EMA(13), red = slow EMA(21).
 
-Defaults match Pine inputs:
-- Fast EMA 13, Slow EMA 21
-- Supertrend ATR len 10, mult 3.0 (custom recursive bands — not ta.supertrend)
-- ADX/DI length 14; adx_ok = adx > 20 when use_adx
-- Vol ratio 1.2: volume / sma(volume, 20) > 1.2
+buy_signal  = prior-bar crossover(fastEma, slowEma)
+              AND open > fastEma[1] AND open > slowEma[1]
+sell_signal = prior-bar crossunder(fastEma, slowEma)
+              AND open < fastEma[1] AND open < slowEma[1]
 
-buy_signal  = crossover(fastEma, slowEma) and supertrendBull and high_volume and adx_ok
-sell_signal = crossunder(fastEma, slowEma) and high_volume and adx_ok
-(sell does NOT require supertrend bear.)
+Signals do NOT fire on the cross bar; they fire on the next bar when the
+open confirms above/below both EMAs (EMA values from the closed cross bar).
+
+Supertrend / ADX / volume are computed for diagnostics only and are NOT
+part of the buy/sell gate.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ from typing import Any, Mapping, Sequence
 
 from options_portal_domain.types import Candle, SignalAction
 
-# Pine input defaults
+# Pine input defaults (EMA lengths drive the signal; ST/ADX/vol kept for config compat)
 DEFAULT_EMA_FAST = 13
 DEFAULT_EMA_SLOW = 21
 DEFAULT_SU_LEN = 10
@@ -61,8 +62,12 @@ class PineBarState:
     volume_ma: float | None
     volume_ratio: float | None
     high_volume: bool
-    crossover: bool
+    crossover: bool  # EMA cross on this (last) bar
     crossunder: bool
+    prior_crossover: bool  # EMA cross on previous bar
+    prior_crossunder: bool
+    open_above_both: bool
+    open_below_both: bool
     buy_signal: bool
     sell_signal: bool
 
@@ -84,9 +89,9 @@ class PineSignalResult:
     @property
     def reason_summary(self) -> str:
         if self.buy_signal:
-            return "EMA cross+ST+ADX+vol"
+            return "EMA cross + next open above both"
         if self.sell_signal:
-            return "EMA crossunder+ADX+vol"
+            return "EMA crossunder + next open below both"
         return "no Pine signal"
 
     @property
@@ -202,7 +207,7 @@ def supertrend_series(
     atr_period: int = DEFAULT_SU_LEN,
     multiplier: float = DEFAULT_SU_MULT,
 ) -> tuple[list[float | None], list[int], list[float | None]]:
-    """Custom Supertrend bands matching the Pine script (not ta.supertrend).
+    """Custom Supertrend bands (diagnostics only; not part of buy/sell gate).
 
     Returns ``(atr_series, trend_series, trend_line)`` where trend is +1 / -1
     and ``trend_line`` is the active band (dn when bull, up when bear).
@@ -271,7 +276,7 @@ def dmi_adx_series(
     di_length: int = DEFAULT_ADX_LEN,
     adx_smoothing: int | None = None,
 ) -> tuple[list[float | None], list[float | None], list[float | None]]:
-    """TradingView ``ta.dmi(diLength, adxSmoothing)`` → (di+, di−, adx)."""
+    """TradingView ``ta.dmi(diLength, adxSmoothing)`` → (di+, di−, adx). Diagnostics only."""
     n = len(candles)
     smooth = int(adx_smoothing if adx_smoothing is not None else di_length)
     empty: list[float | None] = [None] * n
@@ -314,9 +319,6 @@ def dmi_adx_series(
             dx_ready[i] = True
 
     # ADX = RMA of DX; only feed values once DX is defined (after di_length).
-    # Match TV: rma(dx, adx_smoothing) over the full series with 0s before ready
-    # produces a slight bias; TV uses na until DX exists. We compute RMA only
-    # on the suffix starting at first ready DX index.
     adx: list[float | None] = [None] * n
     first = next((i for i, ok in enumerate(dx_ready) if ok), None)
     if first is not None:
@@ -328,12 +330,35 @@ def dmi_adx_series(
     return di_plus, di_minus, adx
 
 
+def _cross_at(
+    ema_fast_s: Sequence[float | None],
+    ema_slow_s: Sequence[float | None],
+    i: int,
+) -> tuple[bool, bool]:
+    """ta.crossover / ta.crossunder on bar ``i`` vs prior bar."""
+    if i < 1:
+        return False, False
+    ef = ema_fast_s[i]
+    es = ema_slow_s[i]
+    ef_prev = ema_fast_s[i - 1]
+    es_prev = ema_slow_s[i - 1]
+    if ef is None or es is None or ef_prev is None or es_prev is None:
+        return False, False
+    crossover = ef_prev <= es_prev and ef > es
+    crossunder = ef_prev >= es_prev and ef < es
+    return crossover, crossunder
+
+
 def evaluate_pine_bar(
     candles: Sequence[Candle],
     *,
     params: PineParams | None = None,
 ) -> PineBarState | None:
-    """Compute Pine features + buy/sell on the last bar. None if empty."""
+    """Compute Pine features + buy/sell on the last bar. None if empty.
+
+    Buy/sell fire only on the bar *after* an EMA cross, when that bar's open
+    confirms above (buy) or below (sell) both EMAs from the closed cross bar.
+    """
     if not candles:
         return None
     p = params or PineParams()
@@ -354,15 +379,23 @@ def evaluate_pine_bar(
 
     ef = ema_fast_s[i]
     es = ema_slow_s[i]
-    crossover = False
-    crossunder = False
-    if i >= 1 and ef is not None and es is not None:
-        ef_prev = ema_fast_s[i - 1]
-        es_prev = ema_slow_s[i - 1]
-        if ef_prev is not None and es_prev is not None:
-            # ta.crossover / ta.crossunder
-            crossover = ef_prev <= es_prev and ef > es
-            crossunder = ef_prev >= es_prev and ef < es
+    crossover, crossunder = _cross_at(ema_fast_s, ema_slow_s, i)
+    prior_crossover, prior_crossunder = _cross_at(ema_fast_s, ema_slow_s, i - 1)
+
+    # Confirm open vs EMAs as of the closed cross bar (i-1).
+    open_above_both = False
+    open_below_both = False
+    if i >= 1:
+        ef_prior = ema_fast_s[i - 1]
+        es_prior = ema_slow_s[i - 1]
+        if ef_prior is not None and es_prior is not None:
+            o = float(candles[i].open)
+            open_above_both = o > float(ef_prior) and o > float(es_prior)
+            open_below_both = o < float(ef_prior) and o < float(es_prior)
+
+    # Gate: cross on prior bar + next open confirm. No ST / ADX / vol.
+    buy_signal = bool(prior_crossover and open_above_both)
+    sell_signal = bool(prior_crossunder and open_below_both)
 
     trend = int(trend_s[i]) if trend_s else 1
     supertrend_bull = trend == 1
@@ -379,9 +412,6 @@ def evaluate_pine_bar(
         volume_ratio = None
     high_volume = volume_ratio is not None and float(volume_ratio) > float(p.vol_ratio)
 
-    buy_signal = bool(crossover and supertrend_bull and high_volume and adx_ok)
-    sell_signal = bool(crossunder and high_volume and adx_ok)
-
     return PineBarState(
         ema_fast=ef,
         ema_slow=es,
@@ -397,6 +427,10 @@ def evaluate_pine_bar(
         high_volume=high_volume,
         crossover=crossover,
         crossunder=crossunder,
+        prior_crossover=prior_crossover,
+        prior_crossunder=prior_crossunder,
+        open_above_both=open_above_both,
+        open_below_both=open_below_both,
         buy_signal=buy_signal,
         sell_signal=sell_signal,
     )
@@ -431,27 +465,29 @@ def evaluate_pine_signal(
         reasons.append(
             f"EMA{p.ema_fast}={state.ema_fast:.4f} EMA{p.ema_slow}={state.ema_slow:.4f}"
         )
-    if state.crossover:
-        reasons.append(f"EMA{p.ema_fast} crossover EMA{p.ema_slow}")
-    if state.crossunder:
-        reasons.append(f"EMA{p.ema_fast} crossunder EMA{p.ema_slow}")
-    reasons.append(
-        "Supertrend bullish" if state.supertrend_bull else "Supertrend bearish"
-    )
-    if state.adx is not None:
+    if state.prior_crossover:
         reasons.append(
-            f"ADX({p.adx_len})={state.adx:.2f} "
-            f"{'ok' if state.adx_ok else f'need>{p.adx_min}'}"
+            f"prior bar: EMA{p.ema_fast} crossover EMA{p.ema_slow}"
         )
-    elif p.use_adx:
-        reasons.append(f"ADX({p.adx_len}) unavailable")
-    if state.volume_ratio is not None:
+    elif state.crossover:
         reasons.append(
-            f"vol/sma{p.vol_sma_len}={state.volume_ratio:.2f} "
-            f"{'ok' if state.high_volume else f'need>{p.vol_ratio}'}"
+            f"this bar: EMA{p.ema_fast} crossover EMA{p.ema_slow} (wait next open)"
         )
-    else:
-        reasons.append("volume ratio unavailable")
+    if state.prior_crossunder:
+        reasons.append(
+            f"prior bar: EMA{p.ema_fast} crossunder EMA{p.ema_slow}"
+        )
+    elif state.crossunder:
+        reasons.append(
+            f"this bar: EMA{p.ema_fast} crossunder EMA{p.ema_slow} (wait next open)"
+        )
+    if state.prior_crossover or state.prior_crossunder:
+        if state.open_above_both:
+            reasons.append("open above both EMAs (confirm)")
+        elif state.open_below_both:
+            reasons.append("open below both EMAs (confirm)")
+        else:
+            reasons.append("open did not confirm vs both EMAs")
 
     if state.buy_signal:
         action = SignalAction.BUY
@@ -480,15 +516,15 @@ def evaluate_pine_signal(
         "high_volume": state.high_volume,
         "crossover": state.crossover,
         "crossunder": state.crossunder,
+        "prior_crossover": state.prior_crossover,
+        "prior_crossunder": state.prior_crossunder,
+        "open_above_both": state.open_above_both,
+        "open_below_both": state.open_below_both,
         "buy_signal": state.buy_signal,
         "sell_signal": state.sell_signal,
         "pine": True,
     }
-    conf = 0.0
-    if state.buy_signal or state.sell_signal:
-        conf = 0.85
-        if state.adx is not None:
-            conf = min(1.0, 0.7 + min(0.3, float(state.adx) / 100.0))
+    conf = 0.85 if (state.buy_signal or state.sell_signal) else 0.0
 
     return PineSignalResult(
         symbol=sym,

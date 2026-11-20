@@ -263,13 +263,12 @@ export const MOCK = {
         expiry_hint: "monthly",
         updated_at: new Date().toISOString(),
         reason_kind: "pine",
-        reason_summary: "EMA crossunder+ADX+vol",
+        reason_summary: "EMA crossunder + next open below both",
         reason_detail:
-          "Technical:\n- EMA13 crossunder EMA21\n- ADX(14)=24.50 ok\n- vol/sma20=1.35 ok\n- sell_signal=True",
+          "Technical:\n- prior bar: EMA13 crossunder EMA21\n- open below both EMAs (confirm)\n- sell_signal=True",
         reasons: [
-          "EMA13 crossunder EMA21",
-          "ADX(14)=24.50 ok",
-          "vol/sma20=1.35 ok",
+          "prior bar: EMA13 crossunder EMA21",
+          "open below both EMAs (confirm)",
           "sell_signal=True",
         ],
       },

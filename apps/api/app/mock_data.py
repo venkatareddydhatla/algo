@@ -63,16 +63,15 @@ _SEED_SIGNALS: list[dict[str, Any]] = [
         "expiry_hint": "monthly",
         "updated_at": NOW,
         "reasons": [
-            "EMA13 crossunder EMA21",
-            "ADX(14)=24.50 ok",
-            "vol/sma20=1.35 ok",
+            "prior bar: EMA13 crossunder EMA21",
+            "open below both EMAs (confirm)",
             "sell_signal=True",
         ],
         "reason_kind": "pine",
-        "reason_summary": "EMA crossunder+ADX+vol",
+        "reason_summary": "EMA crossunder + next open below both",
         "reason_detail": (
-            "Technical:\n- EMA13 crossunder EMA21\n- ADX(14)=24.50 ok\n"
-            "- vol/sma20=1.35 ok\n- sell_signal=True"
+            "Technical:\n- prior bar: EMA13 crossunder EMA21\n"
+            "- open below both EMAs (confirm)\n- sell_signal=True"
         ),
     },
     {
@@ -266,27 +265,31 @@ def synthetic_signal_for_symbol(
 
     # Deterministic placeholder: ~12% BUY, ~12% SELL, else HOLD (until worker KV).
     roll = _stable_unit(sym, "pine_action")
-    st_bull = _stable_unit(sym, "pine_st") > 0.45
-    adx = 15.0 + _stable_unit(sym, "pine_adx") * 25.0
-    vol_ratio = 0.8 + _stable_unit(sym, "pine_vol") * 0.8
-    adx_ok = adx > 20.0
-    high_vol = vol_ratio > 1.2
     reasons: list[str] = [
-        f"EMA13/EMA21 placeholder (await worker candles)",
-        "Supertrend bullish" if st_bull else "Supertrend bearish",
-        f"ADX(14)={adx:.2f} {'ok' if adx_ok else 'need>20'}",
-        f"vol/sma20={vol_ratio:.2f} {'ok' if high_vol else 'need>1.2'}",
+        "EMA13/EMA21 placeholder (await worker candles)",
     ]
-    if roll >= 0.88 and st_bull and high_vol and adx_ok:
+    if roll >= 0.88:
         action = "BUY"
         score = 1.0
-        reasons.append("buy_signal=True (placeholder until worker persist)")
-        summary = "EMA cross+ST+ADX+vol"
-    elif roll <= 0.12 and high_vol and adx_ok:
+        reasons.extend(
+            [
+                "prior bar: EMA13 crossover EMA21",
+                "open above both EMAs (confirm)",
+                "buy_signal=True (placeholder until worker persist)",
+            ]
+        )
+        summary = "EMA cross + next open above both"
+    elif roll <= 0.12:
         action = "SELL"
         score = -1.0
-        reasons.append("sell_signal=True (placeholder until worker persist)")
-        summary = "EMA crossunder+ADX+vol"
+        reasons.extend(
+            [
+                "prior bar: EMA13 crossunder EMA21",
+                "open below both EMAs (confirm)",
+                "sell_signal=True (placeholder until worker persist)",
+            ]
+        )
+        summary = "EMA crossunder + next open below both"
     else:
         action = "HOLD"
         score = 0.0
@@ -323,8 +326,8 @@ def pine_row_from_kv(payload: dict[str, Any], *, timeframe: str = "15m") -> dict
     score = float(payload.get("score") or (1.0 if action == "BUY" else -1.0 if action == "SELL" else 0.0))
     reasons = list(payload.get("reasons") or [])
     summary = str(payload.get("reason_summary") or (
-        "EMA cross+ST+ADX+vol" if action == "BUY"
-        else "EMA crossunder+ADX+vol" if action == "SELL"
+        "EMA cross + next open above both" if action == "BUY"
+        else "EMA crossunder + next open below both" if action == "SELL"
         else "no Pine signal"
     ))
     detail = str(payload.get("reason_detail") or (
