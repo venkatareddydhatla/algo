@@ -613,3 +613,94 @@ async def test_trades_api_reads_paper_ledger(paper_env: Path):
     assert payload["fills_total"] == 0
     assert payload["raw_fills_total"] >= 1
     assert payload["closed_trades"] == []
+
+
+@pytest.mark.asyncio
+async def test_manual_close_long_sell(paper_env: Path, monkeypatch: pytest.MonkeyPatch):
+    """POST close: long → SELL, reason manual_close, position cleared."""
+    monkeypatch.setenv("TRADING_MODE", "dry_run")
+    store = PaperTradeStore()
+    entry = plan_equity_intents(
+        "RELIANCE",
+        SignalAction.BUY,
+        open_side=None,
+        open_qty=0,
+        qty=1,
+        price=100.0,
+        reason="entry",
+    )[0]
+    store.record_simulated_fill(
+        entry,
+        OrderResult("mc-e1", "simulated", "dry_run", "SIM-mc-e1", None),
+    )
+    assert store.get_position("RELIANCE") is not None
+
+    async def _marks(symbols: list[str]):
+        return ({"RELIANCE": 112.0}, {"RELIANCE": "ltp"})
+
+    monkeypatch.setattr(
+        "app.routes.trades._open_position_marks",
+        _marks,
+    )
+
+    from app.routes.trades import ManualCloseBody, close_open_position
+
+    out = await close_open_position("reliance", ManualCloseBody())
+    assert out["ok"] is True
+    assert out["symbol"] == "RELIANCE"
+    assert out["order_side"] == "SELL"
+    assert out["closed_side"] == "long"
+    assert out["reason"] == "manual_close"
+    assert out["dry_run"] is True
+    assert out["price"] == pytest.approx(112.0)
+    assert out["realized_pnl"] == pytest.approx(12.0)
+    assert store.get_position("RELIANCE") is None
+
+    summary = store.summary()
+    assert summary["closed_trades_total"] == 1
+    trade = summary["closed_trades"][0]
+    assert "manual_close" in str(trade.get("reason") or "")
+
+
+@pytest.mark.asyncio
+async def test_manual_close_short_cover(paper_env: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("TRADING_MODE", "dry_run")
+    store = PaperTradeStore()
+    entry = plan_equity_intents(
+        "TCS",
+        SignalAction.SELL,
+        open_side=None,
+        open_qty=0,
+        qty=1,
+        price=200.0,
+        reason="short entry",
+    )[0]
+    store.record_simulated_fill(
+        entry,
+        OrderResult("mc-s1", "simulated", "dry_run", "SIM-mc-s1", None),
+    )
+
+    async def _marks(symbols: list[str]):
+        return ({"TCS": 185.0}, {"TCS": "ltp"})
+
+    monkeypatch.setattr("app.routes.trades._open_position_marks", _marks)
+
+    from app.routes.trades import ManualCloseBody, close_open_position
+
+    out = await close_open_position("TCS", ManualCloseBody(reason="manual_close"))
+    assert out["order_side"] == "BUY"
+    assert out["closed_side"] == "short"
+    assert out["realized_pnl"] == pytest.approx(15.0)
+    assert store.get_position("TCS") is None
+
+
+@pytest.mark.asyncio
+async def test_manual_close_missing_position(paper_env: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("TRADING_MODE", "dry_run")
+    from fastapi import HTTPException
+
+    from app.routes.trades import ManualCloseBody, close_open_position
+
+    with pytest.raises(HTTPException) as exc:
+        await close_open_position("NOSUCH", ManualCloseBody())
+    assert exc.value.status_code == 404

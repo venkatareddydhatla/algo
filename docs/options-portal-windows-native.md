@@ -248,9 +248,26 @@ git pull origin cursor/trades-page-round-trips-cb5e
 
 Open http://127.0.0.1:5173/trades — Open positions unchanged; Closed trades show Symbol, Side LONG/SHORT, Entry/Exit IST, Entry/Exit px, PnL, Reason, dry_run.
 
-### Pull strict candle-clear EMA confirm (stacked) — tip
+### Pull manual Sell/Close on open trades (stacked) — tip
 
-After EMA cross, require the **next completed 15m candle** fully clear of both EMAs: buy when `low > max(EMA)`; sell when `high < min(EMA)`. No fire if wick touches/sits on the lines. Prefer closed bar. Keeps **09:30** entry gate, open-book **±2%**, max open **10**, stocks-only, `dry_run`. Stacked on `cursor/purge-930-entry-gate-5e77` (PR #48).
+Trades → Open positions: **Sell/Close** (long) or **Cover** (short) closes that dry_run paper leg immediately via `POST /api/v1/trades/{symbol}/close` with reason `manual_close`. Confirm dialog; dry_run only (no live broker). Stacked on `cursor/strict-candle-clear-emas-d84e` (PR #49).
+
+```powershell
+cd C:\algo
+Set-ExecutionPolicy -Scope Process Bypass
+.\deploy\windows\native\stop-native.ps1
+git fetch origin
+git checkout cursor/manual-sell-open-ae11
+git pull origin cursor/manual-sell-open-ae11
+.\deploy\windows\native\setup-native.ps1
+.\deploy\windows\native\start-native.ps1 -WithWorker
+```
+
+Open http://127.0.0.1:5173/trades — each open row has Sell/Close (or Cover). After click + confirm, the row leaves Open and appears under Closed trades with reason containing `manual_close`. Still `dry_run`, **09:30** entry gate, open-book **±2%**, max open **10**.
+
+### Pull strict candle-clear EMA confirm (stacked)
+
+After EMA cross, require the **next completed 15m candle** fully clear of both EMAs: buy when `low > max(EMA)`; sell when `high < min(EMA)`. No fire if wick touches/sits on the lines. Prefer closed bar. Keeps **09:30** entry gate, open-book **±2%**, max open **10**, stocks-only, `dry_run`. Prefer the manual-close tip above. Stacked on `cursor/purge-930-entry-gate-5e77` (PR #48).
 
 ```powershell
 cd C:\algo

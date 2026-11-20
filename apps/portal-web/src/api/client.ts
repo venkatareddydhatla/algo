@@ -201,6 +201,18 @@ export const api = {
         day: opts?.day,
       })}`,
     ),
+  /** Close one open dry_run paper position (long sell / short cover). */
+  closeTrade: (
+    symbol: string,
+    body?: { reason?: string; confirm?: boolean },
+  ) =>
+    postJson<Record<string, unknown>>(
+      `/api/v1/trades/${encodeURIComponent(symbol)}/close`,
+      {
+        reason: body?.reason ?? "manual_close",
+        confirm: body?.confirm ?? true,
+      },
+    ),
   health: () => getJson<Record<string, unknown>>("/api/v1/health"),
   config: () => getJson<Record<string, unknown>>("/api/v1/admin/config"),
   marketIndices: () => getJson<MarketIndicesPayload>("/api/v1/market/indices"),
