@@ -248,9 +248,26 @@ git pull origin cursor/trades-page-round-trips-cb5e
 
 Open http://127.0.0.1:5173/trades — Open positions unchanged; Closed trades show Symbol, Side LONG/SHORT, Entry/Exit IST, Entry/Exit px, PnL, Reason, dry_run.
 
-### Pull manual Sell/Close on open trades (stacked) — tip
+### Pull price floor + 120m cooloff + profit candle protect (stacked) — tip
 
-Trades → Open positions: **Sell/Close** (long) or **Cover** (short) closes that dry_run paper leg immediately via `POST /api/v1/trades/{symbol}/close` with `confirm=true` + `reason=manual_close`. Confirm dialog; dry_run only (no live broker). Pine path honors **reentry_cooloff** after exits (incl. manual_close) so the worker does not instantly re-open the same symbol. Stacked on `cursor/strict-candle-clear-emas-d84e` (PR #49).
+Three Venkata rules on the manual-sell tip: (1) skip score/entry when LTP or last close **&lt; ₹20**; (2) **120m** same-IST-day cooloff after any exit (incl. manual) before re-trading the symbol; (3) **profit_candle_protect** — in-profit long whose latest 15m opens below prior mid and closes below prior low → immediate close (short symmetric). Keeps Pine clear-EMA, **±2%**, **09:30**, max open **10**, manual Sell/Close. Stacked on `cursor/manual-sell-open-ae11` (PR #50).
+
+```powershell
+cd C:\algo
+Set-ExecutionPolicy -Scope Process Bypass
+.\deploy\windows\native\stop-native.ps1
+git fetch origin
+git checkout cursor/price-cooloff-profit-candle-548e
+git pull origin cursor/price-cooloff-profit-candle-548e
+.\deploy\windows\native\setup-native.ps1
+.\deploy\windows\native\start-native.ps1 -WithWorker
+```
+
+Confirm `config/local.yaml`: `min_equity_price: 20`, `reentry_cooloff.minutes: 120`, `profit_candle_protect.enabled: true`, `fixed_pct_exit`, `entries_open: "09:30"`, `max_open_symbols: 10`, `dry_run`. Worker open-book log may show `profit_candle=profit_candle_protect` or `price_floor` skips. Watchlist table + TOP BUY/SELL omit names under ₹20 (e.g. IDEA @ ₹12.05) and clear stale `pine.signal` KV — refresh Signals after stop/start. After merge into the tip chain / `main`, pull that branch instead.
+
+### Pull manual Sell/Close on open trades (stacked)
+
+Trades → Open positions: **Sell/Close** (long) or **Cover** (short) closes that dry_run paper leg immediately via `POST /api/v1/trades/{symbol}/close` with `confirm=true` + `reason=manual_close`. Confirm dialog; dry_run only (no live broker). Pine path honors **reentry_cooloff** after exits (incl. manual_close) so the worker does not instantly re-open the same symbol. Prefer the price/cooloff/profit-candle tip above. Stacked on `cursor/strict-candle-clear-emas-d84e` (PR #49).
 
 **Must stop then start** so API picks up the new route (start-native skips a still-running uvicorn).
 

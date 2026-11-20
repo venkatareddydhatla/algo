@@ -376,6 +376,26 @@ def load_persisted_pine_signals(symbols: list[str]) -> dict[str, dict[str, Any]]
     return out
 
 
+def clear_persisted_pine_signals(symbols: list[str]) -> list[str]:
+    """Delete ``pine.signal.*`` KV rows so sub-floor names cannot linger on watchlist."""
+    cleared: list[str] = []
+    try:
+        from options_portal_persistence.kv_store import KvStore
+
+        kv = KvStore()
+        if not kv.available:
+            return cleared
+        for sym in symbols:
+            key = str(sym).strip().upper()
+            if not key:
+                continue
+            if kv.delete(f"pine.signal.{key}"):
+                cleared.append(key)
+    except Exception:  # noqa: BLE001
+        return cleared
+    return cleared
+
+
 def build_universe_signals(
     symbols: list[str],
     *,

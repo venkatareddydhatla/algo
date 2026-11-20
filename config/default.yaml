@@ -102,14 +102,22 @@ trading:
     equity_share_qty: 1        # mirror of trading.equity.share_qty (risk gate default)
     max_equity_qty_per_symbol: 1
     require_news_context: false  # if true, skip orders when news pipeline degraded
+    # Skip watchlist scoring + new entries when LTP/last close < ₹20.
+    min_equity_price: 20.0
     # Fixed ±2% profit/stop on OPEN equity only (not an entry filter; ~15s poll).
     # Long: mark≥entry×1.02 → pct_profit_2; mark≤entry×0.98 → pct_stop_2
     # Short: mark≤entry×0.98 → pct_profit_2; mark≥entry×1.02 → pct_stop_2
-    # Priority same tick: pct_stop/profit > (disabled ATR/morning) > soft_flatten.
+    # Priority same tick: pct_stop/profit > profit_candle_protect >
+    # (disabled ATR/morning) > soft_flatten.
     fixed_pct_exit:
       enabled: true
       profit_pct: 2.0
       stop_pct: 2.0
+    # In-profit structure break on latest 15m vs prior (open book only).
+    # Long: open < mid(prior) and close < prior.low → profit_candle_protect.
+    # Short: open > mid(prior) and close > prior.high (symmetric).
+    profit_candle_protect:
+      enabled: true
     # All-day ATR trail + profit scale-out — OFF while fixed ±2% is primary.
     # Kept for rollback (set enabled: true + fixed_pct_exit.enabled: false).
     atr_trail_scale_out:

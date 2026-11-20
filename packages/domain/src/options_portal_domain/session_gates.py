@@ -15,13 +15,20 @@ Product rules (equity dry-run) — Pine entry + fixed open-book exits:
   entry filter) on the ~15s poll (`trading.risk.fixed_pct_exit`):
   - Long: mark ≥ entry×1.02 → ``pct_profit_2``; mark ≤ entry×0.98 → ``pct_stop_2``
   - Short: mark ≤ entry×0.98 → ``pct_profit_2``; mark ≥ entry×1.02 → ``pct_stop_2``
-  - Same-tick priority: stop > profit > (disabled ATR/morning) > soft_flatten
-- **Open-book risk exits** (``pct_profit_2``, ``pct_stop_2``, plus optional
-  ``profit_book`` / ``atr_*`` / ``morning_*`` when re-enabled) only on NSE
-  trading days inside ``[open_ist, soft_flatten_until_ist]`` IST (default
-  **09:15–15:40**). Use ``allow_open_book_risk_exits``. Outside that window
-  the worker may still poll for marks / news / TA — **no risk-exit fills**.
-  Cash/risk ``open_ist`` stays **09:15** even when entries wait until 09:30.
+  - Same-tick priority: stop > profit > profit_candle_protect >
+    (disabled ATR/morning) > soft_flatten
+- **Profit candle protect** (`trading.risk.profit_candle_protect`, open book):
+  when an open stock is **in profit**, latest 15m vs prior:
+  - Long: open < mid(prior) **and** close < prior.low → ``profit_candle_protect``
+  - Short: open > mid(prior) **and** close > prior.high → ``profit_candle_protect``
+  where ``mid = (prior.high + prior.low) / 2``.
+- **Open-book risk exits** (``pct_profit_2``, ``pct_stop_2``,
+  ``profit_candle_protect``, plus optional ``profit_book`` / ``atr_*`` /
+  ``morning_*`` when re-enabled) only on NSE trading days inside
+  ``[open_ist, soft_flatten_until_ist]`` IST (default **09:15–15:40**). Use
+  ``allow_open_book_risk_exits``. Outside that window the worker may still poll
+  for marks / news / TA — **no risk-exit fills**. Cash/risk ``open_ist`` stays
+  **09:15** even when entries wait until 09:30.
 - **ATR trail / morning dynamic TP** remain in code but are **disabled** as
   primary exits while fixed ±2% is on (`atr_trail_scale_out.enabled: false`,
   `morning_profit_book.enabled: false`). Soft EOD flatten stays as safety.
@@ -53,7 +60,7 @@ from options_portal_domain.equity import (
     unrealized_pnl_pct,
 )
 from options_portal_domain.tz import ist, now_ist
-from options_portal_domain.types import SignalAction
+from options_portal_domain.types import Candle, SignalAction
 
 IndexBias = Literal["bullish", "bearish", "neutral", "noisy", "unavailable"]
 
@@ -72,6 +79,9 @@ DEFAULT_MORNING_ATR_PERIOD = 14
 # Fixed ±2% profit / stop on open equity (trading.risk.fixed_pct_exit).
 DEFAULT_FIXED_PCT_PROFIT = 2.0
 DEFAULT_FIXED_PCT_STOP = 2.0
+
+# In-profit structure break on latest 15m vs prior (trading.risk.profit_candle_protect).
+PROFIT_CANDLE_PROTECT_REASON = "profit_candle_protect"
 
 # All-day ATR trail + profit scale-out (trading.risk.atr_trail_scale_out).
 # Wider stops + higher profit_book so tiny scalp books stop firing.
@@ -784,6 +794,177 @@ def fixed_pct_exit_decision(
         "unrealized_pct": pct,
         "unrealized_rupees": upnl_rs,
         "thresholds": thr,
+    }
+
+
+@dataclass(frozen=True)
+class ProfitCandleProtectPolicy:
+    """Close an in-profit open when the latest 15m breaks prior structure.
+
+    Config under ``trading.risk.profit_candle_protect``. Stocks only; open book;
+    cash risk-exit window. Same-tick priority: after fixed ±2%, before ATR/morning.
+    """
+
+    enabled: bool = True
+
+    @classmethod
+    def from_config(cls, config: dict[str, Any]) -> ProfitCandleProtectPolicy:
+        trading = config.get("trading") or {}
+        risk = dict(trading.get("risk") or {})
+        raw = dict(
+            risk.get("profit_candle_protect")
+            or trading.get("profit_candle_protect")
+            or {}
+        )
+        return cls(enabled=bool(raw.get("enabled", True)))
+
+
+def _empty_profit_candle_result(
+    *,
+    active: bool,
+    action: str,
+    reason: str,
+) -> dict[str, Any]:
+    return {
+        "active": active,
+        "action": action,
+        "reason": reason,
+        "exit_qty": 0,
+        "unrealized_pct": None,
+        "prior_mid": None,
+        "prior_low": None,
+        "prior_high": None,
+        "current_open": None,
+        "current_close": None,
+    }
+
+
+def profit_candle_protect_decision(
+    *,
+    open_side: PositionSide | None,
+    open_qty: int,
+    entry_avg: float | None,
+    mark: float | None,
+    candles: Sequence[Candle] | None,
+    policy: ProfitCandleProtectPolicy,
+    now: datetime | None = None,
+    is_index: bool = False,
+    session_policy: SoftEodPolicy | None = None,
+    trading_day: bool | None = None,
+) -> dict[str, Any]:
+    """Exit in-profit opens when the latest 15m breaks the prior candle mid/extreme.
+
+    Long (in profit): ``current.open < mid(prior)`` and ``current.close < prior.low``.
+    Short (in profit): ``current.open > mid(prior)`` and ``current.close > prior.high``.
+    ``mid = (prior.high + prior.low) / 2``. Uses the latest two 15m bars (forming
+    last bar allowed so the ~15s open-book poll can exit immediately).
+    """
+    if is_index:
+        return _empty_profit_candle_result(
+            active=False,
+            action="none",
+            reason="index_not_equity — profit candle protect stocks only",
+        )
+    if not policy.enabled:
+        return _empty_profit_candle_result(
+            active=False,
+            action="none",
+            reason="profit_candle_protect disabled",
+        )
+    if open_side is None or int(open_qty) <= 0:
+        return _empty_profit_candle_result(
+            active=False,
+            action="none",
+            reason="no open position",
+        )
+    if now is not None or trading_day is not None:
+        if not allow_open_book_risk_exits(
+            now, policy=session_policy, trading_day=trading_day
+        ):
+            soft = session_policy or SoftEodPolicy()
+            return _empty_profit_candle_result(
+                active=False,
+                action="none",
+                reason=(
+                    f"outside_risk_exit_window: "
+                    f"{soft.open_ist}-{soft.soft_flatten_until_ist} IST "
+                    f"(profit candle protect refused)"
+                ),
+            )
+    if entry_avg is None or float(entry_avg) <= 0 or mark is None or float(mark) <= 0:
+        return _empty_profit_candle_result(
+            active=True,
+            action="none",
+            reason="profit_candle_protect: missing entry_avg/mark",
+        )
+    bars = list(candles or ())
+    if len(bars) < 2:
+        return _empty_profit_candle_result(
+            active=True,
+            action="none",
+            reason="profit_candle_protect: need ≥2 15m candles",
+        )
+
+    prior = bars[-2]
+    current = bars[-1]
+    prior_mid = (float(prior.high) + float(prior.low)) / 2.0
+    entry = float(entry_avg)
+    px = float(mark)
+    pct = unrealized_pnl_pct(open_side, entry, px)
+    side = str(open_side).strip().lower()
+    cur_open = float(current.open)
+    cur_close = float(current.close)
+    base = {
+        "active": True,
+        "exit_qty": 0,
+        "unrealized_pct": pct,
+        "prior_mid": prior_mid,
+        "prior_low": float(prior.low),
+        "prior_high": float(prior.high),
+        "current_open": cur_open,
+        "current_close": cur_close,
+    }
+
+    # Protect only while the open is in profit (uPnL > 0).
+    if pct <= 0:
+        return {
+            **base,
+            "action": "none",
+            "reason": (
+                f"profit_candle_protect hold: {side} not in profit "
+                f"uPnL={pct:.3f}% (entry={entry:.4f} mark={px:.4f})"
+            ),
+        }
+
+    fire = False
+    if side == "long":
+        fire = cur_open < prior_mid and cur_close < float(prior.low)
+    elif side == "short":
+        fire = cur_open > prior_mid and cur_close > float(prior.high)
+
+    if not fire:
+        return {
+            **base,
+            "action": "none",
+            "reason": (
+                f"profit_candle_protect hold: {side} structure intact "
+                f"open={cur_open:.4f} close={cur_close:.4f} "
+                f"mid={prior_mid:.4f} prior_lo={float(prior.low):.4f} "
+                f"prior_hi={float(prior.high):.4f}"
+            ),
+        }
+
+    qty = profit_book_exit_qty(int(open_qty), fraction=1.0)
+    return {
+        **base,
+        "action": PROFIT_CANDLE_PROTECT_REASON,
+        "reason": (
+            f"{PROFIT_CANDLE_PROTECT_REASON}: {side} in profit uPnL={pct:.3f}% "
+            f"open={cur_open:.4f} close={cur_close:.4f} "
+            f"mid={prior_mid:.4f} prior_lo={float(prior.low):.4f} "
+            f"prior_hi={float(prior.high):.4f}"
+        ),
+        "exit_qty": qty,
     }
 
 

@@ -214,17 +214,20 @@ async def _tick_open_book_management(cfg: dict[str, Any]) -> dict[str, Any]:
                 morning = result.get("morning_tp") or {}
                 atr = result.get("atr_trail") or {}
                 fixed = result.get("fixed_pct_exit") or {}
+                profit_candle = result.get("profit_candle_protect") or {}
                 logger.info(
-                    "open-book tick %s -> hybrid=%s fixed_pct=%s atr=%s "
-                    "soft=%s morning=%s note=%s",
+                    "open-book tick %s -> hybrid=%s fixed_pct=%s profit_candle=%s "
+                    "atr=%s soft=%s morning=%s note=%s",
                     symbol,
                     result.get("hybrid_action"),
                     fixed.get("action"),
+                    profit_candle.get("action"),
                     atr.get("action"),
                     soft.get("action"),
                     morning.get("action"),
                     result.get("note")
                     or fixed.get("reason")
+                    or profit_candle.get("reason")
                     or atr.get("reason")
                     or soft.get("reason")
                     or morning.get("reason"),
