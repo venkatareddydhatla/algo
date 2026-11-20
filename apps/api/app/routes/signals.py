@@ -83,7 +83,8 @@ async def list_signals(
         "marks_applied": mark_meta.get("marks_applied", []),
         "price_sources": mark_meta.get("price_sources", {}),
         "note": (
-            "Action = Pine BUY/SELL/HOLD only (EMA13/21 × Supertrend × ADX × vol). "
+            "Action = Pine BUY/SELL/HOLD only "
+            "(EMA13/21 cross + next 15m open confirm above/below both). "
             "Hover reason_summary for Pine factor detail. "
             "price = live LTP when available, else candle close / last-known mark."
         ),
