@@ -282,6 +282,23 @@ git pull origin cursor/dynamic-open-symbol-capacity-53b7
 
 Verify worker log: `Entry selection enabled ... dynamic=True floor=4 ceiling=15` and `Entry selection flush`. Still `dry_run` only.
 
+### Pull fewer high-conviction entries (stacked)
+
+Day2 brokerage churn fix: raise admit floor **`|hybrid| ≥ 0.65`** (after **12:00 IST → 0.70**), hard ceiling **8**, **90 min** same-session re-entry cooloff after any close. Anti-churn stays `empty_slots_only`. Soft flatten / ATR trail / morning window / index block unchanged. Tip parent: `cursor/atr-trail-scale-out-c110`.
+
+```powershell
+cd C:\algo
+Set-ExecutionPolicy -Scope Process Bypass
+.\deploy\windows\native\stop-native.ps1
+git fetch origin
+git checkout cursor/fewer-high-conviction-entries-4334
+git pull origin cursor/fewer-high-conviction-entries-4334
+.\deploy\windows\native\setup-native.ps1
+.\deploy\windows\native\start-native.ps1 -WithWorker
+```
+
+Verify worker log: `Entry selection enabled ... ceiling=8 min_|hybrid|=0.65 cooloff=True/90m afternoon_after=12:00` and flush lines with `cooloff_blocked`. Still `dry_run` only.
+
 ### Pull after-hours entry gate (stacked)
 
 **New equity entries** (open/add / flip_open + entry Gmail) only on NSE trading days inside **`[09:15, 15:20)` IST** (`trading.session.open` → `no_new_entries_after`, aligned with soft-flatten start). Nights, pre-open, and post-15:20 no longer persist Action entry fills. Soft flatten / exits / overnight hold and news/TA scans are unchanged. Shared helper: `is_trading_session` in `session_gates`.

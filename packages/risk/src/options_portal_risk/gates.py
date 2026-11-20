@@ -24,7 +24,7 @@ class DefaultRiskGate:
                 return False, f"Lots {leg.qty_lots} exceed max_lots_per_symbol={max_lots}"
 
         open_symbols = set(portfolio.get("open_symbols") or [])
-        max_open = int(limits.get("max_open_symbols", 15))
+        max_open = int(limits.get("max_open_symbols", 8))
         if reco.symbol not in open_symbols and len(open_symbols) >= max_open:
             return False, f"Max open symbols ({max_open}) reached"
 
@@ -56,7 +56,7 @@ class DefaultRiskGate:
             return False, f"Qty {intent.qty} exceeds max_equity_qty_per_symbol={max_qty}"
 
         open_symbols = set(portfolio.get("open_symbols") or [])
-        max_open = int(limits.get("max_open_symbols", 15))
+        max_open = int(limits.get("max_open_symbols", 8))
         is_new_entry = intent.action_kind in {"entry", "flip_open"} and intent.symbol not in open_symbols
         if is_new_entry and len(open_symbols) >= max_open:
             return False, f"Max open symbols ({max_open}) reached"

@@ -83,7 +83,7 @@ trading:
     avoid_expiry_after_ist: "15:00"  # same-day expiry cut-off unless overridden
   risk:
     max_lots_per_symbol: 2
-    max_open_symbols: 15       # hard ceiling (risk gate); manage via YAML as needed
+    max_open_symbols: 8        # hard ceiling (risk gate); prefer fewer trades
     max_day_loss_inr: 25000
     max_premium_spread_pct: 2.0
     min_option_oi: 50000
@@ -109,17 +109,26 @@ trading:
     # rank new candidates by |hybrid| into free slots — not CSV/scan first-fill.
     # anti_churn empty_slots_only = keep existing opens; never rotate for a
     # tiny score edge (brokerage-friendly). Soft flatten / overnight |h|≥0.70 unchanged.
+    # reentry_cooloff: after any close, block same-symbol re-entry for N minutes
+    # (same IST NSE session day only). Cuts midday re-entry churn.
     # dynamic_capacity: target book scales with how many candidates clear
     # min_hybrid_abs, clamped to [floor, ceiling]; ceiling ≤ max_open_symbols.
+    # afternoon_*: after 12:00 IST raise admit floor (stricter afternoon).
     entry_selection:
       enabled: true
       rank_by: abs_hybrid
       anti_churn: empty_slots_only
+      reentry_cooloff:
+        enabled: true
+        minutes: 90              # block re-entry after close (any reason)
+        same_session_only: true  # IST NSE session day via pnl_ist_day
       dynamic_capacity:
         enabled: true
-        floor: 4                 # min target when enough qualify (ops: 3–5)
-        ceiling: 15              # mirrors max_open_symbols hard ceiling
-        min_hybrid_abs: 0.55     # admit only |hybrid| ≥ this
+        floor: 4                 # min target when enough qualify (ops: 3–4)
+        ceiling: 8               # mirrors max_open_symbols hard ceiling
+        min_hybrid_abs: 0.65     # admit only |hybrid| ≥ this
+        afternoon_after_ist: "12:00"
+        afternoon_min_hybrid_abs: 0.70  # after noon IST only
 
 hybrid:
   weights:
