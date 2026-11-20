@@ -174,11 +174,12 @@ def plan_equity_intents(
     reason: str = "",
     exit_qty: int | None = None,
 ) -> list[EquityOrderIntent]:
-    """Map hybrid bias → equity share intents.
+    """Map signal action → equity share intents.
 
-    - BUY_CE_BIAS → long (BUY entry); exit short first if flipping
-    - BUY_PE_BIAS → short (SELL entry); exit long first if flipping
+    - BUY / BUY_CE_BIAS → long (BUY entry); exit short first if flipping
+    - SELL / BUY_PE_BIAS → short (SELL entry); exit long first if flipping
     - HOLD / EXIT / REDUCE → close open paper position when present
+      (Pine dry-run path must not call this with HOLD — Pine HOLD = no trade)
 
     ``exit_qty`` caps how many open shares to close (default = full ``open_qty``).
     Useful for morning profit-book full exit today and 50% scale-out later.
@@ -225,10 +226,10 @@ def plan_equity_intents(
         exit_i = _exit_intent("exit")
         return [exit_i] if exit_i else []
 
-    if act == SignalAction.BUY_CE_BIAS.value:
+    if act in {SignalAction.BUY.value, SignalAction.BUY_CE_BIAS.value}:
         desired: PositionSide = "long"
         entry_side: EquitySide = "BUY"
-    elif act == SignalAction.BUY_PE_BIAS.value:
+    elif act in {SignalAction.SELL.value, SignalAction.BUY_PE_BIAS.value}:
         desired = "short"
         entry_side = "SELL"
     else:

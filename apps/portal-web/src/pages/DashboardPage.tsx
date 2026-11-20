@@ -120,9 +120,8 @@ export default function DashboardPage() {
         <div>
           <h1>Watchlist signals</h1>
           <p className="muted">
-            NSE F&O universe ({total} symbols) — source: {source}. Worker scores the full
-            watchlist in batches; actionable names sort to the top. Hover Reason for the
-            decision rationale.
+            NSE F&O stocks ({total} symbols) — Pine NIFTY50ActiveV2 Action only (BUY / SELL /
+            HOLD). Source: {source}. Hover Reason for EMA / Supertrend / ADX / vol factors.
           </p>
         </div>
         <MarketIndexStrip />
@@ -186,10 +185,6 @@ export default function DashboardPage() {
               <th className="num-cell">Price</th>
               <th>Action</th>
               <th>Reason</th>
-              <th>Hybrid</th>
-              <th>Tech</th>
-              <th>News</th>
-              <th>Expiry</th>
               <th>Updated</th>
             </tr>
           </thead>
@@ -217,15 +212,13 @@ export default function DashboardPage() {
                   {fmtPrice(r)}
                 </td>
                 <td>
-                  <span className={`action action-${r.action}`}>{r.action}</span>
+                  <span className={`action action-${pineAction(r.action)}`}>
+                    {pineAction(r.action)}
+                  </span>
                 </td>
                 <td>
                   <ReasonCell row={r} />
                 </td>
-                <td className="mono">{fmt(r.hybrid_score)}</td>
-                <td className="mono">{fmt(r.tech_score)}</td>
-                <td className="mono">{fmt(r.news_score)}</td>
-                <td>{r.expiry_hint ?? "-"}</td>
                 <td className="muted mono">{fmtIstDateTime(r.updated_at)}</td>
               </tr>
             ))}
@@ -290,10 +283,17 @@ function parseReasonSections(
   return parsed;
 }
 
+function pineAction(action: string | undefined): "BUY" | "SELL" | "HOLD" {
+  const a = (action || "HOLD").toUpperCase();
+  if (a === "BUY" || a === "BUY_CE_BIAS" || a === "BUY_CE" || a === "LONG") return "BUY";
+  if (a === "SELL" || a === "BUY_PE_BIAS" || a === "BUY_PE" || a === "SHORT") return "SELL";
+  return "HOLD";
+}
+
 function sortLocal(items: SignalRow[]): SignalRow[] {
   return [...items].sort((a, b) => {
-    const aAct = a.action !== "HOLD" ? 0 : 1;
-    const bAct = b.action !== "HOLD" ? 0 : 1;
+    const aAct = pineAction(a.action) !== "HOLD" ? 0 : 1;
+    const bAct = pineAction(b.action) !== "HOLD" ? 0 : 1;
     if (aAct !== bAct) return aAct - bAct;
     const ah = Math.abs(a.hybrid_score);
     const bh = Math.abs(b.hybrid_score);
@@ -301,11 +301,6 @@ function sortLocal(items: SignalRow[]): SignalRow[] {
     if (a.confidence !== b.confidence) return b.confidence - a.confidence;
     return a.symbol.localeCompare(b.symbol);
   });
-}
-
-function fmt(n: number) {
-  const sign = n > 0 ? "+" : "";
-  return `${sign}${n.toFixed(2)}`;
 }
 
 function displayPrice(row: SignalRow): number | null {

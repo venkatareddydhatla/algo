@@ -1030,13 +1030,19 @@ def entry_conflicts_with_index(
 
     act = action.value if isinstance(action, SignalAction) else str(action)
     # Strongly bullish index → block PE/short entries
-    if index_bias >= conflict_abs and act == SignalAction.BUY_PE_BIAS.value:
+    if index_bias >= conflict_abs and act in {
+        SignalAction.BUY_PE_BIAS.value,
+        SignalAction.SELL.value,
+    }:
         return True, (
             f"market_sentiment blocks PE entry: index_bias={index_bias:.3f} "
             f"≥ conflict_abs={conflict_abs}"
         )
     # Strongly bearish index → block CE/long entries
-    if index_bias <= -conflict_abs and act == SignalAction.BUY_CE_BIAS.value:
+    if index_bias <= -conflict_abs and act in {
+        SignalAction.BUY_CE_BIAS.value,
+        SignalAction.BUY.value,
+    }:
         return True, (
             f"market_sentiment blocks CE entry: index_bias={index_bias:.3f} "
             f"≤ -conflict_abs={conflict_abs}"

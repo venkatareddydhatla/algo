@@ -14,6 +14,8 @@ Timeframe = Literal["5m", "15m", "1h", "1d"]
 
 class SignalAction(str, Enum):
     HOLD = "HOLD"
+    BUY = "BUY"  # Pine equity long (also aliases BUY_CE_BIAS for planner)
+    SELL = "SELL"  # Pine equity short / sell (also aliases BUY_PE_BIAS)
     BUY_CE_BIAS = "BUY_CE_BIAS"
     BUY_PE_BIAS = "BUY_PE_BIAS"
     EXIT = "EXIT"

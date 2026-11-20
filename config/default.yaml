@@ -69,10 +69,22 @@ trading:
       atr_period: 14
       exit_fraction: 1.0           # 1.0 full exit; 0.5 later for scale-out when qty>1
     user_hours_note: "09:15–15:40 IST (entries 09:15–15:20; soft flatten 15:28–15:40; overnight |h|≥0.85 + trend; no hard 15:40 square-off)"
-  # Light broader-market gate (optional). Blocks new opposite entries only when
-  # NIFTY/BANKNIFTY hybrid strongly conflicts; skips when scores missing or disagree.
-  market_sentiment:
+  # Pine NIFTY50ActiveV2 equity dry-run engine (primary). Exact buy/sell formulas;
+  # bypasses hybrid floors / MTF / proximity / news / cooloff / top-10% as entry gates.
+  pine_signals:
     enabled: true
+    ema_fast: 13
+    ema_slow: 21
+    su_len: 10
+    su_mult: 3.0
+    adx_len: 14
+    use_adx: true
+    adx_min: 20
+    vol_ratio: 1.2
+    vol_sma_len: 20
+  # Light broader-market gate — disabled while Pine is primary (stocks-only still).
+  market_sentiment:
+    enabled: false
     symbols:
       - NIFTY
       - BANKNIFTY
@@ -109,10 +121,10 @@ trading:
       profit_pct: 1.2          # ATR missing → +1.2%
       scale_out_fraction: 0.5  # qty>1 only; qty=1 → full profit_book
       min_rrr: 1.2             # discretionary profit ≥ 1.2× initial risk
-    # High-conviction multi-factor gate (NSE F&O stocks only; indices excluded).
-    # Supersedes looser dual-session entry floors where they conflict.
+    # High-conviction multi-factor gate — OFF while Pine is primary entry engine.
+    # Kept for rollback (set trading.pine_signals.enabled: false + enabled: true).
     high_conviction:
-      enabled: true
+      enabled: false
       hybrid_floors:
         before_12_ist: 0.75      # |hybrid| ≥ 0.75 before 12:00 IST
         after_12_ist: 0.75       # same as morning (no midday raise to 0.80)
@@ -158,12 +170,9 @@ trading:
         lookback_trading_days: 5
       exit:
         min_rrr: 1.2
-    # Equity dry-run entry selection (worker full-scan cycle):
-    # rank new candidates by |hybrid| into free slots — not CSV/scan first-fill.
-    # Multi-factor floors/filters in high_conviction; ranking + empty_slots_only here.
-    # Cooloff 120m after any trade; max open 6 (4 on low WR); morning budget off.
+    # Entry selection ranking — OFF while Pine fires buy/sell immediately.
     entry_selection:
-      enabled: true
+      enabled: false
       rank_by: abs_hybrid
       anti_churn: empty_slots_only
       reentry_cooloff:
@@ -193,17 +202,28 @@ hybrid:
   news_lookback_minutes: 180
 
 ta:
+  # Legacy confluence plugins (unused when trading.pine_signals.enabled).
   plugins:
     - name: rsi
       period: 14
     - name: ema_cross
-      fast: 9
+      fast: 13
       slow: 21
     - name: supertrend
       atr_period: 10
       multiplier: 3.0
     - name: vwap
       session_anchored: true
+  pine:
+    ema_fast: 13
+    ema_slow: 21
+    su_len: 10
+    su_mult: 3.0
+    adx_len: 14
+    use_adx: true
+    adx_min: 20
+    vol_ratio: 1.2
+    vol_sma_len: 20
 
 options_recommender:
   style: single_leg        # v1; future: vertical

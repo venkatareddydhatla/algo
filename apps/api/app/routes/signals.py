@@ -8,11 +8,9 @@ from app.marks import enrich_rows_with_prices
 from app.mock_data import MOCK_SIGNALS, build_universe_signals
 from options_portal_domain.config import load_config, watchlist_symbols
 from options_portal_hybrid.explain import (
-    attach_reason_fields,
     pick_top_hybrid_sides,
     sort_signal_rows,
 )
-from options_portal_persistence.news_store import NewsStore
 
 router = APIRouter(prefix="/api/v1", tags=["signals"])
 
@@ -25,26 +23,19 @@ def _load_signal_rows(
     cfg = load_config()
     trading = cfg.get("trading", {})
     timeframe = str(trading.get("timeframe", "15m"))
-    lookback = int(cfg.get("hybrid", {}).get("news_lookback_minutes", 180))
-
-    live_by_symbol: dict = {}
-    try:
-        store = NewsStore()
-        if store.available and store.count() > 0:
-            live_by_symbol = store.recent_by_symbol(lookback_minutes=lookback)
-    except Exception:  # noqa: BLE001
-        live_by_symbol = {}
 
     if expand_watchlist:
         watchlist = watchlist_symbols(cfg)
         rows = build_universe_signals(
             watchlist,
             timeframe=timeframe,
-            live_news_by_symbol=live_by_symbol,
         )
-        source = "mock+universe+live-news" if live_by_symbol else "mock+universe"
+        persisted = sum(1 for r in rows if r.get("pine_persisted"))
+        source = (
+            f"pine+kv({persisted})" if persisted else "pine+placeholder"
+        )
     else:
-        rows = [attach_reason_fields(dict(s)) for s in MOCK_SIGNALS]
+        rows = [dict(s) for s in MOCK_SIGNALS]
         source = "mock"
 
     if symbol:
@@ -64,13 +55,19 @@ async def list_signals(
         description="Score the full watchlist (dry-run synthetic) instead of seed rows only",
     ),
 ) -> dict:
-    """List signals sorted actionable-first, then by |hybrid| desc.
+    """List signals sorted actionable-first, then by |score| desc.
 
-    Dry-run / mock path returns non-placeholder hybrid scores for every symbol
-    in the configured NSE F&O universe (not HOLD/0.00 inactive stubs).
-    When live RSS news exists for a symbol, reason/news_score use real headlines.
+    Action is Pine-only: BUY / SELL / HOLD (worker KV when present).
     """
     rows, source = _load_signal_rows(symbol=symbol, expand_watchlist=expand_watchlist)
+    for row in rows:
+        act = str(row.get("action") or "HOLD").upper()
+        if act in {"BUY_CE_BIAS", "BUY_CE", "LONG"}:
+            row["action"] = "BUY"
+        elif act in {"BUY_PE_BIAS", "BUY_PE", "SHORT"}:
+            row["action"] = "SELL"
+        elif act not in {"BUY", "SELL", "HOLD"}:
+            row["action"] = "HOLD"
     rows = sort_signal_rows(rows)
     total = len(rows)
     page = rows[offset : offset + limit]
@@ -82,12 +79,12 @@ async def list_signals(
         "offset": offset,
         "limit": limit,
         "source": source,
-        "sort": "actionable,|hybrid|desc,confidence,symbol",
+        "sort": "actionable,|score|desc,confidence,symbol",
         "marks_applied": mark_meta.get("marks_applied", []),
         "price_sources": mark_meta.get("price_sources", {}),
         "note": (
-            "Actionable symbols (non-HOLD) sort first. "
-            "Hover reason_summary for reason_detail explainability. "
+            "Action = Pine BUY/SELL/HOLD only (EMA13/21 × Supertrend × ADX × vol). "
+            "Hover reason_summary for Pine factor detail. "
             "price = live LTP when available, else candle close / last-known mark."
         ),
     }
@@ -98,8 +95,14 @@ async def top_hybrid(
     limit: int = Query(5, ge=1, le=20),
     expand_watchlist: bool = Query(True),
 ) -> dict:
-    """Top positive (CE) and negative (PE) hybrid strip candidates."""
+    """Top BUY and SELL Pine strip candidates (ce/pe keys kept for UI compat)."""
     rows, source = _load_signal_rows(expand_watchlist=expand_watchlist)
+    for row in rows:
+        act = str(row.get("action") or "HOLD").upper()
+        if act in {"BUY_CE_BIAS", "BUY_CE", "LONG"}:
+            row["action"] = "BUY"
+        elif act in {"BUY_PE_BIAS", "BUY_PE", "SHORT"}:
+            row["action"] = "SELL"
     sides = pick_top_hybrid_sides(rows, limit=limit)
     await enrich_rows_with_prices(sides["ce"])
     await enrich_rows_with_prices(sides["pe"])
@@ -108,9 +111,7 @@ async def top_hybrid(
         "pe": sides["pe"],
         "limit": limit,
         "source": source,
-        "note": (
-            "Prefers reason_kind=hybrid; falls back to strongest actionable |hybrid|."
-        ),
+        "note": "Top Pine BUY / SELL (Action from buy_signal / sell_signal only).",
     }
 
 

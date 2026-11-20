@@ -392,19 +392,18 @@ def sort_signal_rows(rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _hybrid_strip_rank(row: dict[str, Any], *, positive: bool) -> tuple:
-    """Prefer reason_kind=hybrid, then actionable, then strongest |hybrid|."""
+    """Prefer Pine BUY/SELL (or legacy hybrid), then strongest |score|."""
     hybrid = float(row.get("hybrid_score") or 0.0)
-    if positive and hybrid <= 0:
+    action = str(row.get("action") or "HOLD").upper()
+    if positive and action not in {"BUY", "BUY_CE_BIAS"} and hybrid <= 0:
         return (9, 0.0, 0.0, "")
-    if not positive and hybrid >= 0:
+    if not positive and action not in {"SELL", "BUY_PE_BIAS"} and hybrid >= 0:
         return (9, 0.0, 0.0, "")
     kind = str(row.get("reason_kind") or "").lower()
-    kind_rank = 0 if kind == "hybrid" else 1
-    action = str(row.get("action") or "HOLD")
+    kind_rank = 0 if kind in {"pine", "hybrid"} else 1
     actionable_rank = 0 if is_actionable(action) else 1
     confidence = float(row.get("confidence") or 0.0)
     symbol = str(row.get("symbol") or "")
-    # Sort key: lower kind/actionable better; higher |hybrid|/confidence better
     signed = hybrid if positive else -hybrid
     return (kind_rank, actionable_rank, -signed, -confidence, symbol)
 
@@ -414,14 +413,21 @@ def pick_top_hybrid_sides(
     *,
     limit: int = 5,
 ) -> dict[str, list[dict[str, Any]]]:
-    """Top positive (CE-bias) and negative (PE-bias) hybrid strip candidates.
+    """Top BUY (ce) and SELL (pe) strip candidates for the watchlist header.
 
-    Prefers ``reason_kind=hybrid`` when available; falls back to strongest
-    actionable |hybrid| on each side.
+    Prefers Pine ``BUY`` / ``SELL`` actions; falls back to score sign.
     """
     limit = max(1, min(int(limit), 20))
-    ce = sorted(rows, key=lambda r: _hybrid_strip_rank(r, positive=True))
-    pe = sorted(rows, key=lambda r: _hybrid_strip_rank(r, positive=False))
-    ce_out = [r for r in ce if float(r.get("hybrid_score") or 0.0) > 0][:limit]
-    pe_out = [r for r in pe if float(r.get("hybrid_score") or 0.0) < 0][:limit]
-    return {"ce": ce_out, "pe": pe_out}
+    buys = [
+        r for r in rows
+        if str(r.get("action") or "").upper() in {"BUY", "BUY_CE_BIAS"}
+        or float(r.get("hybrid_score") or 0.0) > 0
+    ]
+    sells = [
+        r for r in rows
+        if str(r.get("action") or "").upper() in {"SELL", "BUY_PE_BIAS"}
+        or float(r.get("hybrid_score") or 0.0) < 0
+    ]
+    ce = sorted(buys, key=lambda r: _hybrid_strip_rank(r, positive=True))[:limit]
+    pe = sorted(sells, key=lambda r: _hybrid_strip_rank(r, positive=False))[:limit]
+    return {"ce": ce, "pe": pe}

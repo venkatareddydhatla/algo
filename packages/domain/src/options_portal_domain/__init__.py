@@ -1,5 +1,12 @@
 """Shared domain types, protocols, and India market helpers."""
 
+from options_portal_domain.pine_signals import (
+    PineParams,
+    PineSignalResult,
+    evaluate_pine_signal,
+    pine_params_from_config,
+    pine_signals_enabled,
+)
 from options_portal_domain.types import (
     Candle,
     HybridDecision,
@@ -42,6 +49,8 @@ __all__ = [
     "OptionsRecommender",
     "OrderResult",
     "OrderRouter",
+    "PineParams",
+    "PineSignalResult",
     "RiskGate",
     "SentimentResult",
     "SentimentScorer",
@@ -50,4 +59,7 @@ __all__ = [
     "TechnicalSignal",
     "Timeframe",
     "TradingMode",
+    "evaluate_pine_signal",
+    "pine_params_from_config",
+    "pine_signals_enabled",
 ]

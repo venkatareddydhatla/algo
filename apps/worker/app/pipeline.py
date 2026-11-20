@@ -23,6 +23,11 @@ from options_portal_domain.high_conviction import (
     rolling_equity_win_rate,
     skip_entry_log,
 )
+from options_portal_domain.pine_signals import (
+    evaluate_pine_signal,
+    pine_params_from_config,
+    pine_signals_enabled,
+)
 from options_portal_domain.session_gates import (
     AtrTrailScaleOutPolicy,
     MarketSentimentPolicy,
@@ -38,7 +43,7 @@ from options_portal_domain.session_gates import (
     soft_flatten_decision,
 )
 from options_portal_domain.tz import now_ist
-from options_portal_domain.types import SignalAction
+from options_portal_domain.types import HybridDecision, SignalAction
 from options_portal_domain.universe import is_index_underlying
 from options_portal_hybrid.scorer import WeightedHybridScorer
 from options_portal_notify.factory import build_gmail_notifier, build_notifier
@@ -119,8 +124,9 @@ def _remember_index_hybrid(symbol: str, hybrid_score: float, policy: MarketSenti
 def build_ta_registry() -> IndicatorRegistry:
     reg = IndicatorRegistry()
     reg.register(RSIPlugin(period=14))
-    reg.register(EMAPlugin(fast=9, slow=21))
-    reg.register(SupertrendPlugin())
+    # Align EMA lengths with Pine defaults (13/21) for legacy confluence fallback.
+    reg.register(EMAPlugin(fast=13, slow=21))
+    reg.register(SupertrendPlugin(atr_period=10, multiplier=3.0))
     reg.register(VWAPPlugin())
     return reg
 
@@ -165,6 +171,8 @@ async def run_symbol_tick(
     )
 
     broker = UpstoxAdapter()
+    use_pine = pine_signals_enabled(cfg)
+    pine_params = pine_params_from_config(cfg)
     registry = build_ta_registry()
     signal_gen = ConfluenceSignalGenerator()
     scorer = WeightedHybridScorer(
@@ -207,15 +215,82 @@ async def run_symbol_tick(
 
     if not sentiments and news_items:
         sentiments = list(await sentiment.score_batch(news_items))
-    decision = scorer.combine(tech, sentiments, news_items, {"session": "regular"})
-    # Full-scan |hybrid| abs for top-10% score-filter OR (cleared each batch).
-    if entry_admission is not None and not is_index_underlying(symbol):
-        remember_scan_hybrid_abs(symbol, float(decision.hybrid_score))
+
+    pine_result = None
+    if use_pine:
+        pine_result = evaluate_pine_signal(
+            symbol, candles, params=pine_params, cfg=cfg
+        )
+        bar_ts = candles[-1].ts if candles else datetime.now(tz=timezone.utc)
+        # Pine-only decision path: Action = BUY/SELL/HOLD; score ±1/0 for soft EOD.
+        decision = HybridDecision(
+            symbol=symbol.upper(),
+            action=pine_result.action,
+            tech_score=float(pine_result.score),
+            news_score=0.0,
+            hybrid_score=float(pine_result.score),
+            confidence=float(pine_result.confidence),
+            reasons=list(pine_result.reasons),
+            news_ids=[],
+            bar_ts=bar_ts,
+            reason_kind="pine",
+            reason_summary=pine_result.reason_summary,
+            reason_detail=pine_result.reason_detail,
+        )
+        features = {**features, **pine_result.features}
+        logger.info(
+            "%s pine_signal action=%s buy=%s sell=%s adx=%s vol_ratio=%s st_bull=%s",
+            symbol,
+            pine_result.action.value,
+            pine_result.buy_signal,
+            pine_result.sell_signal,
+            (pine_result.state.adx if pine_result.state else None),
+            (pine_result.state.volume_ratio if pine_result.state else None),
+            (pine_result.state.supertrend_bull if pine_result.state else None),
+        )
+        # Persist last Pine action for watchlist API (Action = BUY/SELL/HOLD only).
+        try:
+            from options_portal_persistence.kv_store import KvStore
+
+            kv = KvStore()
+            if kv.available:
+                kv.set(
+                    f"pine.signal.{symbol.upper()}",
+                    {
+                        "symbol": symbol.upper(),
+                        "action": pine_result.action.value,
+                        "buy_signal": pine_result.buy_signal,
+                        "sell_signal": pine_result.sell_signal,
+                        "score": pine_result.score,
+                        "confidence": pine_result.confidence,
+                        "reasons": list(pine_result.reasons),
+                        "reason_kind": "pine",
+                        "reason_summary": pine_result.reason_summary,
+                        "reason_detail": pine_result.reason_detail,
+                        "features": {
+                            k: v
+                            for k, v in pine_result.features.items()
+                            if isinstance(v, (int, float, bool, str, type(None)))
+                        },
+                        "updated_at": datetime.now(tz=timezone.utc).isoformat(),
+                        "timeframe": "15m",
+                    },
+                )
+        except Exception:  # noqa: BLE001
+            logger.exception("%s pine signal persist failed", symbol)
+    else:
+        decision = scorer.combine(tech, sentiments, news_items, {"session": "regular"})
+        # Full-scan |hybrid| abs for top-10% score-filter OR (cleared each batch).
+        if entry_admission is not None and not is_index_underlying(symbol):
+            remember_scan_hybrid_abs(symbol, float(decision.hybrid_score))
 
     result: dict[str, Any] = {
         "symbol": symbol,
-        "tech_action": tech.action.value,
+        "tech_action": (
+            pine_result.action.value if pine_result is not None else tech.action.value
+        ),
         "hybrid_action": decision.action.value,
+        "action": decision.action.value,
         "hybrid_score": decision.hybrid_score,
         "tech_score": decision.tech_score,
         "news_score": decision.news_score,
@@ -229,6 +304,23 @@ async def run_symbol_tick(
         "execution": "dry_run",
         "market_data_source": market_data_source,
         "candle_count": len(candles),
+        "signal_engine": "pine_nifty50_v2" if use_pine else "hybrid_confluence",
+        "pine": (
+            {
+                "buy_signal": pine_result.buy_signal,
+                "sell_signal": pine_result.sell_signal,
+                "params": {
+                    "ema_fast": pine_params.ema_fast,
+                    "ema_slow": pine_params.ema_slow,
+                    "su_len": pine_params.su_len,
+                    "su_mult": pine_params.su_mult,
+                    "adx_len": pine_params.adx_len,
+                    "vol_ratio": pine_params.vol_ratio,
+                },
+            }
+            if pine_result is not None
+            else None
+        ),
     }
 
     candle_close = float(candles[-1].close) if candles else 0.0
@@ -637,6 +729,10 @@ async def run_symbol_tick(
         # Defense: never plan stock entry for indices even if earlier gate missed.
         intents = []
         result["note"] = "index_not_equity — entry refused"
+    elif use_pine and decision.action == SignalAction.HOLD:
+        # Pine HOLD = no trade (do not close open book — only sell_signal / exits).
+        intents = []
+        result["note"] = "pine_hold — no buy/sell signal"
     else:
         intents = plan_equity_intents(
             symbol,
@@ -675,9 +771,13 @@ async def run_symbol_tick(
         if len(intents) < before:
             result["note"] = f"{gate_note} — entry legs dropped; exits kept"
 
-    # Light index gate: block new opposite entries when NIFTY/BANKNIFTY strongly conflict
-    if mkt_policy.enabled and any(
-        getattr(i, "action_kind", None) in {"entry", "flip_open"} for i in intents
+    # Light index gate: bypassed on Pine path (Pine factors only; stocks-only still).
+    if (
+        (not use_pine)
+        and mkt_policy.enabled
+        and any(
+            getattr(i, "action_kind", None) in {"entry", "flip_open"} for i in intents
+        )
     ):
         index_info = compute_index_bias(
             _INDEX_HYBRID_CACHE,
@@ -701,6 +801,8 @@ async def run_symbol_tick(
             result["note"] = block_reason
         else:
             logger.debug("%s market_sentiment ok: %s", symbol, block_reason)
+    elif use_pine:
+        result["market_sentiment"] = {"bypassed": True, "reason": "pine_signals"}
 
     if decision.action == SignalAction.HOLD and not intents:
         logger.info(
@@ -729,8 +831,19 @@ async def run_symbol_tick(
     safe_mode = "dry_run" if mode == "live" else mode
     limits = {**risk_cfg, "halt": cfg.get("trading", {}).get("halt")}
 
-    # High-conviction multi-factor gate before staging new flat entries.
-    hc_enabled = bool(hc_cfg.get("enabled", True))
+    # High-conviction multi-factor gate — bypassed on Pine path (exact buy/sell only).
+    hc_enabled = bool(hc_cfg.get("enabled", True)) and (not use_pine)
+    if use_pine:
+        result["high_conviction"] = {
+            "admitted": True,
+            "reason": "bypassed_pine_signals",
+            "floor": 0.0,
+            "factors": [],
+        }
+        logger.info(
+            "%s pine_entry_path — HC/MTF/RVOL/proximity/news/cooloff/top10%% bypassed",
+            symbol,
+        )
     if hc_enabled and any(
         getattr(i, "action_kind", None) == "entry"
         and (open_side is None or open_qty <= 0)
@@ -796,9 +909,10 @@ async def run_symbol_tick(
                 result["note"] = f"high_conviction_skip: {gate.reason}"
                 return result
 
-    # Cycle admission: defer flat→new entries for |hybrid| ranking into free slots.
+    # Cycle admission: on Pine path execute entries immediately (no |hybrid| rank).
+    # Legacy path: defer flat→new entries for |hybrid| ranking into free slots.
     # Keep exits / flip_close / flip_open immediate (risk + signal continuity).
-    if entry_admission is not None:
+    if entry_admission is not None and (not use_pine):
         deferred: list[Any] = []
         immediate: list[Any] = []
         for intent in intents:

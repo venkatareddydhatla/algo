@@ -271,11 +271,13 @@ th.num-cell {
   font-size: 0.8rem;
 }
 
-.action-BUY_CE_BIAS {
+.action-BUY_CE_BIAS,
+.action-BUY {
   color: var(--ce);
 }
 
-.action-BUY_PE_BIAS {
+.action-BUY_PE_BIAS,
+.action-SELL {
   color: var(--pe);
 }
 

@@ -52,8 +52,19 @@ trading:
       atr_period: 14
       exit_fraction: 1.0
     user_hours_note: "09:15–15:40 IST (entries 09:15–15:20; soft flatten 15:28–15:40; overnight |h|≥0.85 + trend; no hard 15:40 square-off)"
-  market_sentiment:
+  pine_signals:
     enabled: true
+    ema_fast: 13
+    ema_slow: 21
+    su_len: 10
+    su_mult: 3.0
+    adx_len: 14
+    use_adx: true
+    adx_min: 20
+    vol_ratio: 1.2
+    vol_sma_len: 20
+  market_sentiment:
+    enabled: false
     symbols: [NIFTY, BANKNIFTY]
     conflict_abs: 0.55
     disagree_min_abs: 0.25
@@ -83,7 +94,7 @@ trading:
       scale_out_fraction: 0.5
       min_rrr: 1.2
     high_conviction:
-      enabled: true
+      enabled: false
       hybrid_floors:
         before_12_ist: 0.75
         after_12_ist: 0.75
@@ -127,7 +138,7 @@ trading:
       exit:
         min_rrr: 1.2
     entry_selection:
-      enabled: true
+      enabled: false
       rank_by: abs_hybrid
       anti_churn: empty_slots_only
       reentry_cooloff:
@@ -161,13 +172,23 @@ ta:
     - name: rsi
       period: 14
     - name: ema_cross
-      fast: 9
+      fast: 13
       slow: 21
     - name: supertrend
       atr_period: 10
       multiplier: 3.0
     - name: vwap
       session_anchored: true
+  pine:
+    ema_fast: 13
+    ema_slow: 21
+    su_len: 10
+    su_mult: 3.0
+    adx_len: 14
+    use_adx: true
+    adx_min: 20
+    vol_ratio: 1.2
+    vol_sma_len: 20
 
 options_recommender:
   style: single_leg        # v1; future: vertical

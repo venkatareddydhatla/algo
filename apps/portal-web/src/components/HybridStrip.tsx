@@ -11,16 +11,16 @@ type Props = {
 
 export function HybridStrip({ ce, pe, selected, onSelect, source }: Props) {
   return (
-    <div className="hybrid-strip" aria-label="Top hybrid CE and PE candidates">
+    <div className="hybrid-strip" aria-label="Top Pine BUY and SELL candidates">
       <StripSide
-        title="Top CE"
+        title="Top BUY"
         tone="ce"
         rows={ce}
         selected={selected}
         onSelect={onSelect}
       />
       <StripSide
-        title="Top PE"
+        title="Top SELL"
         tone="pe"
         rows={pe}
         selected={selected}
@@ -28,7 +28,8 @@ export function HybridStrip({ ce, pe, selected, onSelect, source }: Props) {
       />
       {source ? (
         <p className="hybrid-strip-meta muted">
-          Hybrid strip · prefers <span className="mono">reason_kind=hybrid</span> · {source}
+          Pine strip · Action from <span className="mono">buy_signal / sell_signal</span> ·{" "}
+          {source}
         </p>
       ) : null}
     </div>
@@ -63,14 +64,13 @@ function StripSide({
                   type="button"
                   className={`hybrid-chip ${active ? "is-active" : ""}`}
                   onClick={() => onSelect(r.symbol)}
-                  title={`${r.symbol} ${r.action} hybrid=${r.hybrid_score.toFixed(2)} (${r.reason_kind || "-"})`}
+                  title={`${r.symbol} ${r.action} (${r.reason_summary || r.reason_kind || "pine"})`}
                 >
                   <span className="mono">{r.symbol}</span>
-                  <span className="hybrid-chip-score mono">
-                    {r.hybrid_score > 0 ? "+" : ""}
-                    {r.hybrid_score.toFixed(2)}
+                  <span className="hybrid-chip-score mono">{r.action}</span>
+                  <span className="hybrid-chip-kind muted">
+                    {(r.reason_summary || r.reason_kind || "pine").toUpperCase()}
                   </span>
-                  <span className="hybrid-chip-kind muted">{(r.reason_kind || "").toUpperCase()}</span>
                 </button>
                 <Link
                   className="hybrid-bt-link muted"
