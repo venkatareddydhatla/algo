@@ -46,6 +46,41 @@ async function getJson<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+async function deleteJson<T>(path: string, opts?: { timeoutMs?: number }): Promise<T> {
+  const timeoutMs = opts?.timeoutMs ?? 25_000;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}${path}`, {
+      method: "DELETE",
+      headers: { Accept: "application/json" },
+      signal: ctrl.signal,
+    });
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new Error(
+        `Request timed out after ${Math.round(timeoutMs / 1000)}s — is the API on :8000 running the latest tip?`,
+      );
+    }
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(msg);
+  } finally {
+    clearTimeout(timer);
+  }
+  if (!res.ok) {
+    let detail = `${res.status} ${res.statusText}`;
+    try {
+      const err = (await res.json()) as { detail?: unknown };
+      detail = formatApiDetail(err.detail, detail);
+    } catch {
+      /* ignore */
+    }
+    throw new Error(detail);
+  }
+  return res.json() as Promise<T>;
+}
+
 async function postJson<T>(
   path: string,
   body: unknown,
@@ -133,6 +168,32 @@ export type WatchlistRow = {
   expiry_rule: string;
   lot_size?: number | null;
   active_scan: boolean;
+  source?: "curated" | "custom" | string;
+  custom?: boolean;
+};
+
+export type CustomWatchlistPayload = {
+  ok?: boolean;
+  status?: string;
+  symbol?: string;
+  message?: string;
+  instrument_key?: string | null;
+  customs?: string[];
+  custom_symbols?: string[];
+  watchlist_total?: number;
+  active_scan_count?: number;
+  items?: Array<{
+    symbol: string;
+    instrument_key?: string | null;
+    active_scan?: boolean;
+    on_curated?: boolean;
+    source?: string;
+  }>;
+  total?: number;
+  base_count?: number;
+  note?: string;
+  kv_key?: string;
+  source?: string;
 };
 
 export type Paged<T> = {
@@ -145,6 +206,9 @@ export type Paged<T> = {
   universe?: string;
   max_active_symbols?: number;
   active_scan_count?: number;
+  base_count?: number;
+  custom_count?: number;
+  custom_symbols?: string[];
 };
 
 export type TopHybrid = {
@@ -250,6 +314,24 @@ export const api = {
         q: opts?.q,
       })}`,
     ),
+  customWatchlist: () => getJson<CustomWatchlistPayload>("/api/v1/watchlist/custom"),
+  addCustomSymbol: (symbol: string) =>
+    postJson<CustomWatchlistPayload>("/api/v1/watchlist/custom", {
+      symbol: String(symbol || "")
+        .trim()
+        .toUpperCase(),
+    }),
+  removeCustomSymbol: (symbol: string) => {
+    const sym = String(symbol || "")
+      .trim()
+      .toUpperCase();
+    if (!sym) {
+      return Promise.reject(new Error("symbol required"));
+    }
+    return deleteJson<CustomWatchlistPayload>(
+      `/api/v1/watchlist/custom/${encodeURIComponent(sym)}`,
+    );
+  },
   backtestRun: (body: {
     symbol: string;
     bars?: number;

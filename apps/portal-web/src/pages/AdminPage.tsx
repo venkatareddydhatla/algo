@@ -83,12 +83,18 @@ export default function AdminPage() {
             universe={String(trading.universe ?? "-")} · watchlist=
             {String(trading.symbols_watchlist_count ?? preview.length)} · active_scan=
             {String(trading.symbols_active_count ?? "-")} / max=
-            {formatMaxActive(trading.max_active_symbols)}
+            {formatMaxActive(trading.max_active_symbols)} · custom=
+            {String(
+              Array.isArray(trading.symbols_custom)
+                ? (trading.symbols_custom as string[]).length
+                : "-",
+            )}
           </p>
           <p className="muted">Preview (first symbols):</p>
           <p className="mono wrap">{preview.slice(0, 40).join(", ")}</p>
           <p className="muted">
-            Full list: GET /api/v1/watchlist. Demo set:{" "}
+            Full list: GET /api/v1/watchlist. Add customs on Signals (POST
+            /api/v1/watchlist/custom). Demo set:{" "}
             {((trading.symbols_demo as string[]) || []).join(", ") || "NIFTY, BANKNIFTY, RELIANCE, TCS"}
           </p>
           <h2>Kill switch</h2>
