@@ -248,6 +248,23 @@ git pull origin cursor/trades-page-round-trips-cb5e
 
 Open http://127.0.0.1:5173/trades — Open positions unchanged; Closed trades show Symbol, Side LONG/SHORT, Entry/Exit IST, Entry/Exit px, PnL, Reason, dry_run.
 
+### Pull fixed ±2% open exits (stacked) — tip
+
+Open equity dry-run only: exit at **+2%** profit or **−2%** stop from entry (`pct_profit_2` / `pct_stop_2`). Not an entry filter. ATR trail + morning dynamic TP **off** as primary; soft EOD flatten stays. Pine buy/sell entry + stocks-only + `dry_run` unchanged. **max_open_symbols / capacity ceiling = 10**. Stacked on `cursor/pine-next-candle-confirm-99ae` (PR #46).
+
+```powershell
+cd C:\algo
+Set-ExecutionPolicy -Scope Process Bypass
+.\deploy\windows\native\stop-native.ps1
+git fetch origin
+git checkout cursor/fixed-2pct-exits-d814
+git pull origin cursor/fixed-2pct-exits-d814
+.\deploy\windows\native\setup-native.ps1
+.\deploy\windows\native\start-native.ps1 -WithWorker
+```
+
+Verify worker log: `Open-book management loop starting ... fixed_pct=True atr_trail=False` and open-book ticks with `fixed_pct=pct_profit_2|pct_stop_2|none`. Confirm `config/local.yaml` has `trading.risk.fixed_pct_exit.enabled: true`, `max_open_symbols: 10`, ATR/morning `enabled: false`. Still `dry_run` only.
+
 ### Pull |hybrid| ranked entry selection (stacked)
 
 Equity dry-run **new entries** fill free `max_open_symbols` slots by strongest `|hybrid|` (not CSV/scan first-fill). **Anti-churn:** keep existing opens — only fill empty slots (no rotate for tiny score edges). Soft flatten / overnight `|hybrid| ≥ 0.70` unchanged. Cap stays **10** (configurable).

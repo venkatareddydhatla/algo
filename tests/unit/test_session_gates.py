@@ -13,6 +13,7 @@ from options_portal_domain.equity import (
 )
 from options_portal_domain.session_gates import (
     AtrTrailScaleOutPolicy,
+    FixedPctExitPolicy,
     MarketSentimentPolicy,
     MorningProfitBookPolicy,
     SoftEodPolicy,
@@ -22,6 +23,7 @@ from options_portal_domain.session_gates import (
     compute_index_bias,
     entry_conflicts_with_index,
     filter_entry_intents,
+    fixed_pct_exit_decision,
     is_cash_market_open,
     is_trading_session,
     morning_profit_book_decision,
@@ -958,3 +960,179 @@ def test_atr_trail_priority_stop_over_profit_same_tick():
         trail_state=state,
     )
     assert hit["action"] == "atr_trail"
+
+
+def test_fixed_pct_exit_policy_from_config():
+    policy = FixedPctExitPolicy.from_config(
+        {
+            "trading": {
+                "risk": {
+                    "fixed_pct_exit": {
+                        "enabled": True,
+                        "profit_pct": 2.0,
+                        "stop_pct": 2.0,
+                    }
+                }
+            }
+        }
+    )
+    assert policy.enabled is True
+    assert policy.profit_pct == 2.0
+    assert policy.stop_pct == 2.0
+    assert policy.reason_tags() == ("pct_profit_2", "pct_stop_2")
+
+    disabled = FixedPctExitPolicy.from_config(
+        {"trading": {"risk": {"fixed_pct_exit": {"enabled": False}}}}
+    )
+    assert disabled.enabled is False
+
+
+def test_fixed_pct_exit_long_profit_and_stop():
+    """Long: mark≥entry×1.02 → pct_profit_2; mark≤entry×0.98 → pct_stop_2."""
+    policy = FixedPctExitPolicy()
+    session = SoftEodPolicy()
+    now = datetime(2026, 11, 20, 11, 0, 0)
+
+    hold = fixed_pct_exit_decision(
+        open_side="long",
+        open_qty=1,
+        entry_avg=100.0,
+        mark=101.0,
+        policy=policy,
+        now=now,
+        trading_day=True,
+        session_policy=session,
+    )
+    assert hold["action"] == "none"
+    assert hold["exit_qty"] == 0
+
+    profit = fixed_pct_exit_decision(
+        open_side="long",
+        open_qty=1,
+        entry_avg=100.0,
+        mark=102.0,
+        policy=policy,
+        now=now,
+        trading_day=True,
+        session_policy=session,
+    )
+    assert profit["action"] == "pct_profit_2"
+    assert profit["exit_qty"] == 1
+    assert "pct_profit_2" in profit["reason"]
+    assert profit["unrealized_pct"] == pytest.approx(2.0)
+
+    stop = fixed_pct_exit_decision(
+        open_side="long",
+        open_qty=1,
+        entry_avg=100.0,
+        mark=98.0,
+        policy=policy,
+        now=now,
+        trading_day=True,
+        session_policy=session,
+    )
+    assert stop["action"] == "pct_stop_2"
+    assert stop["exit_qty"] == 1
+    assert "pct_stop_2" in stop["reason"]
+    assert stop["unrealized_pct"] == pytest.approx(-2.0)
+
+
+def test_fixed_pct_exit_short_profit_and_stop():
+    """Short: mark≤entry×0.98 → profit; mark≥entry×1.02 → stop."""
+    policy = FixedPctExitPolicy()
+    now = datetime(2026, 11, 20, 11, 0, 0)
+
+    profit = fixed_pct_exit_decision(
+        open_side="short",
+        open_qty=1,
+        entry_avg=100.0,
+        mark=98.0,
+        policy=policy,
+        now=now,
+        trading_day=True,
+    )
+    assert profit["action"] == "pct_profit_2"
+    assert profit["unrealized_pct"] == pytest.approx(2.0)
+
+    stop = fixed_pct_exit_decision(
+        open_side="short",
+        open_qty=1,
+        entry_avg=100.0,
+        mark=102.0,
+        policy=policy,
+        now=now,
+        trading_day=True,
+    )
+    assert stop["action"] == "pct_stop_2"
+    assert stop["unrealized_pct"] == pytest.approx(-2.0)
+
+
+def test_fixed_pct_exit_not_entry_filter_and_gates():
+    """No open book → none; index blocked; disabled; overnight refused."""
+    policy = FixedPctExitPolicy()
+    empty = fixed_pct_exit_decision(
+        open_side=None,
+        open_qty=0,
+        entry_avg=100.0,
+        mark=105.0,
+        policy=policy,
+    )
+    assert empty["action"] == "none"
+    assert "no open position" in empty["reason"]
+
+    idx = fixed_pct_exit_decision(
+        open_side="long",
+        open_qty=1,
+        entry_avg=100.0,
+        mark=105.0,
+        policy=policy,
+        is_index=True,
+    )
+    assert idx["action"] == "none"
+    assert "index_not_equity" in idx["reason"]
+
+    off = fixed_pct_exit_decision(
+        open_side="long",
+        open_qty=1,
+        entry_avg=100.0,
+        mark=105.0,
+        policy=FixedPctExitPolicy(enabled=False),
+    )
+    assert off["action"] == "none"
+    assert "disabled" in off["reason"]
+
+    night = fixed_pct_exit_decision(
+        open_side="long",
+        open_qty=1,
+        entry_avg=100.0,
+        mark=105.0,
+        policy=policy,
+        now=datetime(2026, 11, 20, 0, 5, 0),
+        trading_day=True,
+    )
+    assert night["action"] == "none"
+    assert "outside_risk_exit_window" in night["reason"]
+
+
+def test_fixed_pct_exit_stop_priority_over_profit_impossible_same_mark():
+    """Boundary: exact ±2% triggers; interior holds (open-book only)."""
+    policy = FixedPctExitPolicy()
+    # Just inside band
+    inside = fixed_pct_exit_decision(
+        open_side="long",
+        open_qty=2,
+        entry_avg=200.0,
+        mark=203.9,  # +1.95%
+        policy=policy,
+    )
+    assert inside["action"] == "none"
+    # Exact +2%
+    edge = fixed_pct_exit_decision(
+        open_side="long",
+        open_qty=2,
+        entry_avg=200.0,
+        mark=204.0,
+        policy=policy,
+    )
+    assert edge["action"] == "pct_profit_2"
+    assert edge["exit_qty"] == 2

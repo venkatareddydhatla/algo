@@ -30,6 +30,7 @@ from options_portal_domain.pine_signals import (
 )
 from options_portal_domain.session_gates import (
     AtrTrailScaleOutPolicy,
+    FixedPctExitPolicy,
     MarketSentimentPolicy,
     MorningProfitBookPolicy,
     SoftEodPolicy,
@@ -38,6 +39,7 @@ from options_portal_domain.session_gates import (
     compute_index_bias,
     entry_conflicts_with_index,
     filter_entry_intents,
+    fixed_pct_exit_decision,
     is_trading_session,
     morning_profit_book_decision,
     soft_flatten_decision,
@@ -361,6 +363,7 @@ async def run_symbol_tick(
     soft_policy = SoftEodPolicy.from_config(cfg)
     morning_policy = MorningProfitBookPolicy.from_config(cfg)
     atr_trail_policy = AtrTrailScaleOutPolicy.from_config(cfg)
+    fixed_pct_policy = FixedPctExitPolicy.from_config(cfg)
     mkt_policy = MarketSentimentPolicy.from_config(cfg)
     _remember_index_hybrid(symbol, decision.hybrid_score, mkt_policy)
     # Resolve instrument key early for index segment check (NSE_INDEX/BSE_INDEX).
@@ -469,6 +472,13 @@ async def run_symbol_tick(
         }
     result["soft_eod"] = flatten
 
+    fixed_pct_mgmt_needed = (
+        fixed_pct_policy.enabled
+        and not index_underlying
+        and open_qty > 0
+        and open_side is not None
+        and risk_exit_session
+    )
     atr_mgmt_needed = (
         atr_trail_policy.enabled
         and not index_underlying
@@ -485,9 +495,14 @@ async def run_symbol_tick(
         and risk_exit_session
     )
 
-    # Overnight hold: still fetch mark when ATR/morning may exit (priority >
-    # soft_flatten). Only short-circuit when no exit management can fire.
-    if flatten["action"] == "overnight_hold" and not atr_mgmt_needed and not morning_mgmt_needed:
+    # Overnight hold: still fetch mark when fixed-pct/ATR/morning may exit
+    # (priority > soft_flatten). Only short-circuit when no exit mgmt can fire.
+    if (
+        flatten["action"] == "overnight_hold"
+        and not fixed_pct_mgmt_needed
+        and not atr_mgmt_needed
+        and not morning_mgmt_needed
+    ):
         logger.info("%s %s", symbol, flatten["reason"])
         intents = []
         result["order"] = None
@@ -508,6 +523,7 @@ async def run_symbol_tick(
         flatten["action"] == "flatten"
         or decision.action != SignalAction.HOLD
         or (open_qty > 0 and open_side is not None)
+        or fixed_pct_mgmt_needed
         or atr_mgmt_needed
         or morning_mgmt_needed
     )
@@ -636,6 +652,19 @@ async def run_symbol_tick(
             atr14 = None
     result["atr14"] = atr14
 
+    fixed_pct = fixed_pct_exit_decision(
+        open_side=open_side,  # type: ignore[arg-type]
+        open_qty=open_qty,
+        entry_avg=entry_avg,
+        mark=fill_price if may_trade else None,
+        policy=fixed_pct_policy,
+        now=ist_now,
+        is_index=index_underlying,
+        session_policy=soft_policy,
+        trading_day=trading_day,
+    )
+    result["fixed_pct_exit"] = fixed_pct
+
     trail_state = get_atr_trail_state(symbol) if atr_mgmt_needed else None
     atr_mgmt = atr_trail_scale_out_decision(
         open_side=open_side,  # type: ignore[arg-type]
@@ -666,14 +695,29 @@ async def run_symbol_tick(
     )
     result["morning_tp"] = morning_tp
 
-    # Same-tick priority: atr stop/trail > scale/profit > morning > soft_flatten.
+    # Same-tick priority: fixed ±2% > atr stop/trail > scale/profit >
+    # morning > soft_flatten. ATR/morning stay wired but config-disabled.
     atr_exit_actions = {
         "atr_stop",
         "atr_trail",
         "profit_book",
         "profit_scale_out",
     }
-    if atr_mgmt.get("action") in atr_exit_actions:
+    fixed_pct_action = str(fixed_pct.get("action") or "none")
+    if fixed_pct_action not in {"none", ""} and fixed_pct.get("exit_qty"):
+        logger.info("%s %s", symbol, fixed_pct["reason"])
+        intents = plan_equity_intents(
+            symbol,
+            SignalAction.EXIT,
+            open_side=open_side,  # type: ignore[arg-type]
+            open_qty=open_qty,
+            qty=share_qty,
+            price=fill_price,
+            reason=str(fixed_pct["reason"]),
+            exit_qty=int(fixed_pct.get("exit_qty") or open_qty),
+        )
+        clear_atr_trail_state(symbol)
+    elif atr_mgmt.get("action") in atr_exit_actions:
         logger.info("%s %s", symbol, atr_mgmt["reason"])
         intents = plan_equity_intents(
             symbol,
@@ -715,7 +759,7 @@ async def run_symbol_tick(
         )
         clear_atr_trail_state(symbol)
     elif flatten["action"] == "overnight_hold":
-        # ATR/morning did not exit — keep overnight conviction path.
+        # Fixed-pct/ATR/morning did not exit — keep overnight conviction path.
         logger.info("%s %s", symbol, flatten["reason"])
         intents = []
         result["order"] = None

@@ -13,6 +13,7 @@ from options_portal_domain.calendar import is_nse_trading_day
 from options_portal_domain.config import load_config, scan_symbols, trading_mode, watchlist_symbols
 from options_portal_domain.session_gates import (
     AtrTrailScaleOutPolicy,
+    FixedPctExitPolicy,
     MorningProfitBookPolicy,
     SoftEodPolicy,
 )
@@ -135,10 +136,11 @@ async def _tick_open_book_management(cfg: dict[str, Any]) -> dict[str, Any]:
     """Evaluate open-book exits on a timely path (not blocked by full scans).
 
     Runs when any of:
-    - ATR trail / profit scale-out enabled, stock opens exist, and cash
-      risk-exit window (09:15–15:40 IST trading days) — not overnight
+    - fixed ±2% exits enabled, stock opens exist, and cash risk-exit window
+      (09:15–15:40 IST trading days) — not overnight
+    - ATR trail / profit scale-out enabled (when re-enabled) + same window
     - soft-flatten window (15:20–15:40 IST)
-    - morning profit-book window (09:15–10:00 IST)
+    - morning profit-book window (09:15–10:00 IST, when enabled)
     - open book contains index underlyings (soft-close ``index_not_equity``)
 
     Outside the risk-exit window the loop may idle; full-scan / API mark
@@ -147,6 +149,7 @@ async def _tick_open_book_management(cfg: dict[str, Any]) -> dict[str, Any]:
     soft_policy = SoftEodPolicy.from_config(cfg)
     morning_policy = MorningProfitBookPolicy.from_config(cfg)
     atr_trail_policy = AtrTrailScaleOutPolicy.from_config(cfg)
+    fixed_pct_policy = FixedPctExitPolicy.from_config(cfg)
     ist_now = now_ist()
     if not is_nse_trading_day(ist_now.date()):
         return {"ran": False, "reason": "non_trading_day", "symbols": 0}
@@ -172,11 +175,20 @@ async def _tick_open_book_management(cfg: dict[str, Any]) -> dict[str, Any]:
     in_soft = soft_policy.in_soft_flatten_window(ist_now)
     in_morning = morning_policy.enabled and morning_policy.in_window(ist_now)
     in_risk = soft_policy.in_risk_exit_window(ist_now)
-    # ATR/profit exits only during [09:15, 15:40] — not overnight (TATACONSUM 00:05).
+    # Fixed-pct / ATR exits only during [09:15, 15:40] — not overnight.
+    fixed_pct_active = (
+        fixed_pct_policy.enabled and bool(stock_opens) and in_risk
+    )
     atr_trail_active = (
         atr_trail_policy.enabled and bool(stock_opens) and in_risk
     )
-    if not in_soft and not in_morning and not index_opens and not atr_trail_active:
+    if (
+        not in_soft
+        and not in_morning
+        and not index_opens
+        and not fixed_pct_active
+        and not atr_trail_active
+    ):
         return {
             "ran": False,
             "reason": "outside_open_book_windows",
@@ -196,19 +208,23 @@ async def _tick_open_book_management(cfg: dict[str, Any]) -> dict[str, Any]:
     async def _one(symbol: str) -> None:
         async with sem:
             try:
-                # No entry admission — exits / ATR trail / soft flatten / morning TP.
+                # No entry admission — exits / fixed pct / soft flatten.
                 result = await run_symbol_tick(symbol, cfg, entry_admission=None)
                 soft = result.get("soft_eod") or {}
                 morning = result.get("morning_tp") or {}
                 atr = result.get("atr_trail") or {}
+                fixed = result.get("fixed_pct_exit") or {}
                 logger.info(
-                    "open-book tick %s -> hybrid=%s atr=%s soft=%s morning=%s note=%s",
+                    "open-book tick %s -> hybrid=%s fixed_pct=%s atr=%s "
+                    "soft=%s morning=%s note=%s",
                     symbol,
                     result.get("hybrid_action"),
+                    fixed.get("action"),
                     atr.get("action"),
                     soft.get("action"),
                     morning.get("action"),
                     result.get("note")
+                    or fixed.get("reason")
                     or atr.get("reason")
                     or soft.get("reason")
                     or morning.get("reason"),
@@ -217,8 +233,10 @@ async def _tick_open_book_management(cfg: dict[str, Any]) -> dict[str, Any]:
                 logger.exception("open-book tick failed for %s", symbol)
 
     logger.info(
-        "Open-book pass starting symbols=%d atr_trail=%s soft=%s morning=%s index_opens=%s",
+        "Open-book pass starting symbols=%d fixed_pct=%s atr_trail=%s "
+        "soft=%s morning=%s index_opens=%s",
         len(symbols),
+        fixed_pct_active,
         atr_trail_active,
         in_soft,
         in_morning,
@@ -229,6 +247,7 @@ async def _tick_open_book_management(cfg: dict[str, Any]) -> dict[str, Any]:
         "ran": True,
         "reason": "ok",
         "symbols": len(symbols),
+        "fixed_pct": fixed_pct_active,
         "atr_trail": atr_trail_active,
         "soft": in_soft,
         "morning": in_morning,
@@ -241,25 +260,27 @@ _tick_open_book_soft_flatten = _tick_open_book_management
 
 
 async def soft_flatten_poll_loop(stop_event: asyncio.Event) -> None:
-    """Poll open-book exits (ATR trail, soft flatten, morning TP, index soft-close).
+    """Poll open-book exits (fixed ±2%, soft flatten, optional ATR/morning).
 
     Full-universe scans can run many minutes under live MD. Soft flatten used
     to fire only when each symbol's turn arrived mid-scan, so a slow/hung cycle
     (or a symbol last seen before 15:20) could exit hours late. This loop ticks
-    the open book on its own cadence for ATR trail/scale-out (cash risk-exit
-    window 09:15–15:40 IST), soft-flatten (15:20–15:40), morning profit-book
-    (09:15–10:00), and any open index underlyings that must leave the equity
-    paper book. Overnight: no atr/profit exit fills.
+    the open book on its own cadence for fixed ±2% exits (cash risk-exit
+    window 09:15–15:40 IST), soft-flatten (15:20–15:40), and any open index
+    underlyings that must leave the equity paper book. ATR trail / morning TP
+    remain callable when re-enabled in config. Overnight: no risk-exit fills.
     """
     cfg = load_config()
     soft_policy = SoftEodPolicy.from_config(cfg)
     morning_policy = MorningProfitBookPolicy.from_config(cfg)
     atr_trail_policy = AtrTrailScaleOutPolicy.from_config(cfg)
+    fixed_pct_policy = FixedPctExitPolicy.from_config(cfg)
     poll_sec = soft_policy.soft_flatten_poll_interval_sec
     logger.info(
-        "Open-book management loop starting poll=%ss atr_trail=%s "
+        "Open-book management loop starting poll=%ss fixed_pct=%s atr_trail=%s "
         "morning=%s-%s soft=%s-%s IST (independent of full-universe scan)",
         poll_sec,
+        fixed_pct_policy.enabled,
         atr_trail_policy.enabled,
         morning_policy.start_ist,
         morning_policy.until_ist,
