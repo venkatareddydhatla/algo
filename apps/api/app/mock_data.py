@@ -64,14 +64,14 @@ _SEED_SIGNALS: list[dict[str, Any]] = [
         "updated_at": NOW,
         "reasons": [
             "prior bar: EMA13 crossunder EMA21",
-            "open below both EMAs (confirm)",
+            "candle clear below both EMAs (confirm)",
             "sell_signal=True",
         ],
         "reason_kind": "pine",
-        "reason_summary": "EMA crossunder + next open below both",
+        "reason_summary": "EMA crossunder + candle clear below both",
         "reason_detail": (
             "Technical:\n- prior bar: EMA13 crossunder EMA21\n"
-            "- open below both EMAs (confirm)\n- sell_signal=True"
+            "- candle clear below both EMAs (confirm)\n- sell_signal=True"
         ),
     },
     {
@@ -274,22 +274,22 @@ def synthetic_signal_for_symbol(
         reasons.extend(
             [
                 "prior bar: EMA13 crossover EMA21",
-                "open above both EMAs (confirm)",
+                "candle clear above both EMAs (confirm)",
                 "buy_signal=True (placeholder until worker persist)",
             ]
         )
-        summary = "EMA cross + next open above both"
+        summary = "EMA cross + candle clear above both"
     elif roll <= 0.12:
         action = "SELL"
         score = -1.0
         reasons.extend(
             [
                 "prior bar: EMA13 crossunder EMA21",
-                "open below both EMAs (confirm)",
+                "candle clear below both EMAs (confirm)",
                 "sell_signal=True (placeholder until worker persist)",
             ]
         )
-        summary = "EMA crossunder + next open below both"
+        summary = "EMA crossunder + candle clear below both"
     else:
         action = "HOLD"
         score = 0.0
@@ -326,8 +326,8 @@ def pine_row_from_kv(payload: dict[str, Any], *, timeframe: str = "15m") -> dict
     score = float(payload.get("score") or (1.0 if action == "BUY" else -1.0 if action == "SELL" else 0.0))
     reasons = list(payload.get("reasons") or [])
     summary = str(payload.get("reason_summary") or (
-        "EMA cross + next open above both" if action == "BUY"
-        else "EMA crossunder + next open below both" if action == "SELL"
+        "EMA cross + candle clear above both" if action == "BUY"
+        else "EMA crossunder + candle clear below both" if action == "SELL"
         else "no Pine signal"
     ))
     detail = str(payload.get("reason_detail") or (

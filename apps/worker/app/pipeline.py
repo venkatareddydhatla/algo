@@ -242,15 +242,15 @@ async def run_symbol_tick(
         features = {**features, **pine_result.features}
         logger.info(
             "%s pine_signal action=%s buy=%s sell=%s prior_x=%s prior_xu=%s "
-            "open_above=%s open_below=%s",
+            "clear_above=%s clear_below=%s",
             symbol,
             pine_result.action.value,
             pine_result.buy_signal,
             pine_result.sell_signal,
             (pine_result.state.prior_crossover if pine_result.state else None),
             (pine_result.state.prior_crossunder if pine_result.state else None),
-            (pine_result.state.open_above_both if pine_result.state else None),
-            (pine_result.state.open_below_both if pine_result.state else None),
+            (pine_result.state.candle_clear_above if pine_result.state else None),
+            (pine_result.state.candle_clear_below if pine_result.state else None),
         )
         # Persist last Pine action for watchlist API (Action = BUY/SELL/HOLD only).
         try:

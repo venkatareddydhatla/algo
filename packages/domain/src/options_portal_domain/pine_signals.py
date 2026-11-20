@@ -1,14 +1,18 @@
-"""Pine equity signal engine — EMA cross + next-candle open confirm.
+"""Pine equity signal engine — EMA cross + strict candle-clear confirm.
 
 On 15m bars; green = fast EMA(13), red = slow EMA(21).
 
 buy_signal  = prior-bar crossover(fastEma, slowEma)
-              AND open > fastEma[1] AND open > slowEma[1]
+              AND low > max(fastEma[1], slowEma[1])
 sell_signal = prior-bar crossunder(fastEma, slowEma)
-              AND open < fastEma[1] AND open < slowEma[1]
+              AND high < min(fastEma[1], slowEma[1])
 
-Signals do NOT fire on the cross bar; they fire on the next bar when the
-open confirms above/below both EMAs (EMA values from the closed cross bar).
+Signals do NOT fire on the cross bar; they fire on the next completed bar
+when that candle sits fully above (buy) or below (sell) both EMAs from the
+closed cross bar. Touching or sitting on the lines does not confirm.
+
+Prefer closed bars: a still-forming last candle is dropped before evaluation
+so mid-bar wicks cannot trigger.
 
 Supertrend / ADX / volume are computed for diagnostics only and are NOT
 part of the buy/sell gate.
@@ -17,6 +21,7 @@ part of the buy/sell gate.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, Sequence
 
 from options_portal_domain.types import Candle, SignalAction
@@ -31,6 +36,7 @@ DEFAULT_USE_ADX = True
 DEFAULT_ADX_MIN = 20.0
 DEFAULT_VOL_RATIO = 1.2
 DEFAULT_VOL_SMA_LEN = 20
+DEFAULT_TIMEFRAME_MINUTES = 15
 
 
 @dataclass(frozen=True)
@@ -66,8 +72,8 @@ class PineBarState:
     crossunder: bool
     prior_crossover: bool  # EMA cross on previous bar
     prior_crossunder: bool
-    open_above_both: bool
-    open_below_both: bool
+    candle_clear_above: bool  # low > max(prior EMAs)
+    candle_clear_below: bool  # high < min(prior EMAs)
     buy_signal: bool
     sell_signal: bool
 
@@ -89,9 +95,9 @@ class PineSignalResult:
     @property
     def reason_summary(self) -> str:
         if self.buy_signal:
-            return "EMA cross + next open above both"
+            return "EMA cross + candle clear above both"
         if self.sell_signal:
-            return "EMA crossunder + next open below both"
+            return "EMA crossunder + candle clear below both"
         return "no Pine signal"
 
     @property
@@ -129,6 +135,31 @@ def pine_signals_enabled(cfg: Mapping[str, Any] | None) -> bool:
     trading = dict(root.get("trading") or {})
     raw = dict(trading.get("pine_signals") or root.get("pine_signals") or {})
     return bool(raw.get("enabled", True))
+
+
+def prefer_closed_candles(
+    candles: Sequence[Candle],
+    *,
+    timeframe_minutes: int = DEFAULT_TIMEFRAME_MINUTES,
+    now: datetime | None = None,
+) -> list[Candle]:
+    """Drop a still-forming last bar so signals use completed candles only."""
+    if not candles:
+        return []
+    series = list(candles)
+    if len(series) < 2:
+        return series
+    last = series[-1]
+    ts = last.ts
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    clock = now or datetime.now(tz=timezone.utc)
+    if clock.tzinfo is None:
+        clock = clock.replace(tzinfo=timezone.utc)
+    bar_end = ts + timedelta(minutes=int(timeframe_minutes))
+    if clock < bar_end:
+        return series[:-1]
+    return series
 
 
 def _ema_series(values: Sequence[float], period: int) -> list[float | None]:
@@ -353,27 +384,35 @@ def evaluate_pine_bar(
     candles: Sequence[Candle],
     *,
     params: PineParams | None = None,
+    now: datetime | None = None,
+    prefer_closed: bool = True,
 ) -> PineBarState | None:
-    """Compute Pine features + buy/sell on the last bar. None if empty.
+    """Compute Pine features + buy/sell on the last closed bar. None if empty.
 
-    Buy/sell fire only on the bar *after* an EMA cross, when that bar's open
-    confirms above (buy) or below (sell) both EMAs from the closed cross bar.
+    Buy/sell fire only on the bar *after* an EMA cross, when that completed
+    candle clears fully above (buy: ``low > max`` prior EMAs) or below
+    (sell: ``high < min`` prior EMAs). Touching the lines does not confirm.
     """
-    if not candles:
+    series = (
+        prefer_closed_candles(candles, now=now)
+        if prefer_closed
+        else list(candles)
+    )
+    if not series:
         return None
     p = params or PineParams()
-    closes = [float(c.close) for c in candles]
-    volumes = [float(c.volume) for c in candles]
-    n = len(candles)
+    closes = [float(c.close) for c in series]
+    volumes = [float(c.volume) for c in series]
+    n = len(series)
     i = n - 1
 
     ema_fast_s = _ema_series(closes, int(p.ema_fast))
     ema_slow_s = _ema_series(closes, int(p.ema_slow))
     atr_s, trend_s, _line = supertrend_series(
-        candles, atr_period=int(p.su_len), multiplier=float(p.su_mult)
+        series, atr_period=int(p.su_len), multiplier=float(p.su_mult)
     )
     di_p, di_m, adx_s = dmi_adx_series(
-        candles, di_length=int(p.adx_len), adx_smoothing=int(p.adx_len)
+        series, di_length=int(p.adx_len), adx_smoothing=int(p.adx_len)
     )
     vol_ma_s = _sma_series(volumes, int(p.vol_sma_len))
 
@@ -382,20 +421,24 @@ def evaluate_pine_bar(
     crossover, crossunder = _cross_at(ema_fast_s, ema_slow_s, i)
     prior_crossover, prior_crossunder = _cross_at(ema_fast_s, ema_slow_s, i - 1)
 
-    # Confirm open vs EMAs as of the closed cross bar (i-1).
-    open_above_both = False
-    open_below_both = False
+    # Confirm full candle clear vs EMAs as of the closed cross bar (i-1).
+    candle_clear_above = False
+    candle_clear_below = False
     if i >= 1:
         ef_prior = ema_fast_s[i - 1]
         es_prior = ema_slow_s[i - 1]
         if ef_prior is not None and es_prior is not None:
-            o = float(candles[i].open)
-            open_above_both = o > float(ef_prior) and o > float(es_prior)
-            open_below_both = o < float(ef_prior) and o < float(es_prior)
+            hi = float(series[i].high)
+            lo = float(series[i].low)
+            both_hi = max(float(ef_prior), float(es_prior))
+            both_lo = min(float(ef_prior), float(es_prior))
+            # Strict: wick must not touch / sit on the lines.
+            candle_clear_above = lo > both_hi
+            candle_clear_below = hi < both_lo
 
-    # Gate: cross on prior bar + next open confirm. No ST / ADX / vol.
-    buy_signal = bool(prior_crossover and open_above_both)
-    sell_signal = bool(prior_crossunder and open_below_both)
+    # Gate: cross on prior bar + next completed candle fully clear. No ST / ADX / vol.
+    buy_signal = bool(prior_crossover and candle_clear_above)
+    sell_signal = bool(prior_crossunder and candle_clear_below)
 
     trend = int(trend_s[i]) if trend_s else 1
     supertrend_bull = trend == 1
@@ -429,8 +472,8 @@ def evaluate_pine_bar(
         crossunder=crossunder,
         prior_crossover=prior_crossover,
         prior_crossunder=prior_crossunder,
-        open_above_both=open_above_both,
-        open_below_both=open_below_both,
+        candle_clear_above=candle_clear_above,
+        candle_clear_below=candle_clear_below,
         buy_signal=buy_signal,
         sell_signal=sell_signal,
     )
@@ -442,10 +485,14 @@ def evaluate_pine_signal(
     *,
     params: PineParams | None = None,
     cfg: Mapping[str, Any] | None = None,
+    now: datetime | None = None,
+    prefer_closed: bool = True,
 ) -> PineSignalResult:
     """Map last-bar Pine buy/sell → BUY / SELL / HOLD with Pine-only reasons."""
     p = params or pine_params_from_config(cfg)
-    state = evaluate_pine_bar(candles, params=p)
+    state = evaluate_pine_bar(
+        candles, params=p, now=now, prefer_closed=prefer_closed
+    )
     sym = str(symbol or "").upper()
     if state is None:
         return PineSignalResult(
@@ -471,7 +518,7 @@ def evaluate_pine_signal(
         )
     elif state.crossover:
         reasons.append(
-            f"this bar: EMA{p.ema_fast} crossover EMA{p.ema_slow} (wait next open)"
+            f"this bar: EMA{p.ema_fast} crossover EMA{p.ema_slow} (wait next candle clear)"
         )
     if state.prior_crossunder:
         reasons.append(
@@ -479,15 +526,15 @@ def evaluate_pine_signal(
         )
     elif state.crossunder:
         reasons.append(
-            f"this bar: EMA{p.ema_fast} crossunder EMA{p.ema_slow} (wait next open)"
+            f"this bar: EMA{p.ema_fast} crossunder EMA{p.ema_slow} (wait next candle clear)"
         )
     if state.prior_crossover or state.prior_crossunder:
-        if state.open_above_both:
-            reasons.append("open above both EMAs (confirm)")
-        elif state.open_below_both:
-            reasons.append("open below both EMAs (confirm)")
+        if state.candle_clear_above:
+            reasons.append("candle clear above both EMAs (confirm)")
+        elif state.candle_clear_below:
+            reasons.append("candle clear below both EMAs (confirm)")
         else:
-            reasons.append("open did not confirm vs both EMAs")
+            reasons.append("candle did not clear both EMAs (touch/sit)")
 
     if state.buy_signal:
         action = SignalAction.BUY
@@ -518,8 +565,8 @@ def evaluate_pine_signal(
         "crossunder": state.crossunder,
         "prior_crossover": state.prior_crossover,
         "prior_crossunder": state.prior_crossunder,
-        "open_above_both": state.open_above_both,
-        "open_below_both": state.open_below_both,
+        "candle_clear_above": state.candle_clear_above,
+        "candle_clear_below": state.candle_clear_below,
         "buy_signal": state.buy_signal,
         "sell_signal": state.sell_signal,
         "pine": True,

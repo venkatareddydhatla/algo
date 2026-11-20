@@ -248,9 +248,26 @@ git pull origin cursor/trades-page-round-trips-cb5e
 
 Open http://127.0.0.1:5173/trades — Open positions unchanged; Closed trades show Symbol, Side LONG/SHORT, Entry/Exit IST, Entry/Exit px, PnL, Reason, dry_run.
 
-### Pull Day start purge + 09:30 entry gate (stacked) — tip
+### Pull strict candle-clear EMA confirm (stacked) — tip
 
-Clean Day start: full Windows purge of paper closed+open so the portal is empty for today. **No new entries before 09:30 IST** (first 15m 09:15–09:30 must complete); entry window **09:30–15:20**. Open-book **±2%** exits still run from cash open **09:15**. Pine next-candle, max open **10**, stocks-only, `dry_run` unchanged. Stacked on `cursor/fixed-2pct-exits-d814` (PR #47).
+After EMA cross, require the **next completed 15m candle** fully clear of both EMAs: buy when `low > max(EMA)`; sell when `high < min(EMA)`. No fire if wick touches/sits on the lines. Prefer closed bar. Keeps **09:30** entry gate, open-book **±2%**, max open **10**, stocks-only, `dry_run`. Stacked on `cursor/purge-930-entry-gate-5e77` (PR #48).
+
+```powershell
+cd C:\algo
+Set-ExecutionPolicy -Scope Process Bypass
+.\deploy\windows\native\stop-native.ps1
+git fetch origin
+git checkout cursor/strict-candle-clear-emas-d84e
+git pull origin cursor/strict-candle-clear-emas-d84e
+.\deploy\windows\native\setup-native.ps1
+.\deploy\windows\native\start-native.ps1 -WithWorker
+```
+
+Confirm worker log: `clear_above=True` / `clear_below=True` on Pine BUY/SELL; touch cases stay HOLD. Still `entries_open: "09:30"`, `fixed_pct_exit`, `max_open_symbols: 10`, `dry_run`.
+
+### Pull Day start purge + 09:30 entry gate (stacked)
+
+Clean Day start: full Windows purge of paper closed+open so the portal is empty for today. **No new entries before 09:30 IST** (first 15m 09:15–09:30 must complete); entry window **09:30–15:20**. Open-book **±2%** exits still run from cash open **09:15**. Prefer the candle-clear tip above. Stacked on `cursor/fixed-2pct-exits-d814` (PR #47).
 
 ```powershell
 cd C:\algo
