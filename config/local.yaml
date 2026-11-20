@@ -37,7 +37,11 @@ trading:
   # 0 or null = unlimited (score entire configured universe). Positive N = first-N cap.
   max_active_symbols: 0
   scan_batch_size: 8     # concurrent symbols per worker batch (rate-limit friendly)
-  # Expected cycle: short on ~48-name volatile list; longer under live broker ratelimit_rpm.
+  # Every 15m candle: re-score ALL active symbols (Pine Action + entries/exits).
+  # Open-book ±2% still on soft_flatten_poll; reentry_cooloff stays 120m.
+  scan_on_bar_close: true
+  bar_close_settle_sec: 8
+  # Expected cycle: short on ~49-name volatile list; must finish inside 15m.
   session:
     # Entries 09:30–15:20 (wait first 15m); cash/risk from 09:15; soft flatten 15:28.
     open: "09:15"

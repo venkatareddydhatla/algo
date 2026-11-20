@@ -20,7 +20,9 @@ RUN pip install --no-cache-dir -e ./packages/domain \
 
 ENV PYTHONUNBUFFERED=1
 ENV TRADING_MODE=dry_run
+# Bar-close full-list scans are default (config scan_on_bar_close). Interval is fallback only.
 ENV WORKER_INTERVAL_SEC=60
+ENV WORKER_SCAN_ON_BAR_CLOSE=1
 
 WORKDIR /app/apps/worker
 CMD ["python", "-m", "app.main"]
