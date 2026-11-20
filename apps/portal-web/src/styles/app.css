@@ -357,6 +357,43 @@ button.danger {
   margin-bottom: 0.85rem;
 }
 
+.custom-watchlist {
+  margin: 0 0 1.25rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--bg-elev) 70%, transparent);
+}
+
+.custom-watchlist-head h2 {
+  margin: 0 0 0.2rem;
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.custom-watchlist-head p {
+  margin: 0 0 0.65rem;
+}
+
+.custom-watchlist-toolbar {
+  justify-content: flex-start;
+  margin-bottom: 0.65rem;
+}
+
+.custom-symbol-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.85rem;
+}
+
+.custom-symbol-list li {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
 .filter {
   display: flex;
   flex-direction: column;
