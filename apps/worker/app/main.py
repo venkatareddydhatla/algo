@@ -66,6 +66,9 @@ async def _run_batch(symbols: list[str], cfg: dict) -> None:
     batch = scan_batch_size(trading)
     sem = asyncio.Semaphore(batch)
     admission = EntryCycleAdmission.from_config(cfg)
+    from app.pipeline import clear_scan_hybrid_abs
+
+    clear_scan_hybrid_abs()
     if admission is not None:
         from options_portal_domain.high_conviction import high_conviction_config
 
@@ -75,7 +78,8 @@ async def _run_batch(symbols: list[str], cfg: dict) -> None:
             "ceiling=%d min_|hybrid|=%.2f hard_cap=%d "
             "cooloff=%s/%dm morning=%s until=%s morning_min=%.2f "
             "morning_max_new=%d high_conviction=%s floors=%.2f/%.2f/%.2f "
-            "late_after=%s (rank by |hybrid|; empty_slots_only)",
+            "late_base=%.2f@wr≥%.0f%% top_pct=%s late_after=%s "
+            "(rank by |hybrid|; empty_slots_only; no min-trade quota)",
             admission.anti_churn,
             admission.dynamic_enabled,
             admission.floor,
@@ -90,8 +94,15 @@ async def _run_batch(symbols: list[str], cfg: dict) -> None:
             admission.morning_max_new_entries,
             hc.get("enabled", True),
             hc.get("min_hybrid_before_12", 0.75),
-            hc.get("min_hybrid_after_12", 0.80),
+            hc.get("min_hybrid_after_12", 0.75),
             hc.get("min_hybrid_after_1420", 0.85),
+            hc.get("late_base_min_hybrid", 0.75),
+            float(hc.get("late_base_wr_threshold", 0.55)) * 100.0,
+            (
+                f"{float(hc.get('top_pct_of_scan', 0.10)):.0%}"
+                if hc.get("top_pct_enabled", True)
+                else "off"
+            ),
             hc.get("late_after_ist", "14:20"),
         )
 

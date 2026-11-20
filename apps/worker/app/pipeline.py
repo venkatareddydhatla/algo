@@ -20,6 +20,7 @@ from options_portal_domain.high_conviction import (
     evaluate_entry_gate,
     high_conviction_config,
     last_trade_times_from_fills,
+    rolling_equity_win_rate,
     skip_entry_log,
 )
 from options_portal_domain.session_gates import (
@@ -58,6 +59,9 @@ logger = logging.getLogger(__name__)
 # Last hybrid scores for index symbols — light market_sentiment gate (process-local).
 _INDEX_HYBRID_CACHE: dict[str, float] = {}
 
+# Per full-scan |hybrid| abs scores — top-10% score-filter OR (process-local).
+_SCAN_HYBRID_ABS: dict[str, float] = {}
+
 # ATR trail extreme / stop per symbol (process-local; re-seeds after worker restart).
 _ATR_TRAIL_STATE: dict[str, dict[str, Any]] = {}
 
@@ -68,6 +72,22 @@ def get_index_hybrid_cache() -> dict[str, float]:
 
 def clear_index_hybrid_cache() -> None:
     _INDEX_HYBRID_CACHE.clear()
+
+
+def remember_scan_hybrid_abs(symbol: str, hybrid_score: float) -> None:
+    """Record |hybrid| for the current full-universe scan (top-pct OR path)."""
+    sym = str(symbol or "").strip().upper()
+    if not sym:
+        return
+    _SCAN_HYBRID_ABS[sym] = abs(float(hybrid_score))
+
+
+def scan_hybrid_abs_scores() -> list[float]:
+    return list(_SCAN_HYBRID_ABS.values())
+
+
+def clear_scan_hybrid_abs() -> None:
+    _SCAN_HYBRID_ABS.clear()
 
 
 def get_atr_trail_state(symbol: str) -> dict[str, Any]:
@@ -188,6 +208,9 @@ async def run_symbol_tick(
     if not sentiments and news_items:
         sentiments = list(await sentiment.score_batch(news_items))
     decision = scorer.combine(tech, sentiments, news_items, {"session": "regular"})
+    # Full-scan |hybrid| abs for top-10% score-filter OR (cleared each batch).
+    if entry_admission is not None and not is_index_underlying(symbol):
+        remember_scan_hybrid_abs(symbol, float(decision.hybrid_score))
 
     result: dict[str, Any] = {
         "symbol": symbol,
@@ -714,10 +737,13 @@ async def run_symbol_tick(
         for i in intents
     ):
         last_trade = None
+        fills_for_gate: list[dict[str, Any]] = []
         try:
             if paper is not None and paper.available:
-                fills = paper.list_all_fills(mode="dry_run")
-                last_trade = last_trade_times_from_fills(fills).get(symbol.upper())
+                fills_for_gate = list(paper.list_all_fills(mode="dry_run"))
+                last_trade = last_trade_times_from_fills(fills_for_gate).get(
+                    symbol.upper()
+                )
         except Exception:  # noqa: BLE001
             logger.exception("%s cooloff lookup failed", symbol)
         adaptive_delta = 0.0
@@ -725,6 +751,14 @@ async def run_symbol_tick(
             adaptive_delta = load_adaptive_delta(cfg=cfg)
         except Exception:  # noqa: BLE001
             pass
+        rolling_wr = None
+        try:
+            rolling_wr, _, _ = rolling_equity_win_rate(
+                fills_for_gate,
+                window_trips=int(hc_cfg.get("wr_window_trips", 20)),
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("%s rolling WR lookup failed", symbol)
         gate = evaluate_entry_gate(
             symbol=symbol.upper(),
             hybrid_score=float(decision.hybrid_score),
@@ -738,6 +772,10 @@ async def run_symbol_tick(
             is_index=index_underlying,
             in_entry_window=entry_session,
             adaptive_delta=adaptive_delta,
+            rolling_wr=rolling_wr,
+            scan_abs_scores=(
+                scan_hybrid_abs_scores() if entry_admission is not None else None
+            ),
             cfg=cfg,
         )
         result["high_conviction"] = {

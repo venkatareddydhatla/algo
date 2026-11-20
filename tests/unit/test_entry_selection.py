@@ -305,6 +305,56 @@ def test_dynamic_afternoon_floor_filters_mid_scores():
     assert [c.symbol for c in afternoon] == ["STRONG", "MID75"]
 
 
+def test_admit_top_pct_or_allows_under_floor():
+    """Top-10% of scan |hybrid| may qualify under the fixed floor (score OR only)."""
+    # 10 names; top 10% = 1 → STRONG is top; MID74 under 0.75 but not top
+    candidates = [
+        EntryCandidate("STRONG", 0.90),
+        EntryCandidate("MID74", 0.74),
+        *[EntryCandidate(f"W{i}", 0.40 + i * 0.01) for i in range(8)],
+    ]
+    without = select_entries_for_empty_slots(
+        candidates,
+        open_symbols=[],
+        max_open_symbols=6,
+        dynamic=True,
+        floor=2,
+        ceiling=6,
+        min_hybrid_abs=0.75,
+    )
+    assert [c.symbol for c in without] == ["STRONG"]
+
+    with_top = select_entries_for_empty_slots(
+        candidates,
+        open_symbols=[],
+        max_open_symbols=6,
+        dynamic=True,
+        floor=2,
+        ceiling=6,
+        min_hybrid_abs=0.75,
+        admit_top_pct=0.10,
+    )
+    # STRONG qualifies via floor; MID74 is not top-10% (STRONG is) so still only STRONG
+    assert [c.symbol for c in with_top] == ["STRONG"]
+
+    # Under-floor name that IS top of a weak scan
+    weak_scan = [
+        EntryCandidate("BEST70", 0.70),
+        *[EntryCandidate(f"L{i}", 0.20 + i * 0.02) for i in range(9)],
+    ]
+    top_only = select_entries_for_empty_slots(
+        weak_scan,
+        open_symbols=[],
+        max_open_symbols=6,
+        dynamic=True,
+        floor=2,
+        ceiling=6,
+        min_hybrid_abs=0.75,
+        admit_top_pct=0.10,
+    )
+    assert [c.symbol for c in top_only] == ["BEST70"]
+
+
 def test_rest_of_day_floor_rejects_065_admits_072():
     """Rest-of-day |hybrid| floor 0.72: 0.65/0.70 fail; 0.72+ pass under ceiling 12."""
     candidates = [
@@ -483,9 +533,9 @@ def test_entry_selection_config_defaults():
     assert sel["morning_session"]["until_ist"] == "10:00"
     assert sel["morning_session"]["min_hybrid_abs"] == 0.75
     assert sel["dynamic_capacity"]["min_hybrid_abs"] == 0.75
-    # Afternoon raise default on when omitted
+    # Afternoon belt default on when omitted (0.75 — same as morning)
     assert sel["dynamic_capacity"]["afternoon_after_ist"] == "12:00"
-    assert sel["dynamic_capacity"]["afternoon_min_hybrid_abs"] == 0.80
+    assert sel["dynamic_capacity"]["afternoon_min_hybrid_abs"] == 0.75
 
 
 def test_entry_selection_config_dynamic_knobs():
@@ -514,7 +564,7 @@ def test_entry_selection_config_dynamic_knobs():
                         "ceiling": 6,
                         "min_hybrid_abs": 0.75,
                         "afternoon_after_ist": "12:00",
-                        "afternoon_min_hybrid_abs": 0.80,
+                        "afternoon_min_hybrid_abs": 0.75,
                     },
                 },
             }
@@ -527,7 +577,7 @@ def test_entry_selection_config_dynamic_knobs():
     assert dyn["ceiling"] == 6
     assert dyn["min_hybrid_abs"] == 0.75
     assert dyn["afternoon_after_ist"] == "12:00"
-    assert dyn["afternoon_min_hybrid_abs"] == 0.80
+    assert dyn["afternoon_min_hybrid_abs"] == 0.75
     assert sel["morning_session"]["enabled"] is False
     assert sel["reentry_cooloff"]["minutes"] == 120
     # ceiling cannot exceed hard cap
@@ -615,7 +665,7 @@ def test_admission_from_config_none_when_disabled():
                             "ceiling": 6,
                             "min_hybrid_abs": 0.75,
                             "afternoon_after_ist": "12:00",
-                            "afternoon_min_hybrid_abs": 0.80,
+                            "afternoon_min_hybrid_abs": 0.75,
                         },
                     },
                 }
@@ -636,13 +686,19 @@ def test_admission_from_config_none_when_disabled():
 
 
 def test_admission_effective_min_hybrid_high_conviction_clock():
-    """High-conviction floors: 0.75 / 0.80 / 0.85 by IST clock (+ adaptive)."""
+    """High-conviction floors: 0.75 all day until 14:20; late WR base or 0.85."""
     EntryCycleAdmission = _load_worker_entry_admission().EntryCycleAdmission
     adm = EntryCycleAdmission(max_open_symbols=6, min_hybrid_abs=0.75)
     z = ist()
     assert adm._effective_min_hybrid(datetime(2026, 11, 18, 9, 40, tzinfo=z)) == 0.75
-    assert adm._effective_min_hybrid(datetime(2026, 11, 18, 12, 15, tzinfo=z)) == 0.80
+    assert adm._effective_min_hybrid(datetime(2026, 11, 18, 12, 15, tzinfo=z)) == 0.75
     assert adm._effective_min_hybrid(datetime(2026, 11, 18, 14, 30, tzinfo=z)) == 0.85
+    assert (
+        adm._effective_min_hybrid(
+            datetime(2026, 11, 18, 14, 30, tzinfo=z), rolling_wr=0.60
+        )
+        == 0.75
+    )
     assert (
         adm._effective_min_hybrid(
             datetime(2026, 11, 18, 10, 0, tzinfo=z), adaptive_delta=0.05

@@ -159,6 +159,7 @@ class EntryCycleAdmission:
         open_ist: str = "09:15",
         cfg: dict[str, Any] | None = None,
         adaptive_delta: float = 0.0,
+        rolling_wr: float | None = None,
     ) -> float:
         """Prefer high-conviction time floors (+ adaptive); fall back to dual-session."""
         hc = high_conviction_config(cfg)
@@ -171,6 +172,9 @@ class EntryCycleAdmission:
                 afternoon_after_ist=str(hc["afternoon_after_ist"]),
                 late_after_ist=str(hc["late_after_ist"]),
                 adaptive_delta=adaptive_delta,
+                rolling_wr=rolling_wr,
+                late_base_min=float(hc["late_base_min_hybrid"]),
+                late_base_wr_threshold=float(hc["late_base_wr_threshold"]),
             )
         return effective_min_hybrid_abs(
             self.min_hybrid_abs,
@@ -312,7 +316,11 @@ class EntryCycleAdmission:
             open_ist=soft_policy.open_ist,
             cfg=cfg,
             adaptive_delta=adaptive_delta,
+            rolling_wr=wr,
         )
+        admit_top_pct: float | None = None
+        if hc.get("enabled", True) and hc.get("top_pct_enabled", True):
+            admit_top_pct = float(hc.get("top_pct_of_scan", 0.10))
         in_morning = self.morning_enabled and in_morning_entry_window(
             ist_now,
             open_ist=soft_policy.open_ist,
@@ -386,6 +394,7 @@ class EntryCycleAdmission:
             dynamic=self.dynamic_enabled,
             cooloff_symbols=cooloff_blocked,
             max_new_entries=morning_remaining,
+            admit_top_pct=admit_top_pct,
         )
         admitted_syms = {c.symbol.upper() for c in selected}
         skipped = sorted(
@@ -400,7 +409,7 @@ class EntryCycleAdmission:
 
         logger.info(
             "Entry selection anti_churn=%s dynamic=%s floor=%d ceiling=%d "
-            "min_|hybrid|=%.2f (base=%.2f Δ=%.2f) hard_cap=%d wr=%s "
+            "min_|hybrid|=%.2f (base=%.2f Δ=%.2f) top_pct=%s hard_cap=%d wr=%s "
             "cooloff=%s/%dm morning=%s used=%d remaining=%s open=%d "
             "candidates=%d admitted=%s skipped=%d cooloff_blocked=%d",
             self.anti_churn,
@@ -410,6 +419,11 @@ class EntryCycleAdmission:
             eff_min,
             self.min_hybrid_abs,
             adaptive_delta,
+            (
+                f"{admit_top_pct:.0%}"
+                if admit_top_pct is not None
+                else "off"
+            ),
             hard_cap,
             f"{wr:.0%}({wr_wins}/{wr_n})" if wr is not None else "n/a",
             self.cooloff_enabled,
@@ -477,6 +491,7 @@ class EntryCycleAdmission:
             "min_hybrid_abs": self.min_hybrid_abs,
             "min_hybrid_abs_effective": eff_min,
             "adaptive_delta": adaptive_delta,
+            "admit_top_pct": admit_top_pct,
             "rolling_wr": wr,
             "rolling_wr_trips": wr_n,
             "max_open_effective": hard_cap,

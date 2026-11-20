@@ -115,16 +115,24 @@ trading:
       enabled: true
       hybrid_floors:
         before_12_ist: 0.75      # |hybrid| ≥ 0.75 before 12:00 IST
-        after_12_ist: 0.80       # ≥ 0.80 after 12:00
-        after_1420_ist: 0.85     # ≥ 0.85 after 14:20 (+ all other filters)
+        after_12_ist: 0.75       # same as morning (no midday raise to 0.80)
+        after_1420_ist: 0.85     # strict late when rolling WR < 55%
+        late_base_min_hybrid_abs: 0.75  # after 14:20 when rolling WR ≥ 55%
+        late_base_wr_threshold: 0.55
         afternoon_after_ist: "12:00"
         late_after_ist: "14:20"
+      # Score-filter OR only: top 10% of scan |hybrid| may pass under floor.
+      # Other factors (MTF/RVOL/ATR/proximity/news/cooloff) still required.
+      # Never forces a min-trade quota / does not fill slots with weak names.
+      top_pct_scan:
+        enabled: true
+        pct: 0.10
       relative_volume:
-        mult: 1.5                # last 15m vol ≥ 1.5× mean of prior 20 bars
+        mult: 1.2                # last 15m vol ≥ 1.2× mean of prior 20 bars
         lookback_bars: 20
       atr:
         period: 14
-        min_pct_of_price: 1.2    # ATR(14) > 1.2% of price
+        min_pct_of_price: 1.0    # ATR(14) > 1.0% of price
       proximity:
         atr_mult: 0.2            # block within 0.2×ATR of daily high/low
       news:
@@ -169,9 +177,9 @@ trading:
         enabled: true
         floor: 2
         ceiling: 6               # mirrors max_open_symbols
-        min_hybrid_abs: 0.75     # base; session_min_hybrid_abs raises by clock
+        min_hybrid_abs: 0.75     # base; session_min_hybrid_abs by clock (+ late WR)
         afternoon_after_ist: "12:00"
-        afternoon_min_hybrid_abs: 0.80
+        afternoon_min_hybrid_abs: 0.75
 
 hybrid:
   weights:
