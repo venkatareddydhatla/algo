@@ -201,11 +201,11 @@ git pull origin cursor/dry-run-trade-retention-e83e
 .\deploy\windows\native\start-native.ps1 -WithWorker
 ```
 
-Verify: http://127.0.0.1:5173/trades shows fill pager + history note; `config\local.yaml` has `trading.equity.paper_retention.auto_purge: false`. **Do not** run purge during dry-run week. When starting live later:
+Verify: http://127.0.0.1:5173/trades shows fill pager + history note; `config\local.yaml` has `trading.equity.paper_retention.auto_purge: false`. Explicit full wipe (empty Trades) when desired — still `dry_run` only:
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\purge_paper_ledger.py
-.\.venv\Scripts\python.exe scripts\purge_paper_ledger.py --yes
+.\.venv\Scripts\python.exe scripts\purge_paper_ledger.py --confirm
 ```
 
 Still `dry_run` only — no live orders.
@@ -247,6 +247,35 @@ git pull origin cursor/trades-page-round-trips-cb5e
 ```
 
 Open http://127.0.0.1:5173/trades — Open positions unchanged; Closed trades show Symbol, Side LONG/SHORT, Entry/Exit IST, Entry/Exit px, PnL, Reason, dry_run.
+
+### Pull purge ALL paper trades (empty Trades page) (stacked) — tip
+
+Clears the **entire** dry-run paper ledger (open positions + closed round-trips / fills) so http://127.0.0.1:5173/trades is empty — safe Windows-native wipe for a clean Reversal Pro week. Prefer `scripts\purge_paper_ledger.py --confirm` (archives to `paper_fills_archive` unless `--no-archive`). Mode stays `dry_run`. `--yes` is an alias for `--confirm`. Policy: [`docs/options-portal-paper-retention.md`](./options-portal-paper-retention.md). Stacked on `cursor/watchlist-action-fresh-d1-12f2` (PR #64).
+
+```powershell
+cd C:\algo
+Set-ExecutionPolicy -Scope Process Bypass -Force
+.\deploy\windows\native\stop-native.ps1
+git fetch origin
+git checkout cursor/purge-all-paper-trades-a4f3
+git pull origin cursor/purge-all-paper-trades-a4f3
+.\deploy\windows\native\setup-native.ps1
+
+# Preview counts (no writes), then archive + purge ALL dry_run fills + opens
+.\.venv\Scripts\python.exe scripts\purge_paper_ledger.py
+.\.venv\Scripts\python.exe scripts\purge_paper_ledger.py --confirm
+
+.\deploy\windows\native\start-native.ps1 -WithWorker
+```
+
+Verify: http://127.0.0.1:5173/trades — Closed trades empty; Open positions empty. Still `dry_run` only. Never paste Upstox / Gmail secrets.
+
+Equivalent pair (same end state):
+
+```powershell
+.\.venv\Scripts\python.exe scripts\purge_closed_trades.py --confirm
+.\.venv\Scripts\python.exe scripts\purge_open_positions.py --confirm
+```
 
 ### Pull Action + Trend columns (stacked) — tip
 
@@ -469,12 +498,12 @@ git pull origin cursor/purge-930-entry-gate-5e77
 
 # Clean Day start — preview then wipe all paper fills + opens
 .\.venv\Scripts\python.exe scripts\purge_paper_ledger.py
-.\.venv\Scripts\python.exe scripts\purge_paper_ledger.py --yes
+.\.venv\Scripts\python.exe scripts\purge_paper_ledger.py --confirm
 
 .\deploy\windows\native\start-native.ps1 -WithWorker
 ```
 
-Confirm `config/local.yaml`: `trading.session.entries_open: "09:30"`, `no_new_entries_after: "15:20"`, `open: "09:15"`. Worker before 09:30: `outside_entry_session: before entries_open_ist=09:30` while open-book ticks may still show `fixed_pct=…`. Still `dry_run` only.
+Confirm `config/local.yaml`: `trading.session.entries_open: "09:30"`, `no_new_entries_after: "15:20"`, `open: "09:15"`. Worker before 09:30: `outside_entry_session: before entries_open_ist=09:30` while open-book ticks may still show `fixed_pct=…`. Still `dry_run` only. Prefer the newer **purge ALL paper trades** tip above when you only need an empty Trades page.
 
 ### Pull fixed ±2% open exits (stacked)
 
@@ -627,7 +656,7 @@ git pull origin cursor/after-hours-entry-gate-383b
 .\deploy\windows\native\start-native.ps1 -WithWorker
 ```
 
-**Tonight’s bogus opens** (e.g. MUTHOOTFIN SHORT @ ~00:01 IST): pull the **purge open positions** tip below to clear the Open list while keeping 16 Nov closed rows. `purge_closed_trades.py` does **not** remove still-open entries; full `purge_paper_ledger.py --yes` wipes closed history too. Still `dry_run` only.
+**Tonight’s bogus opens** (e.g. MUTHOOTFIN SHORT @ ~00:01 IST): pull the **purge open positions** tip below to clear the Open list while keeping 16 Nov closed rows. `purge_closed_trades.py` does **not** remove still-open entries; full `purge_paper_ledger.py --confirm` wipes closed history too. Still `dry_run` only.
 
 ### Pull purge open positions (keep closed history) (stacked)
 
