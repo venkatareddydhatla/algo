@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { MOCK, SignalRow, api } from "../api/client";
 import { MarketIndexStrip } from "../components/MarketIndexStrip";
+import { msUntilSignalsSoftRefresh } from "../lib/barCloseRefresh";
 import { fmtIstDateTime } from "../lib/ist";
 
 const PAGE_SIZE = 50;
@@ -19,6 +20,11 @@ export default function DashboardPage() {
   const [customMsg, setCustomMsg] = useState("");
   const [customBusy, setCustomBusy] = useState(false);
   const [customTick, setCustomTick] = useState(0);
+  const [lastSoftAt, setLastSoftAt] = useState<string | null>(null);
+  const filterRef = useRef(filter);
+  const offsetRef = useRef(offset);
+  filterRef.current = filter;
+  offsetRef.current = offset;
 
   useEffect(() => {
     const s = (params.get("symbol") || "").toUpperCase();
@@ -49,34 +55,63 @@ export default function DashboardPage() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      try {
-        const data = await api.signals({
-          offset,
-          limit: PAGE_SIZE,
-          symbol: filter.trim() || undefined,
-        });
-        if (!cancelled) {
-          setRows(data.items);
-          setTotal(data.total ?? data.items.length);
-          setSource(data.source);
-        }
-      } catch {
-        if (!cancelled) {
-          const items = sortLocal(
-            MOCK.signals.items.filter((r) =>
-              filter.trim() ? r.symbol.includes(filter.trim().toUpperCase()) : true,
-            ),
-          );
-          setRows(items);
-          setTotal(items.length);
-          setSource("local-mock (API offline)");
-        }
+      const ok = await softLoadSignals({
+        offset,
+        filter,
+        setRows,
+        setTotal,
+        setSource,
+        setLastSoftAt,
+        cancelled: () => cancelled,
+      });
+      if (!ok && !cancelled) {
+        const items = sortLocal(
+          MOCK.signals.items.filter((r) =>
+            filter.trim() ? r.symbol.includes(filter.trim().toUpperCase()) : true,
+          ),
+        );
+        setRows(items);
+        setTotal(items.length);
+        setSource("local-mock (API offline)");
       }
     })();
     return () => {
       cancelled = true;
     };
   }, [offset, filter, customTick]);
+
+  // Soft refresh after each 15m bar close (+ short burst) — no full page reload.
+  useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    async function tick() {
+      const ok = await softLoadSignals({
+        offset: offsetRef.current,
+        filter: filterRef.current,
+        setRows,
+        setTotal,
+        setSource,
+        setLastSoftAt,
+        cancelled: () => cancelled,
+      });
+      if (cancelled) return;
+      if (!ok) {
+        // API down — retry slowly; keep last good rows.
+        timer = setTimeout(tick, 120_000);
+        return;
+      }
+      const wait = msUntilSignalsSoftRefresh();
+      timer = setTimeout(tick, wait);
+    }
+
+    const initialWait = msUntilSignalsSoftRefresh();
+    timer = setTimeout(tick, initialWait);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, []);
 
   const page = Math.floor(offset / PAGE_SIZE) + 1;
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -185,8 +220,10 @@ export default function DashboardPage() {
             Curated TradingView watchlist (~18) + custom equities ({total} symbols) — Reversal
             Pro Action (U1→BUY / D1→SELL, no HOLD) and Trend (BULLISH / BEARISH / NEUTRAL).
             Indices never appear as Action rows. Open dry-run trades keep BUY/SELL Action until
-            close; Trend stays live. Per-row <strong>Delete</strong> drops customs or excludes
-            curated names (CSV untouched; restore via Add). Source: {source}.
+            close; Trend stays live. Soft-refreshes after each 15m bar close (no full reload).
+            Per-row <strong>Delete</strong> drops customs or excludes curated names (CSV
+            untouched; restore via Add). Source: {source}
+            {lastSoftAt ? ` · refreshed ${fmtIstDateTime(lastSoftAt)}` : ""}.
           </p>
         </div>
         <MarketIndexStrip />
@@ -359,6 +396,32 @@ export default function DashboardPage() {
       </div>
     </section>
   );
+}
+
+async function softLoadSignals(opts: {
+  offset: number;
+  filter: string;
+  setRows: (rows: SignalRow[]) => void;
+  setTotal: (n: number) => void;
+  setSource: (s: string) => void;
+  setLastSoftAt: (iso: string) => void;
+  cancelled: () => boolean;
+}): Promise<boolean> {
+  try {
+    const data = await api.signals({
+      offset: opts.offset,
+      limit: PAGE_SIZE,
+      symbol: opts.filter.trim() || undefined,
+    });
+    if (opts.cancelled()) return true;
+    opts.setRows(data.items);
+    opts.setTotal(data.total ?? data.items.length);
+    opts.setSource(data.source);
+    opts.setLastSoftAt(new Date().toISOString());
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function pineAction(action: string | undefined): "BUY" | "SELL" | "HOLD" {
