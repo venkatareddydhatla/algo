@@ -6,7 +6,7 @@ after-hours MUTHOOTFIN) while retaining closed entry+exit legs already in
 Trades history (e.g. 16 Nov 2026 completed rows).
 
 Opposite of ``scripts/purge_closed_trades.py`` (that keeps opens, drops closed).
-Full wipe: ``scripts/purge_paper_ledger.py --yes`` (deletes everything).
+Full wipe: ``scripts/purge_paper_ledger.py --confirm`` (deletes everything).
 
 Usage (from repo root):
 

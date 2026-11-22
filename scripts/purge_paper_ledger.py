@@ -1,33 +1,35 @@
 #!/usr/bin/env python3
-"""Archive and purge equity dry-run paper fills (full wipe / Day start).
+"""Archive and purge equity dry-run paper fills (full wipe / empty Trades page).
 
-Also used for a **clean Day start**: wipe closed + open paper so the portal
-is empty for today's session (Windows: see docs/options-portal-paper-retention.md).
-Before live: same full wipe when ready for real orders.
+Also used for a **clean Day start** or **clear old Trades history**: wipe closed
++ open paper so the portal Trades list is empty (Windows: see
+docs/options-portal-paper-retention.md). Before live: same full wipe when ready
+for real orders. Default mode stays ``dry_run``.
 
 Usage (from repo root, with venv / editable installs):
 
   # Dry-run preview (no writes)
   python scripts/purge_paper_ledger.py
 
-  # Actually archive + purge dry_run mode ledger (full wipe / Day start)
-  python scripts/purge_paper_ledger.py --yes
+  # Actually archive + purge dry_run mode ledger (full wipe)
+  python scripts/purge_paper_ledger.py --confirm
+  # Alias (same effect): python scripts/purge_paper_ledger.py --yes
 
   # Closed round-trips only (keep open positions + open entry fills)
-  python scripts/purge_paper_ledger.py --yes --closed-only
+  python scripts/purge_paper_ledger.py --confirm --closed-only
   # Prefer dedicated script: python scripts/purge_closed_trades.py --confirm
 
   # Open book only (keep closed round-trips)
-  python scripts/purge_paper_ledger.py --yes --open-only
+  python scripts/purge_paper_ledger.py --confirm --open-only
   # Prefer dedicated script: python scripts/purge_open_positions.py --confirm
 
   # Purge without copying to paper_fills_archive
-  python scripts/purge_paper_ledger.py --yes --no-archive
+  python scripts/purge_paper_ledger.py --confirm --no-archive
 
 Windows PowerShell (C:\\algo):
 
   .\\.venv\\Scripts\\python.exe scripts\\purge_paper_ledger.py
-  .\\.venv\\Scripts\\python.exe scripts\\purge_paper_ledger.py --yes
+  .\\.venv\\Scripts\\python.exe scripts\\purge_paper_ledger.py --confirm
 
 Config gate: trading.equity.paper_retention.allow_purge_before_live (default true).
 Policy: docs/options-portal-paper-retention.md
@@ -55,12 +57,20 @@ for rel in (
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Archive/purge paper ledger before live (not during dry-run week)"
+        description=(
+            "Archive/purge entire paper ledger (open + closed) so Trades is empty; "
+            "default mode dry_run"
+        )
+    )
+    parser.add_argument(
+        "--confirm",
+        action="store_true",
+        help="Required to actually delete fills/positions (preferred)",
     )
     parser.add_argument(
         "--yes",
         action="store_true",
-        help="Required to actually delete fills/positions",
+        help="Alias for --confirm (kept for older tips / Day-start docs)",
     )
     parser.add_argument(
         "--mode",
@@ -95,6 +105,7 @@ def main() -> int:
         ),
     )
     args = parser.parse_args()
+    confirmed = bool(args.confirm or args.yes)
 
     # Prefer local SQLite profile for native Windows / dry-run
     os.environ.setdefault("PERSISTENCE_PROFILE", "local")
@@ -115,7 +126,7 @@ def main() -> int:
         "closed_only": bool(args.closed_only),
         "open_only": bool(args.open_only),
         "retention": retention,
-        "confirm": bool(args.yes),
+        "confirm": confirmed,
     }
     if args.closed_only and store.available:
         counts.update(store.preview_closed_purge(mode=args.mode))
@@ -130,25 +141,26 @@ def main() -> int:
         )
         return 2
 
-    if not args.yes:
+    if not confirmed:
         if args.closed_only:
             print(
-                "No changes. Re-run with --yes --closed-only to purge closed "
+                "No changes. Re-run with --confirm --closed-only to purge closed "
                 "round-trips only (open positions stay). "
                 "Or use: python scripts/purge_closed_trades.py --confirm",
                 file=sys.stderr,
             )
         elif args.open_only:
             print(
-                "No changes. Re-run with --yes --open-only to clear Open "
+                "No changes. Re-run with --confirm --open-only to clear Open "
                 "positions (closed round-trips stay). "
                 "Or use: python scripts/purge_open_positions.py --confirm",
                 file=sys.stderr,
             )
         else:
             print(
-                "No changes. Re-run with --yes to archive+purge "
-                "(only when starting live — keep dry-run week history).",
+                "No changes. Re-run with --confirm to archive+purge ALL dry_run "
+                "fills and open positions (Trades page empty). "
+                "--yes is an accepted alias.",
                 file=sys.stderr,
             )
         return 0

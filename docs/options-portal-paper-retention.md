@@ -31,26 +31,31 @@ paper fills while reviewing the dry-run week.
 
 | Goal | Script | Keeps | Removes |
 |------|--------|-------|---------|
-| **Clean Day start** — empty portal (no closed history, no opens) | `scripts/purge_paper_ledger.py --yes` | Nothing in live ledger | All fills + all positions |
+| **Empty Trades page** — purge all old open + closed paper | `scripts/purge_paper_ledger.py --confirm` | Nothing in live ledger | All fills + all positions |
+| **Clean Day start** — same full wipe | `scripts/purge_paper_ledger.py --confirm` | Nothing in live ledger | All fills + all positions |
 | Empty **Open** list; keep closed history (e.g. 16 Nov completed rows) | `scripts/purge_open_positions.py --confirm` | Closed round-trips | Open positions + unpaired entry fills |
 | Clear **bad closed** history; keep opens | `scripts/purge_closed_trades.py --confirm` | Open positions + unpaired entries | Completed round-trip fill legs |
-| Wipe **everything** (before live / same as Day start) | `scripts/purge_paper_ledger.py --yes` | Nothing in live ledger | All fills + all positions |
+| Wipe **everything** (before live / same as full wipe) | `scripts/purge_paper_ledger.py --confirm` | Nothing in live ledger | All fills + all positions |
 
-## Clean Day start (purge all paper trades + opens)
+`--yes` remains an alias for `--confirm` on `purge_paper_ledger.py`.
+
+## Clean Day start / empty Trades (purge all paper trades + opens)
 
 Use a **full wipe** so Trades / Open positions are empty for today’s dry-run
-session. Prefer this over open-only or closed-only when Venkata wants a clean
-portal for the day. Archives to `paper_fills_archive` unless `--no-archive`.
+session (or to clear old Reversal Pro week history). Prefer this over open-only
+or closed-only when Venkata wants a clean portal. Archives to
+`paper_fills_archive` unless `--no-archive`. Default mode: `dry_run`.
 
 ### Windows PowerShell (from repo root)
 
 ```powershell
 cd C:\algo
+Set-ExecutionPolicy -Scope Process Bypass -Force
 # Preview: fills / open_positions counts (no writes)
 .\.venv\Scripts\python.exe scripts\purge_paper_ledger.py
 
 # Archive + purge ALL dry_run fills and open positions
-.\.venv\Scripts\python.exe scripts\purge_paper_ledger.py --yes
+.\.venv\Scripts\python.exe scripts\purge_paper_ledger.py --confirm
 ```
 
 Optional: skip archive copy with `--no-archive`. Equivalent open+closed pair:
@@ -60,7 +65,7 @@ Optional: skip archive copy with `--no-archive`. Equivalent open+closed pair:
 .\.venv\Scripts\python.exe scripts\purge_open_positions.py --confirm
 ```
 
-After `--yes`, Open positions and Closed trades are empty in the UI. Restart
+After `--confirm`, Open positions and Closed trades are empty in the UI. Restart
 the worker if it was running so marks/session state refresh.
 
 ## Purge open positions only (keep closed round-trips)
@@ -101,7 +106,7 @@ Content-Type: application/json
 }
 ```
 
-Equivalent flag: `python scripts/purge_paper_ledger.py --yes --open-only`.
+Equivalent flag: `python scripts/purge_paper_ledger.py --confirm --open-only`.
 
 ## Purge closed trades only (keep open positions)
 
@@ -145,7 +150,7 @@ Content-Type: application/json
 
 `closed_only: true` forces positions to stay (`clear_positions` ignored).
 
-Equivalent full-wipe script flag: `python scripts/purge_paper_ledger.py --yes --closed-only`.
+Equivalent full-wipe script flag: `python scripts/purge_paper_ledger.py --confirm --closed-only`.
 
 ## Purge / archive before live (full wipe)
 
@@ -177,13 +182,13 @@ From repo root (`C:\algo` or Linux):
 # Preview counts only
 .\.venv\Scripts\python.exe scripts\purge_paper_ledger.py
 
-# Archive + purge when starting live (full wipe)
-.\.venv\Scripts\python.exe scripts\purge_paper_ledger.py --yes
+# Archive + purge (full wipe; also used to empty Trades during dry_run)
+.\.venv\Scripts\python.exe scripts\purge_paper_ledger.py --confirm
 ```
 
 ```bash
-python scripts/purge_paper_ledger.py          # preview
-python scripts/purge_paper_ledger.py --yes    # archive + purge (full)
+python scripts/purge_paper_ledger.py              # preview
+python scripts/purge_paper_ledger.py --confirm    # archive + purge (full)
 ```
 
 ## Live retention (≥90 days)
