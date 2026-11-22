@@ -1050,6 +1050,13 @@ def test_atr_trail_priority_stop_over_profit_same_tick():
 
 
 def test_fixed_pct_exit_policy_from_config():
+    """Default OFF — tip must not fire pct_profit_2 / pct_stop_2."""
+    assert FixedPctExitPolicy().enabled is False
+    assert FixedPctExitPolicy.from_config({}).enabled is False
+    assert FixedPctExitPolicy.from_config(
+        {"trading": {"risk": {"fixed_pct_exit": {}}}}
+    ).enabled is False
+
     policy = FixedPctExitPolicy.from_config(
         {
             "trading": {
@@ -1076,7 +1083,7 @@ def test_fixed_pct_exit_policy_from_config():
 
 def test_fixed_pct_exit_long_profit_and_stop():
     """Long: mark≥entry×1.02 → pct_profit_2; mark≤entry×0.98 → pct_stop_2."""
-    policy = FixedPctExitPolicy()
+    policy = FixedPctExitPolicy(enabled=True)
     session = SoftEodPolicy()
     now = datetime(2026, 11, 20, 11, 0, 0)
 
@@ -1126,7 +1133,7 @@ def test_fixed_pct_exit_long_profit_and_stop():
 
 def test_fixed_pct_exit_short_profit_and_stop():
     """Short: mark≤entry×0.98 → profit; mark≥entry×1.02 → stop."""
-    policy = FixedPctExitPolicy()
+    policy = FixedPctExitPolicy(enabled=True)
     now = datetime(2026, 11, 20, 11, 0, 0)
 
     profit = fixed_pct_exit_decision(
@@ -1156,7 +1163,7 @@ def test_fixed_pct_exit_short_profit_and_stop():
 
 def test_fixed_pct_exit_not_entry_filter_and_gates():
     """No open book → none; index blocked; disabled; overnight refused."""
-    policy = FixedPctExitPolicy()
+    policy = FixedPctExitPolicy(enabled=True)
     empty = fixed_pct_exit_decision(
         open_side=None,
         open_qty=0,
@@ -1183,10 +1190,24 @@ def test_fixed_pct_exit_not_entry_filter_and_gates():
         open_qty=1,
         entry_avg=100.0,
         mark=105.0,
-        policy=FixedPctExitPolicy(enabled=False),
+        policy=FixedPctExitPolicy(),  # default disabled
     )
     assert off["action"] == "none"
     assert "disabled" in off["reason"]
+    assert off["exit_qty"] == 0
+
+    # Even at +5% mark, default-disabled policy never fires pct_profit_2.
+    never = fixed_pct_exit_decision(
+        open_side="long",
+        open_qty=1,
+        entry_avg=100.0,
+        mark=105.0,
+        policy=FixedPctExitPolicy(),
+        now=datetime(2026, 11, 20, 11, 0, 0),
+        trading_day=True,
+    )
+    assert never["action"] == "none"
+    assert "disabled" in never["reason"]
 
     night = fixed_pct_exit_decision(
         open_side="long",
@@ -1203,7 +1224,7 @@ def test_fixed_pct_exit_not_entry_filter_and_gates():
 
 def test_fixed_pct_exit_stop_priority_over_profit_impossible_same_mark():
     """Boundary: exact ±2% triggers; interior holds (open-book only)."""
-    policy = FixedPctExitPolicy()
+    policy = FixedPctExitPolicy(enabled=True)
     # Just inside band
     inside = fixed_pct_exit_decision(
         open_side="long",

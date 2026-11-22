@@ -825,8 +825,8 @@ async def run_symbol_tick(
             result["note"] = note
             return result
 
-    # Open-book risk exits (±2%, profit_candle, ATR, morning) require live LTP
-    # for this equity only, consistent with last good LTP (else entry).
+    # Open-book risk exits (profit_candle, optional ±2%/ATR/morning) require live
+    # LTP for this equity only, consistent with last good LTP (else entry).
     risk_mark: float | None = None
     risk_ok = False
     risk_note = "risk exits not evaluated"
@@ -998,10 +998,10 @@ async def run_symbol_tick(
         "flip": bool(aligned_exit.get("flip")),
     }
 
-    # Same-tick priority: fixed ±2% > profit_candle_protect > atr stop/trail >
-    # scale/profit > morning > aligned_action_trend > soft_flatten.
-    # ±2%/profit_candle stay optional secondary; primary strategy exits are
-    # aligned opposite / NEUTRAL / 15:15 flatten. ATR/morning stay wired but off.
+    # Same-tick priority: (disabled) fixed ±2% > profit_candle_protect >
+    # atr stop/trail > scale/profit > morning > aligned_action_trend > soft_flatten.
+    # Primary exits: aligned opposite / NEUTRAL / 15:15 flatten. Fixed ±2% OFF
+    # (pct_profit_2 / pct_stop_2 never fire). profit_candle optional (not %); ATR/morning off.
     atr_exit_actions = {
         "atr_stop",
         "atr_trail",

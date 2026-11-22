@@ -21,7 +21,7 @@ Also reject candidates that jump more than ``~3%`` vs the symbol's last good
 live LTP (or entry when no recent LTP) so a day-low / stale print cannot fire
 ``pct_profit_2`` on a short (APOLLOHOSP 8738 vs LTP ~9230).
 
-Risk exits (±2%, profit_candle, ATR/morning) must use **live equity LTP** only;
+Risk exits (profit_candle, optional ±2%/ATR/morning) must use **live equity LTP** only;
 missing / rejected marks skip the exit rather than falling through to candle
 low or entry.
 
@@ -135,7 +135,7 @@ def risk_exit_mark_accepted(
     entry_avg: float | None = None,
     max_jump_pct: float = DEFAULT_MARK_JUMP_PCT,
 ) -> tuple[bool, str]:
-    """Whether ``mark`` may fire open-book risk exits (±2% / profit_candle / …).
+    """Whether ``mark`` may fire open-book risk exits (profit_candle / optional ±2% / …).
 
     Requires live ``ltp`` source and consistency vs last good LTP (else entry).
     """

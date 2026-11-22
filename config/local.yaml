@@ -38,7 +38,7 @@ trading:
   max_active_symbols: 0
   scan_batch_size: 8     # concurrent symbols per worker batch (rate-limit friendly)
   # Every 15m candle: re-score ALL active symbols (Reversal Pro Action + entries/exits).
-  # Open-book ±2% still on soft_flatten_poll; no reentry cooloff.
+  # Open-book poll: profit_candle + soft flatten; fixed ±2% OFF. No reentry cooloff.
   scan_on_bar_close: true
   bar_close_settle_sec: 8
   # Expected cycle: short on ~49-name volatile list; must finish inside 15m.
@@ -63,7 +63,7 @@ trading:
       stop_atr_mult: 1.25
       atr_period: 14
       exit_fraction: 1.0
-    user_hours_note: "09:15–15:30 IST (entries 09:30–15:15; flatten ALL from 15:15; Action+Trend aligned; ±2%/profit_candle secondary; no overnight; no cooloff)"
+    user_hours_note: "09:15–15:30 IST (entries 09:30–15:15; flatten ALL from 15:15; Action+Trend aligned; no ±2%; profit_candle optional; no overnight; no cooloff)"
   # NPR21 Reversal Detection Pro v3.2 (Confirmed Only). See docs/pine-reversal-pro-v32.pine.
   pine_signals:
     enabled: true
@@ -102,7 +102,7 @@ trading:
     require_news_context: false  # if true, skip orders when news pipeline degraded
     min_equity_price: 40.0
     fixed_pct_exit:
-      enabled: true
+      enabled: false
       profit_pct: 2.0
       stop_pct: 2.0
     profit_candle_protect:

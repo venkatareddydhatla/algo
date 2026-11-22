@@ -248,6 +248,23 @@ git pull origin cursor/trades-page-round-trips-cb5e
 
 Open http://127.0.0.1:5173/trades — Open positions unchanged; Closed trades show Symbol, Side LONG/SHORT, Entry/Exit IST, Entry/Exit px, PnL, Reason, dry_run.
 
+### Pull remove fixed ±2% exits (stacked) — tip
+
+Turns **off** open-book `fixed_pct_exit` so `pct_profit_2` / `pct_stop_2` never fire. Keeps Action+Trend aligned entries/exits, NEUTRAL flatten, opposite flip, 09:30–15:15 entries, flatten ALL from 15:15, and optional `profit_candle_protect` (structure, not %). Stacked on `cursor/aligned-action-trend-trades-7cb4` (PR #69). Dry-run only.
+
+```powershell
+cd C:\algo
+Set-ExecutionPolicy -Scope Process Bypass -Force
+.\deploy\windows\native\stop-native.ps1
+git fetch origin
+git checkout cursor/remove-fixed-2pct-exits-3adc
+git pull origin cursor/remove-fixed-2pct-exits-3adc
+.\deploy\windows\native\setup-native.ps1
+.\deploy\windows\native\start-native.ps1 -WithWorker
+```
+
+**Must stop then start.** Confirm `config/local.yaml`: `trading.risk.fixed_pct_exit.enabled: false`. Worker open-book log should show `fixed_pct=False` / `fixed_pct=none` — never `pct_profit_2` / `pct_stop_2`. Still `dry_run` only. Never paste Upstox / Gmail secrets.
+
 ### Pull drop VEDL from curated watchlist (stacked) — tip
 
 Removes **VEDL** from the TradingView curated CSV (`volatile_fno50` → **18** equities). Portal **Custom equities** add/remove stays — re-add VEDL there if needed. No `pine.signal.VEDL` KV purge step. Stacked on `cursor/vedl-api-recompute-b388` (PR #67). Dry-run only.

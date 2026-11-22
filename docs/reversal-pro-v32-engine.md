@@ -35,7 +35,7 @@ Defaults: **Confirmed Only**, **Medium** sensitivity, ATR length 14, method `ave
   `sellsignal==1` → **BEARISH**, else **NEUTRAL** (same as TV info table).
 - **Entries** still require fresh U1/D1 (or STRONG) — Trend / sticky Action alone does not open trades.
 - Opposite fresh **U1/D1** closes open (PR #58) — close-only; Trend does not close.
-- No cooloff after close (manual, ±2%, opposite, soft flatten) — next bar’s fresh signal can re-enter.
+- No cooloff after close (manual, opposite, soft flatten) — next bar’s fresh signal can re-enter.
 
 ## Kept (ops)
 
@@ -43,7 +43,7 @@ Defaults: **Confirmed Only**, **Medium** sensitivity, ATR length 14, method `ave
 - Full scan each 15m bar close
 - `min_equity_price` ₹40, max 10 opens, entries 09:30–15:15, flatten ALL from 15:15
 - Primary entries/exits: Action+Trend aligned (see store `docs/aligned-action-trend-trades.md`)
-- ±2% exits + `profit_candle_protect` + live-LTP mark guard remain optional secondary
+- Fixed ±2% exits **OFF**; `profit_candle_protect` optional (structure, not %); LTP mark guard for risk exits
 - dry_run only; no live unlock
 - Manual sell/close
 

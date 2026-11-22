@@ -1,6 +1,6 @@
-"""Soft EOD flatten + fixed ±2% exits + morning/ATR helpers (IST).
+"""Soft EOD flatten + optional risk exits + morning/ATR helpers (IST).
 
-Product rules (equity dry-run) — Pine entry + fixed open-book exits:
+Product rules (equity dry-run) — Pine entry + Action+Trend open-book exits:
 
 - **New entries (open/add / flip_open)** only on NSE trading days inside the
   cash entry window [entries_open_ist, no_new_entries_after) IST (default
@@ -11,18 +11,17 @@ Product rules (equity dry-run) — Pine entry + fixed open-book exits:
   SELL+BEARISH). Risk exits / soft flatten still run through soft_flatten_until.
 - **Index underlyings** (NIFTY, BANKNIFTY, … / NSE_INDEX|BSE_INDEX) never use
   stock hybrid entry; open index paper is soft-closed with ``index_not_equity``.
-- **Fixed ±2% open-book exits** (stocks only; **open positions only** — not an
-  entry filter) on the ~15s poll (`trading.risk.fixed_pct_exit`):
-  - Long: mark ≥ entry×1.02 → ``pct_profit_2``; mark ≤ entry×0.98 → ``pct_stop_2``
-  - Short: mark ≤ entry×0.98 → ``pct_profit_2``; mark ≥ entry×1.02 → ``pct_stop_2``
-  - Same-tick priority: stop > profit > profit_candle_protect >
-    (disabled ATR/morning) > aligned_action_trend > soft_flatten
+- **Fixed ±2% open-book exits** (`trading.risk.fixed_pct_exit`) are **OFF** by
+  default (``enabled: false``). Code path stays for rollback only —
+  ``pct_profit_2`` / ``pct_stop_2`` must not fire on the dry-run tip.
+  Same-tick priority when re-enabled: stop > profit > profit_candle_protect >
+  (disabled ATR/morning) > aligned_action_trend > soft_flatten.
 - **Profit candle protect** (`trading.risk.profit_candle_protect`, open book):
-  when an open stock is **in profit**, latest 15m vs prior:
+  structure exit (not a % cousin) when an open stock is **in profit**, latest
+  15m vs prior:
   - Long: open < mid(prior) **and** close < prior.low → ``profit_candle_protect``
   - Short: open > mid(prior) **and** close > prior.high → ``profit_candle_protect``
-  where ``mid = (prior.high + prior.low) / 2``.
-  ±2% / profit_candle / LTP mark guard stay **optional secondary**; primary
+  where ``mid = (prior.high + prior.low) / 2``. Optional secondary; primary
   strategy exits are aligned opposite / NEUTRAL / 15:15 flatten.
 - **Aligned Action+Trend open-book** (`trading.risk.aligned_action_trend_exit`):
   - Open **long** + Action=SELL + Trend=BEARISH → close long **and** open short
@@ -31,17 +30,17 @@ Product rules (equity dry-run) — Pine entry + fixed open-book exits:
   - Misaligned Action/Trend → no exit from this path
   - One open trade per stock max (same-side aligned → hold)
   - No cooloff after close
-- **Open-book risk exits** (``pct_profit_2``, ``pct_stop_2``,
-  ``profit_candle_protect``, plus optional ``profit_book`` / ``atr_*`` /
+- **Open-book risk exits** (``profit_candle_protect``, plus optional
+  ``pct_profit_*`` / ``pct_stop_*`` / ``profit_book`` / ``atr_*`` /
   ``morning_*`` when re-enabled) only on NSE trading days inside
   ``[open_ist, soft_flatten_until_ist]`` IST (default **09:15–15:30**). Use
   ``allow_open_book_risk_exits``. Outside that window the worker may still poll
   for marks / news / TA — **no risk-exit fills**. Cash/risk ``open_ist`` stays
   **09:15** even when entries wait until 09:30. Aligned Action+Trend exits
-  follow the Pine signal path (trading day) and do not require the ±2% LTP gate.
-- **ATR trail / morning dynamic TP** remain in code but are **disabled** as
-  primary exits while fixed ±2% is on (`atr_trail_scale_out.enabled: false`,
-  `morning_profit_book.enabled: false`). Soft EOD flatten stays as safety.
+  follow the Pine signal path (trading day) and do not require the LTP risk gate.
+- **ATR trail / morning dynamic TP** remain in code but are **disabled**
+  (`atr_trail_scale_out.enabled: false`, `morning_profit_book.enabled: false`).
+  Soft EOD flatten stays as safety.
 - Soft flatten window [soft_flatten_ist, soft_flatten_until_ist] inclusive by
   HH:MM (default **15:15–15:30 IST**): **flatten ALL** open paper equity
   (overnight hold off by default). Separate from the entry window (entries cut
@@ -111,7 +110,7 @@ DEFAULT_OVERNIGHT_HOLD_ENABLED = False
 DEFAULT_OVERNIGHT_HOLD_MIN_HYBRID = 0.85
 DEFAULT_USER_HOURS_NOTE = (
     "09:15–15:30 IST (entries 09:30–15:15; flatten ALL from 15:15; "
-    "Action+Trend aligned entries/exits; ±2%/profit_candle secondary; "
+    "Action+Trend aligned entries/exits; no ±2%; profit_candle optional; "
     "no overnight hold; no cooloff)"
 )
 
@@ -664,7 +663,8 @@ class FixedPctExitPolicy:
     window** (default 09:15–15:40 IST trading days). **Not an entry filter** —
     manages existing opens only.
 
-    Defaults: **+2%** profit / **−2%** stop from entry (long/short via uPnL %):
+    **Default ``enabled=False``** — dry-run tip must not fire ``pct_profit_2`` /
+    ``pct_stop_2``. Thresholds remain +2% / −2% for rollback when re-enabled:
 
     - Long: mark ≥ entry×(1+profit/100) → ``pct_profit_2``;
       mark ≤ entry×(1−stop/100) → ``pct_stop_2``
@@ -672,7 +672,7 @@ class FixedPctExitPolicy:
       mark ≥ entry×(1+stop/100) → ``pct_stop_2``
     """
 
-    enabled: bool = True
+    enabled: bool = False
     profit_pct: float = DEFAULT_FIXED_PCT_PROFIT
     stop_pct: float = DEFAULT_FIXED_PCT_STOP
 
@@ -686,7 +686,7 @@ class FixedPctExitPolicy:
             or {}
         )
         return cls(
-            enabled=bool(raw.get("enabled", True)),
+            enabled=bool(raw.get("enabled", False)),
             profit_pct=float(raw.get("profit_pct", DEFAULT_FIXED_PCT_PROFIT)),
             stop_pct=float(raw.get("stop_pct", DEFAULT_FIXED_PCT_STOP)),
         )
@@ -1019,8 +1019,8 @@ class OppositePineExitPolicy:
     """Close open equity on a fresh opposite Pine BUY/SELL (close-only).
 
     Config under ``trading.risk.opposite_pine_exit``. Stocks only; open book.
-    Same-tick priority: after fixed ±2% / profit_candle / (disabled ATR/morning),
-    before soft_flatten. Does **not** open the new direction on the same bar.
+    Same-tick priority: after (disabled) fixed ±2% / profit_candle /
+    (disabled ATR/morning), before soft_flatten. Does **not** open the new direction on the same bar.
     """
 
     enabled: bool = True
@@ -1152,8 +1152,8 @@ class AlignedActionTrendExitPolicy:
     """Primary open-book exits from Action+Trend alignment (with flip).
 
     Config under ``trading.risk.aligned_action_trend_exit``. Stocks only.
-    Same-tick priority: after fixed ±2% / profit_candle / (disabled ATR/morning),
-    before soft_flatten.
+    Same-tick priority: after (disabled) fixed ±2% / profit_candle /
+    (disabled ATR/morning), before soft_flatten.
 
     - Opposite aligned pair → close current **and** enter new direction
     - Trend NEUTRAL → close and wait (no reverse)
