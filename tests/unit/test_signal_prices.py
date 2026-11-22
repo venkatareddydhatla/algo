@@ -266,3 +266,52 @@ def test_load_persisted_reversal_pro_keeps_stale_action_no_hold(
     kept = kv.get("pine.signal.SYRMA")
     assert isinstance(kept, dict)
     assert kept["action"] == "BUY"
+
+
+def test_load_persisted_reconciles_vedl_buy_bearish_pivot_high(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Stale U1 BUY + BEARISH + pivot high / D1 path → Action SELL in KV."""
+    from datetime import datetime, timezone
+
+    from options_portal_persistence.kv_store import KvStore
+
+    from app.mock_data import load_persisted_pine_signals
+
+    db = tmp_path / "kv.sqlite"
+    monkeypatch.setenv("PERSISTENCE_PROFILE", "local")
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db}")
+    kv = KvStore(url=f"sqlite:///{db}")
+    assert kv.available
+    bar_ts = datetime(2026, 11, 22, 14, 45, tzinfo=timezone.utc)
+    kv.set(
+        "pine.signal.VEDL",
+        {
+            "symbol": "VEDL",
+            "action": "BUY",
+            "trend": "BEARISH",
+            "buy_signal": False,
+            "sell_signal": False,
+            "score": 0.5,
+            "confidence": 0.4,
+            "reasons": ["last U1 sticky (signal+) → BUY"],
+            "bar_ts": bar_ts.isoformat(),
+            "timeframe": "15m",
+            "signal_engine": "reversal_pro_v32",
+            "features": {
+                "action_no_hold": True,
+                "signal_engine": "reversal_pro_v32",
+                "signal": 1,
+                "sellsignal": 1,
+                "last_confirmed_pivot_is_high": True,
+                "zigzag_direction": -1,
+                "trend": "BEARISH",
+            },
+        },
+    )
+    loaded = load_persisted_pine_signals(["VEDL"], now=bar_ts)
+    assert loaded["VEDL"]["action"] == "SELL"
+    assert loaded["VEDL"]["trend"] == "BEARISH"
+    rewritten = kv.get("pine.signal.VEDL")
+    assert isinstance(rewritten, dict)
+    assert rewritten["action"] == "SELL"
