@@ -55,6 +55,48 @@ def test_open_long_shows_buy_while_pine_hold():
     assert row["trend"] == "BEARISH"
 
 
+def test_fresher_d1_sell_wins_over_open_long_overlay():
+    """VEDL bug: open-long sticky BUY must not hide a later pine D1→SELL.
+
+    Action tracks most recent confirmed U1/D1; Trend stays BEARISH from pine.
+    """
+    rows = [
+        {
+            "id": "pine-vedl",
+            "symbol": "VEDL",
+            "action": "SELL",
+            "pine_action": "SELL",
+            "trend": "BEARISH",
+            "hybrid_score": -0.5,
+            "confidence": 0.4,
+        }
+    ]
+    apply_open_trade_display_actions(rows, {"VEDL": "BUY"})  # open long still in book
+    row = rows[0]
+    assert row["pine_action"] == "SELL"
+    assert row["action"] == "SELL"
+    assert row["display_action"] == "SELL"
+    assert row["action_from_open_trade"] is False
+    assert row["open_trade_mode"] == "BUY"  # still open, but Action follows D1
+    assert row["trend"] == "BEARISH"
+
+
+def test_flat_symbol_never_gets_open_trade_overlay():
+    """Overlay only while a paper position is actually open — flat → pine Action."""
+    rows = [
+        {
+            "symbol": "VEDL",
+            "action": "SELL",
+            "pine_action": "SELL",
+            "trend": "BEARISH",
+        }
+    ]
+    apply_open_trade_display_actions(rows, {})  # flat book
+    assert rows[0]["action"] == "SELL"
+    assert rows[0]["action_from_open_trade"] is False
+    assert rows[0]["open_trade_mode"] is None
+
+
 def test_open_short_shows_sell_while_pine_hold():
     rows = [
         {
@@ -212,3 +254,22 @@ def test_load_open_trade_display_modes_from_ledger(
     assert rows[0]["action"] == "BUY" and rows[0]["pine_action"] == "HOLD"
     assert rows[1]["action"] == "SELL" and rows[1]["pine_action"] == "HOLD"
     assert rows[2]["action"] == "HOLD" and rows[2]["action_from_open_trade"] is False
+
+    # Close RELIANCE → flat; overlay must clear (qty gone from ledger).
+    exit_intent = plan_equity_intents(
+        "RELIANCE",
+        SignalAction.EXIT,
+        open_side="long",
+        open_qty=1,
+        qty=1,
+        price=2510.0,
+        reason="test close long",
+    )[0]
+    store.record_simulated_fill(
+        exit_intent,
+        OrderResult("exit-1", "simulated", "dry_run", "SIM-X1", None),
+        mode="dry_run",
+    )
+    modes_after = load_open_trade_display_modes(mode="dry_run")
+    assert "RELIANCE" not in modes_after
+    assert modes_after.get("TCS") == "SELL"

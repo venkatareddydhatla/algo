@@ -23,12 +23,12 @@ Defaults: **Confirmed Only**, **Medium** sensitivity, ATR length 14, method `ave
 | **STRONG** | Prefer / default filter | `U1 and buysignal==1` / `D1 and sellsignal==1` (EMA 9/14/21 trend aligned) |
 
 - Preview pivots are **never** used for trading.
-- Watchlist **Action** (BUY/SELL only — no HOLD):
+- Watchlist **Action** (BUY/SELL only — no HOLD) = **most recent confirmed U1/D1**:
   1. Fresh U1 → BUY / D1 → SELL
-  2. Else ZigZag `signal` sticky (last confirmed reversal)
+  2. Else ZigZag `signal` sticky (last confirmed reversal; later D1 replaces older U1)
   3. Else EMA Trend fallback (`buysignal`/`sellsignal`) when last unset
   4. Else `neutral_action` (default BUY)
-  Sticky open overlay (PR #59): open long→BUY, open short→SELL; **Trend unchanged**.
+  Open overlay (PR #59, tightened ALG-83): only while paper qty>0; does not hide a fresher opposite pine Action; **Trend unchanged**.
 - Watchlist **Trend** (separate column / API field): `buysignal==1` → **BULLISH**,
   `sellsignal==1` → **BEARISH**, else **NEUTRAL** (same as TV info table).
 - **Entries** still require fresh U1/D1 (or STRONG) — Trend / sticky Action alone does not open trades.

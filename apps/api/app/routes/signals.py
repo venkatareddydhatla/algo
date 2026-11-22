@@ -185,11 +185,12 @@ async def list_signals(
         "price_floor_dropped": floor_meta.get("price_floor_dropped", []),
         "open_trade_action_overlay": sticky,
         "note": (
-            "Action = Reversal Pro U1→BUY / D1→SELL (sticky between signals; "
-            "no HOLD) or sticky BUY/SELL while an open dry-run trade "
-            "(LONG→BUY, SHORT→SELL; display only — entries need fresh U1/D1). "
-            "Trend = Pine table BULLISH/BEARISH/NEUTRAL from EMA buysignal/"
-            "sellsignal (not overwritten by open-trade overlay). "
+            "Action = most recent confirmed Reversal Pro U1→BUY / D1→SELL "
+            "(ZigZag sticky between flips; a later D1 replaces an older U1; "
+            "no HOLD). Open-trade overlay (LONG→BUY / SHORT→SELL) applies only "
+            "while a paper position is actually open and does not hide a fresher "
+            "opposite pine Action. Trend = Pine table BULLISH/BEARISH/NEUTRAL "
+            "from EMA buysignal/sellsignal (not overwritten by open-trade overlay). "
             "pine_action keeps signal freshness. "
             "Watchlist rows omit reason_* (UI shows Action + Trend only). "
             "Index underlyings (NIFTY, BANKNIFTY, …) are excluded from Action rows. "

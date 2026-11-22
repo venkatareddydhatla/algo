@@ -535,3 +535,83 @@ def test_watchlist_action_no_expire_when_disabled():
         )
         == "HOLD"
     )
+
+
+def _u1_then_later_d1_series() -> list[Candle]:
+    """Rise→D1→rally→U1→drop→later D1 (fresher bearish Reversal)."""
+    closes: list[float] = []
+    for i in range(30):
+        closes.append(100.0 + i * 2.0)
+    for i in range(20):
+        closes.append(160.0 - i * 3.0)
+    for i in range(25):
+        closes.append(100.0 + i * 3.0)
+    for i in range(25):
+        closes.append(175.0 - i * 3.0)
+    return [
+        _bar(i, close=c, high=c + 1.0, low=c - 1.0, open_=c, symbol="VEDL")
+        for i, c in enumerate(closes)
+    ]
+
+
+def test_action_follows_later_d1_not_sticky_u1():
+    """VEDL regression: after U1 then a later D1, Action=SELL (never leftover BUY).
+
+    Trend may be BEARISH (sellsignal) at the same time — Action tracks the
+    most recent confirmed Reversal (ZigZag signal), not an older U1 sticky.
+    """
+    from options_portal_domain.pine_signals import _run_reversal_engine
+
+    p = PineParams(
+        **{
+            **_custom_params(require_strong=False).__dict__,
+            "action_no_hold": True,
+            "neutral_action": "BUY",
+        }
+    )
+    candles = _u1_then_later_d1_series()
+    states = _run_reversal_engine(candles, params=p)
+    flips = [(i, "U1" if s.u1 else "D1") for i, s in enumerate(states) if s.u1 or s.d1]
+    assert len(flips) >= 2
+    assert any(kind == "U1" for _, kind in flips)
+    assert flips[-1][1] == "D1", f"expected last flip D1, got {flips}"
+
+    last_u1_i = max(i for i, kind in flips if kind == "U1")
+    last_d1_i = flips[-1][0]
+    assert last_d1_i > last_u1_i
+
+    at_u1 = evaluate_pine_signal(
+        "VEDL", candles[: last_u1_i + 1], params=p, prefer_closed=False
+    )
+    assert at_u1.action == SignalAction.BUY
+
+    at_d1 = evaluate_pine_signal(
+        "VEDL", candles[: last_d1_i + 1], params=p, prefer_closed=False
+    )
+    assert at_d1.action == SignalAction.SELL
+    assert at_d1.action_source == "reversal"
+    assert at_d1.state is not None and at_d1.state.signal < 0
+
+    # Sticky bars after D1: still SELL; Trend can be BEARISH (BUY+BEARISH bug).
+    after = list(candles[: last_d1_i + 1])
+    last_c = after[-1].close
+    for j in range(8):
+        c = last_c - (j + 1) * 0.5
+        after.append(
+            _bar(
+                len(after),
+                close=c,
+                high=c + 0.2,
+                low=c - 0.2,
+                open_=c,
+                symbol="VEDL",
+            )
+        )
+    sticky = evaluate_pine_signal("VEDL", after, params=p, prefer_closed=False)
+    assert sticky.action == SignalAction.SELL
+    assert sticky.action != SignalAction.BUY
+    assert sticky.state is not None and sticky.state.signal < 0
+    # Trend BEARISH is allowed alongside Action SELL (chart-correct pairing).
+    assert sticky.trend in {"BULLISH", "BEARISH", "NEUTRAL"}
+    if sticky.trend == "BEARISH":
+        assert sticky.action == SignalAction.SELL

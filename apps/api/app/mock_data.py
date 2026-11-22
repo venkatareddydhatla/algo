@@ -585,7 +585,8 @@ def load_open_trade_display_modes(
 ) -> dict[str, str]:
     """Open paper positions → ``{SYMBOL: BUY|SELL}`` for watchlist Action overlay.
 
-    Prefers the paper ledger. Empty when the store is unavailable.
+    Only symbols with an **actually open** paper row (qty > 0 + long/short side).
+    Empty when flat / store unavailable — never invent overlay while flat.
     """
     out: dict[str, str] = {}
     try:
@@ -599,6 +600,12 @@ def load_open_trade_display_modes(
             return out
         for pos in store.list_positions(mode=safe_mode):  # type: ignore[arg-type]
             sym = str(pos.get("symbol") or "").strip().upper()
+            try:
+                qty = int(pos.get("qty") or 0)
+            except (TypeError, ValueError):
+                qty = 0
+            if qty <= 0:
+                continue  # not an open position — no overlay while flat
             sticky = display_action_for_open_side(pos.get("side"))
             if sym and sticky:
                 out[sym] = sticky
@@ -613,13 +620,16 @@ def apply_open_trade_display_actions(
     *,
     load_if_missing: bool = True,
 ) -> list[dict[str, Any]]:
-    """Overlay user-facing Action with open-trade entry mode while a position is open.
+    """Overlay Action from open paper side only when it does not hide a fresher U1/D1.
 
-    - ``pine_action``: expire-stale Pine Action (signal freshness; unchanged KV).
-    - ``action`` / ``display_action``: BUY while open LONG, SELL while open SHORT;
-      otherwise same as ``pine_action``.
+    - ``pine_action``: Reversal Pro Action (most recent confirmed U1/D1 sticky).
+    - ``action`` / ``display_action``: while a paper position is **actually open**,
+      overlay BUY (long) / SELL (short) **only** when pine is HOLD or same-side.
+      A fresher opposite pine Action (e.g. D1→SELL while long still open) wins —
+      Action must track the latest green/red Reversal, not the entry sticky.
+    - Flat / qty≤0 → no overlay (Action = pine).
     - ``trend`` is **never** overwritten by the open-trade overlay.
-    - Sticky BUY/SELL is **display / mode only** — not a fresh entry signal.
+    - Overlay is **display / mode only** — not a fresh entry signal.
     """
     modes = open_modes
     if modes is None and load_if_missing:
@@ -633,7 +643,9 @@ def apply_open_trade_display_actions(
         row["trend"] = _normalize_trend(row.get("trend"))
         sym = str(row.get("symbol") or "").strip().upper()
         sticky = modes.get(sym)
-        if sticky in {"BUY", "SELL"}:
+        # Overlay only for truly open symbols, and never over a fresher opposite
+        # pine U1/D1 (VEDL: open-long sticky BUY must not hide later D1 SELL).
+        if sticky in {"BUY", "SELL"} and pine in {"HOLD", sticky}:
             row["action"] = sticky
             row["display_action"] = sticky
             row["open_trade_mode"] = sticky
@@ -641,7 +653,7 @@ def apply_open_trade_display_actions(
         else:
             row["action"] = pine
             row["display_action"] = pine
-            row["open_trade_mode"] = None
+            row["open_trade_mode"] = sticky if sticky in {"BUY", "SELL"} else None
             row["action_from_open_trade"] = False
     return rows
 
