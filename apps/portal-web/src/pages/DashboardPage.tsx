@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { MOCK, SignalRow, api } from "../api/client";
-import { HybridStrip } from "../components/HybridStrip";
 import { MarketIndexStrip } from "../components/MarketIndexStrip";
 import { fmtIstDateTime } from "../lib/ist";
 
@@ -15,9 +14,6 @@ export default function DashboardPage() {
   const [offset, setOffset] = useState(0);
   const [filter, setFilter] = useState((params.get("symbol") || "").toUpperCase());
   const [highlight, setHighlight] = useState((params.get("symbol") || "").toUpperCase());
-  const [topCe, setTopCe] = useState<SignalRow[]>([]);
-  const [topPe, setTopPe] = useState<SignalRow[]>([]);
-  const [stripSource, setStripSource] = useState("");
   const [customSymbols, setCustomSymbols] = useState<string[]>([]);
   const [customInput, setCustomInput] = useState("");
   const [customMsg, setCustomMsg] = useState("");
@@ -32,34 +28,6 @@ export default function DashboardPage() {
       setOffset(0);
     }
   }, [params]);
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const top = await api.topHybrid({ limit: 5 });
-        if (!cancelled) {
-          setTopCe(top.ce);
-          setTopPe(top.pe);
-          setStripSource(top.source);
-        }
-      } catch {
-        if (!cancelled) {
-          const local = sortLocal(MOCK.signals.items);
-          setTopCe(
-            local.filter((r) => r.hybrid_score > 0).slice(0, 5),
-          );
-          setTopPe(
-            local.filter((r) => r.hybrid_score < 0).slice(0, 5),
-          );
-          setStripSource("local-mock");
-        }
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -139,7 +107,7 @@ export default function DashboardPage() {
   async function addCustom() {
     const sym = customInput.trim().toUpperCase();
     if (!sym) {
-      setCustomMsg("Enter an NSE equity ticker (e.g. INFY)");
+      setCustomMsg("Enter an NSE equity ticker (e.g. VEDL)");
       return;
     }
     setCustomBusy(true);
@@ -177,28 +145,20 @@ export default function DashboardPage() {
         <div>
           <h1>Watchlist signals</h1>
           <p className="muted">
-            Curated TradingView watchlist + custom equities ({total} symbols) — Reversal Pro
-            Action (U1→BUY / D1→SELL, no HOLD) and Trend (BULLISH / BEARISH / NEUTRAL). Open
-            dry-run trades keep BUY/SELL Action until close; Trend stays live. Source:{" "}
-            {source}. Hover Reason for U1/D1 / EMA detail.
+            Curated TradingView watchlist (~19) + custom equities ({total} symbols) — Reversal
+            Pro Action (U1→BUY / D1→SELL, no HOLD) and Trend (BULLISH / BEARISH / NEUTRAL).
+            Indices never appear as Action rows. Open dry-run trades keep BUY/SELL Action until
+            close; Trend stays live. Source: {source}.
           </p>
         </div>
         <MarketIndexStrip />
       </div>
 
-      <HybridStrip
-        ce={topCe}
-        pe={topPe}
-        selected={highlight}
-        onSelect={selectSymbol}
-        source={stripSource}
-      />
-
       <div className="custom-watchlist">
         <div className="custom-watchlist-head">
           <h2>Custom equities</h2>
           <p className="muted">
-            Append NSE stock tickers on top of the curated ~49-name list. Same 15m bar-close
+            Append NSE stock tickers on top of the curated ~19-name list. Same 15m bar-close
             scan + gates. Indices rejected. Persists in SQLite across restarts.
           </p>
         </div>
@@ -208,7 +168,7 @@ export default function DashboardPage() {
             <input
               className="mono"
               value={customInput}
-              placeholder="e.g. INFY"
+              placeholder="e.g. VEDL"
               disabled={customBusy}
               onChange={(e) => setCustomInput(e.target.value.toUpperCase())}
               onKeyDown={(e) => {
@@ -257,7 +217,7 @@ export default function DashboardPage() {
           <input
             className="mono"
             value={filter}
-            placeholder="e.g. NIFTY / RELIANCE"
+            placeholder="e.g. BHARTIARTL / VEDL"
             onChange={(e) => {
               setOffset(0);
               const v = e.target.value.toUpperCase();
@@ -301,7 +261,6 @@ export default function DashboardPage() {
               <th className="num-cell">Price</th>
               <th>Action</th>
               <th>Trend</th>
-              <th>Reason</th>
               <th>Updated</th>
             </tr>
           </thead>
@@ -338,9 +297,6 @@ export default function DashboardPage() {
                     {pineTrend(r.trend)}
                   </span>
                 </td>
-                <td>
-                  <ReasonCell row={r} />
-                </td>
                 <td className="muted mono">{fmtIstDateTime(r.updated_at)}</td>
               </tr>
             ))}
@@ -349,60 +305,6 @@ export default function DashboardPage() {
       </div>
     </section>
   );
-}
-
-function ReasonCell({ row }: { row: SignalRow }) {
-  const summary = row.reason_summary || row.reason_kind || "-";
-  const detail =
-    row.reason_detail ||
-    (row.reasons && row.reasons.length ? row.reasons.join("; ") : "No rationale available");
-  const kind = (row.reason_kind || "neutral").toLowerCase();
-  const sections = parseReasonSections(detail, kind);
-  return (
-    <button
-      type="button"
-      className="reason-chip"
-      data-kind={kind}
-      title={detail}
-      aria-label={`Reason: ${kind}. ${summary}. ${detail}`}
-    >
-      <span className="reason-summary">{summary}</span>
-      <span className="reason-popup" role="tooltip">
-        <span className="reason-popup-kind mono">{kind.toUpperCase()}</span>
-        {sections.map((sec) => (
-          <span key={sec.title} className="reason-popup-section">
-            {sec.title ? <span className="reason-popup-section-title">{sec.title}</span> : null}
-            <span className="reason-popup-body">{sec.body}</span>
-          </span>
-        ))}
-      </span>
-    </button>
-  );
-}
-
-/** Split API reason_detail into section blocks; drop News when kind is technical. */
-function parseReasonSections(
-  detail: string,
-  kind: string,
-): { title: string; body: string }[] {
-  const blocks = detail
-    .split(/\n\n+/)
-    .map((b) => b.trim())
-    .filter(Boolean);
-  const parsed = blocks.map((block) => {
-    const match = /^(Technical|News|Decision|Veto|Neutral):\s*([\s\S]*)$/i.exec(block);
-    if (!match) {
-      return { title: "", body: block };
-    }
-    return { title: match[1], body: match[2].trim() };
-  });
-  if (kind === "technical") {
-    return parsed.filter((s) => !/^news$/i.test(s.title));
-  }
-  if (kind === "news") {
-    return parsed.filter((s) => !/^technical$/i.test(s.title));
-  }
-  return parsed;
 }
 
 function pineAction(action: string | undefined): "BUY" | "SELL" | "HOLD" {

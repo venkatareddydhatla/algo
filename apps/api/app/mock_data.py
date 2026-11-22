@@ -31,47 +31,13 @@ def _normalize_trend(trend: str | None) -> str:
         return TREND_BEARISH
     return TREND_NEUTRAL
 
-# Hand-tuned showcase rows (Pine Action labels only).
+# Hand-tuned showcase rows for curated TradingView equities only (no indices /
+# leftover NIFTY·BANKNIFTY·TCS·RELIANCE). Seeds never append outside the
+# requested watchlist — see build_universe_signals.
 _SEED_SIGNALS: list[dict[str, Any]] = [
     {
-        "id": "sig-nifty-1",
-        "symbol": "NIFTY",
-        "timeframe": "15m",
-        "action": "HOLD",
-        "trend": TREND_NEUTRAL,
-        "hybrid_score": 0.0,
-        "tech_score": 0.0,
-        "news_score": 0.0,
-        "confidence": 0.2,
-        "expiry_hint": "weekly",
-        "updated_at": NOW,
-        "reasons": [
-            "index_not_equity — Pine stocks-only watchlist Action=HOLD",
-        ],
-        "reason_kind": "pine",
-        "reason_summary": "index blocked",
-        "reason_detail": "Technical:\n- index_not_equity",
-    },
-    {
-        "id": "sig-bn-1",
-        "symbol": "BANKNIFTY",
-        "timeframe": "15m",
-        "action": "HOLD",
-        "trend": TREND_NEUTRAL,
-        "hybrid_score": 0.0,
-        "tech_score": 0.0,
-        "news_score": 0.0,
-        "confidence": 0.2,
-        "expiry_hint": "weekly",
-        "updated_at": NOW,
-        "reasons": ["index_not_equity — Pine stocks-only"],
-        "reason_kind": "pine",
-        "reason_summary": "index blocked",
-        "reason_detail": "Technical:\n- index_not_equity",
-    },
-    {
-        "id": "sig-rel-1",
-        "symbol": "RELIANCE",
+        "id": "sig-bajfinance-1",
+        "symbol": "BAJFINANCE",
         "timeframe": "15m",
         "action": "SELL",
         "trend": TREND_BEARISH,
@@ -95,8 +61,33 @@ _SEED_SIGNALS: list[dict[str, Any]] = [
         "signal_engine": "reversal_pro_v32",
     },
     {
-        "id": "sig-tcs-1",
-        "symbol": "TCS",
+        "id": "sig-bhartiartl-1",
+        "symbol": "BHARTIARTL",
+        "timeframe": "15m",
+        "action": "BUY",
+        "trend": TREND_BULLISH,
+        "hybrid_score": 1.0,
+        "tech_score": 1.0,
+        "news_score": 0.0,
+        "confidence": 0.85,
+        "expiry_hint": "monthly",
+        "updated_at": NOW,
+        "reasons": [
+            "U1 bullish reversal flip",
+            "STRONG bullish (U1 + buysignal)",
+            "buy_signal=True",
+        ],
+        "reason_kind": "pine",
+        "reason_summary": "STRONG bullish (U1 + EMA trend)",
+        "reason_detail": (
+            "Technical:\n- U1 bullish reversal flip\n"
+            "- STRONG bullish (U1 + buysignal)\n- buy_signal=True"
+        ),
+        "signal_engine": "reversal_pro_v32",
+    },
+    {
+        "id": "sig-vedl-1",
+        "symbol": "VEDL",
         "timeframe": "15m",
         "action": "BUY",
         "trend": TREND_NEUTRAL,
@@ -710,9 +701,6 @@ def build_universe_signals(
                     updated_at=now,
                 )
             )
-    for key, row in seeds.items():
-        if key not in seen:
-            r = dict(row)
-            r["action"] = _normalize_pine_action(r.get("action"))
-            rows.append(r)
+    # Do not append leftover seed symbols (old NIFTY/BANKNIFTY/TCS, etc.)
+    # that are outside the requested curated watchlist + customs.
     return rows
