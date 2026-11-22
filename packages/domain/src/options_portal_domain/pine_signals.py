@@ -381,18 +381,35 @@ def map_trend(state: PineBarState | None) -> str:
     return TREND_NEUTRAL
 
 
-def reconcile_persisted_action(
+def _feature_pivot_high(features: Mapping[str, Any] | None) -> bool | None:
+    """Read sticky ``lastConfirmedPivotIsHigh`` from a features / KV map."""
+    feats = dict(features or {})
+    pivot_high = feats.get("last_confirmed_pivot_is_high")
+    if pivot_high is None:
+        pivot_high = feats.get("lastConfirmedPivotIsHigh")
+    if pivot_high is None:
+        return None
+    if isinstance(pivot_high, bool):
+        return pivot_high
+    text = str(pivot_high).strip().lower()
+    if text in {"1", "true", "yes"}:
+        return True
+    if text in {"0", "false", "no"}:
+        return False
+    return None
+
+
+def enforce_bearish_pivot_sell_action(
     action: str | SignalAction | None,
     trend: str | None,
     *,
     features: Mapping[str, Any] | None = None,
+    last_confirmed_pivot_is_high: bool | None = None,
 ) -> str:
-    """Fix stale KV Action that lags last confirmed pivot / D1 path.
+    """Hard invariant: Trend BEARISH + lastConfirmedPivotIsHigh → Action SELL.
 
-    When Trend is BEARISH and features show last confirmed pivot high, ZigZag
-    ``signal<0``, or zigzag direction already on the D1 path while Action is
-    still BUY (old U1 ``signal+`` sticky), rewrite Action to SELL so watchlist
-    matches TV red REVERSAL + BEARISH without waiting for a fresh worker tick.
+    Ignores ZigZag ``signal`` sticky. Used by map/reconcile/API response gate so
+    BUY+BEARISH cannot leave the API for a VEDL-like pivot-high state.
     """
     raw = action.value if isinstance(action, SignalAction) else str(action or "HOLD")
     act = raw.upper()
@@ -407,10 +424,33 @@ def reconcile_persisted_action(
         t = TREND_BEARISH
     elif t in {"BULL", "UP"}:
         t = TREND_BULLISH
-    feats = dict(features or {})
-    pivot_high = feats.get("last_confirmed_pivot_is_high")
+    pivot_high = last_confirmed_pivot_is_high
     if pivot_high is None:
-        pivot_high = feats.get("lastConfirmedPivotIsHigh")
+        pivot_high = _feature_pivot_high(features)
+    if t == TREND_BEARISH and pivot_high is True:
+        return "SELL"
+    return act
+
+
+def reconcile_persisted_action(
+    action: str | SignalAction | None,
+    trend: str | None,
+    *,
+    features: Mapping[str, Any] | None = None,
+) -> str:
+    """Fix stale KV Action that lags last confirmed pivot / D1 path.
+
+    Hard rule: Trend BEARISH + ``lastConfirmedPivotIsHigh`` → SELL (ignore
+    ZigZag ``signal`` sticky). Also flips BUY when features show ``signal<0``
+    or zigzag direction already on the D1 path.
+    """
+    act = enforce_bearish_pivot_sell_action(action, trend, features=features)
+    t = str(trend or TREND_NEUTRAL).strip().upper()
+    if t in {"BEAR", "DOWN"}:
+        t = TREND_BEARISH
+    if act != "BUY" or t != TREND_BEARISH:
+        return act
+    feats = dict(features or {})
     try:
         sig = int(feats.get("signal")) if feats.get("signal") is not None else None
     except (TypeError, ValueError):
@@ -423,12 +463,13 @@ def reconcile_persisted_action(
         )
     except (TypeError, ValueError):
         zz = None
+    pivot_high = _feature_pivot_high(feats)
     d1_path = (
         pivot_high is True
         or (sig is not None and sig < 0)
         or (zz is not None and zz < 0 and pivot_high is not False)
     )
-    if act == "BUY" and t == TREND_BEARISH and d1_path:
+    if d1_path:
         return "SELL"
     return act
 
@@ -438,17 +479,15 @@ def map_watchlist_action(
     *,
     params: PineParams,
 ) -> tuple[SignalAction, str, float]:
-    """Watchlist Action = freshest U1/D1 (TV labels), with pivot-high fix.
+    """Watchlist Action = freshest U1/D1, with hard BEARISH+pivot-high SELL.
 
     Priority (``action_no_hold`` never returns HOLD):
       1. Fresh U1 → BUY / D1 → SELL (same bar as TV Reversal label)
-      2. VEDL override: ``lastConfirmedPivotIsHigh`` + Trend BEARISH while
-         ZigZag ``signal`` still sticky +1 (D1 path lag after pivot high) →
-         SELL. Never leave Action BUY+BEARISH after a red REVERSAL path.
+      2. **Hard invariant:** ``lastConfirmedPivotIsHigh`` + Trend BEARISH →
+         SELL — **ignores** ZigZag ``signal`` sticky (VEDL live fix).
       3. ZigZag ``signal`` >0 / <0 → sticky **last** confirmed U1/D1
-         (matches TV labels; later D1 replaces older U1).
-      4. EMA Trend ``buysignal`` / ``sellsignal`` when ``signal==0``
-      5. ``neutral_action`` knob
+      4. Last confirmed pivot when ``signal==0`` (high→SELL / low→BUY)
+      5. EMA Trend / ``neutral_action``
 
     Invariant: Trend BEARISH + last confirmed pivot high → Action SELL.
     Trend is independent (``map_trend``). Entries still use ``buy_signal`` /
@@ -459,14 +498,9 @@ def map_watchlist_action(
         return SignalAction.BUY, "reversal", 1.0
     if state.d1:
         return SignalAction.SELL, "reversal", -1.0
-    # 2) Pivot-high + BEARISH beats stale U1 signal+ (D1 path lag / VEDL)
+    # 2) Hard invariant — ignore signal sticky when pivot high + BEARISH
     pivot_high = state.last_confirmed_pivot_is_high
-    if (
-        pivot_high is True
-        and int(state.sellsignal) == 1
-        and int(state.buysignal) != 1
-        and int(state.signal) > 0
-    ):
+    if pivot_high is True and int(state.sellsignal) == 1 and int(state.buysignal) != 1:
         return SignalAction.SELL, "pivot", -0.5
     # 3) Sticky most-recent confirmed U1/D1 (ZigZag signal; matches TV labels)
     if state.signal > 0:

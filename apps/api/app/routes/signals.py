@@ -14,6 +14,10 @@ from app.mock_data import (
     clear_persisted_pine_signals,
     rows_for_top_strip,
 )
+from app.pine_refresh import (
+    enforce_bearish_pivot_invariant,
+    refresh_rows_from_candles,
+)
 from options_portal_domain.config import load_config, watchlist_symbols
 from options_portal_domain.equity import (
     filter_rows_below_min_equity_price,
@@ -87,6 +91,36 @@ def _normalize_pine_actions(rows: list[dict[str, Any]]) -> None:
                 row["pine_action"] = "SELL"
             elif pine not in {"BUY", "SELL", "HOLD"}:
                 row["pine_action"] = "HOLD"
+        else:
+            row["pine_action"] = row["action"]
+
+
+async def _prepare_signal_rows(
+    rows: list[dict[str, Any]],
+    *,
+    cfg: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Normalize → candle recompute (after-hours) → price floor → overlay → invariant.
+
+    Signals page reads ``action`` / ``trend`` from this path only — no alternate
+    stale BUY channel. Hard gate: BEARISH + lastConfirmedPivotIsHigh → SELL.
+    """
+    config = cfg or load_config()
+    _normalize_pine_actions(rows)
+    refresh_meta = await refresh_rows_from_candles(rows, cfg=config)
+    _normalize_pine_actions(rows)
+    rows, floor_meta = await _apply_min_equity_price_filter(rows, cfg=config)
+    apply_open_trade_display_actions(rows)
+    rows = _drop_index_action_rows(rows)
+    forced = enforce_bearish_pivot_invariant(rows)
+    meta = {
+        **floor_meta,
+        "pine_recomputed": refresh_meta.get("recomputed") or [],
+        "pine_recompute_attempted": refresh_meta.get("attempted") or [],
+        "pine_candle_symbols": int(refresh_meta.get("candle_symbols") or 0),
+        "invariant_forced_sell": int(forced),
+    }
+    return rows, meta
 
 
 async def _apply_min_equity_price_filter(
@@ -164,10 +198,7 @@ async def list_signals(
     """
     cfg = load_config()
     rows, source = _load_signal_rows(symbol=symbol, expand_watchlist=expand_watchlist)
-    _normalize_pine_actions(rows)
-    rows, floor_meta = await _apply_min_equity_price_filter(rows, cfg=cfg)
-    apply_open_trade_display_actions(rows)
-    rows = _drop_index_action_rows(rows)
+    rows, prep_meta = await _prepare_signal_rows(rows, cfg=cfg)
     rows = sort_signal_rows(rows)
     total = len(rows)
     page = [_omit_watchlist_reason_fields(r) for r in rows[offset : offset + limit]]
@@ -179,23 +210,22 @@ async def list_signals(
         "limit": limit,
         "source": source,
         "sort": "actionable,|score|desc,confidence,symbol",
-        "marks_applied": floor_meta.get("marks_applied", []),
-        "price_sources": floor_meta.get("price_sources", {}),
-        "min_equity_price": floor_meta.get("min_equity_price"),
-        "price_floor_dropped": floor_meta.get("price_floor_dropped", []),
+        "marks_applied": prep_meta.get("marks_applied", []),
+        "price_sources": prep_meta.get("price_sources", {}),
+        "min_equity_price": prep_meta.get("min_equity_price"),
+        "price_floor_dropped": prep_meta.get("price_floor_dropped", []),
+        "pine_recomputed": prep_meta.get("pine_recomputed", []),
+        "invariant_forced_sell": prep_meta.get("invariant_forced_sell", 0),
         "open_trade_action_overlay": sticky,
         "note": (
-            "Action = most recent confirmed Reversal Pro U1→BUY / D1→SELL "
-            "(ZigZag sticky between flips; a later D1 replaces an older U1; "
-            "no HOLD). Open-trade overlay (LONG→BUY / SHORT→SELL) applies only "
-            "while a paper position is actually open and does not hide a fresher "
-            "opposite pine Action. Trend = Pine table BULLISH/BEARISH/NEUTRAL "
-            "from EMA buysignal/sellsignal (not overwritten by open-trade overlay). "
-            "pine_action keeps signal freshness. "
+            "Action = Reversal Pro U1→BUY / D1→SELL; hard invariant: Trend "
+            "BEARISH + lastConfirmedPivotIsHigh → SELL (ignores signal sticky). "
+            "API recomputes from 15m candles on GET when BUY+BEARISH / stale KV "
+            "so Sunday/after-hours still flips without a worker scan. "
+            "Open-trade overlay never hides a fresher opposite pine Action; "
+            "Trend is never overwritten. "
             "Watchlist rows omit reason_* (UI shows Action + Trend only). "
-            "Index underlyings (NIFTY, BANKNIFTY, …) are excluded from Action rows. "
-            "price = live LTP when available, else candle close / last-known mark. "
-            f"Symbols below ₹{float(floor_meta.get('min_equity_price') or 20):g} "
+            f"Symbols below ₹{float(prep_meta.get('min_equity_price') or 20):g} "
             "are excluded from the Signals table."
         ),
     }
@@ -212,29 +242,23 @@ async def top_hybrid(
     """
     cfg = load_config()
     rows, source = _load_signal_rows(expand_watchlist=expand_watchlist)
-    _normalize_pine_actions(rows)
-    # Enrich + price-floor filter BEFORE picking TOP BUY/SELL so IDEA-like
-    # sub-₹20 names cannot occupy the strip from stale Pine KV.
-    rows, floor_meta = await _apply_min_equity_price_filter(rows, cfg=cfg)
-    # Capture pine before optional overlay; ranking must not treat open LONGs as
-    # fresh BUY signals. Signals UI no longer renders TOP BUY/SELL; endpoint kept
-    # for API/tests.
-    apply_open_trade_display_actions(rows)
-    rows = _drop_index_action_rows(rows)
+    # Same prepare path as list_signals (candle recompute + invariant).
+    rows, prep_meta = await _prepare_signal_rows(rows, cfg=cfg)
     sides = pick_top_hybrid_sides(rows_for_top_strip(rows), limit=limit)
     return {
         "ce": [_omit_watchlist_reason_fields(r) for r in sides["ce"]],
         "pe": [_omit_watchlist_reason_fields(r) for r in sides["pe"]],
         "limit": limit,
         "source": source,
-        "min_equity_price": floor_meta.get("min_equity_price"),
-        "price_floor_dropped": floor_meta.get("price_floor_dropped", []),
+        "min_equity_price": prep_meta.get("min_equity_price"),
+        "price_floor_dropped": prep_meta.get("price_floor_dropped", []),
+        "pine_recomputed": prep_meta.get("pine_recomputed", []),
         "note": (
             "Top Pine BUY / SELL from fresh pine_action only "
             "(sticky open-trade Action does not enter ranking). "
             "Signals UI no longer shows TOP BUY/SELL strip. "
             "Index underlyings excluded. Rows omit reason_*. "
-            f"Excludes symbols below ₹{float(floor_meta.get('min_equity_price') or 20):g}."
+            f"Excludes symbols below ₹{float(prep_meta.get('min_equity_price') or 20):g}."
         ),
     }
 
@@ -247,18 +271,14 @@ async def get_signal(signal_id: str) -> dict:
         watchlist,
         timeframe=str(cfg.get("trading", {}).get("timeframe", "15m")),
     )
-    for s in rows:
-        if s["id"] == signal_id:
-            row = dict(s)
-            _normalize_pine_actions([row])
-            apply_open_trade_display_actions([row])
-            await enrich_rows_with_prices([row])
+    prepared, _meta = await _prepare_signal_rows([dict(s) for s in rows], cfg=cfg)
+    for row in prepared:
+        if row.get("id") == signal_id:
             return {
                 **row,
                 "recommendation": {
                     "rationale": "BUY single-leg ATM (mock)",
                     "legs": [],
                 },
-                "features": {"rsi": 58.2, "ema_fast": 24490, "ema_slow": 24410},
             }
     raise HTTPException(status_code=404, detail="signal not found")

@@ -248,9 +248,28 @@ git pull origin cursor/trades-page-round-trips-cb5e
 
 Open http://127.0.0.1:5173/trades — Open positions unchanged; Closed trades show Symbol, Side LONG/SHORT, Entry/Exit IST, Entry/Exit px, PnL, Reason, dry_run.
 
+### Pull VEDL API recompute (BUY+BEARISH after #66) (stacked) — tip
+
+Tip #66 still left live **VEDL Action=BUY + Trend=BEARISH** after hours because GET `/signals` only read stale KV. This tip: hard invariant BEARISH + `lastConfirmedPivotIsHigh` → **SELL** (ignore signal sticky); API recomputes from 15m candles on GET; response gate blocks BUY+BEARISH+pivot-high. Stacked on `cursor/vedl-action-last-pivot-b388` (PR #66).
+
+```powershell
+cd C:\algo
+Set-ExecutionPolicy -Scope Process Bypass -Force
+.\deploy\windows\native\stop-native.ps1
+git fetch origin
+git checkout cursor/vedl-api-recompute-b388
+git pull origin cursor/vedl-api-recompute-b388
+.\deploy\windows\native\setup-native.ps1
+# Optional: purge stale pine.signal.* then let GET /signals rebuild
+.\.venv\Scripts\python.exe scripts\clear_pine_signal_kv.py --confirm
+.\deploy\windows\native\start-native.ps1 -WithWorker
+```
+
+**Must stop then start.** Signals page Action comes only from that GET path. Still `dry_run` only. Never paste Upstox / Gmail secrets.
+
 ### Pull VEDL Action = last pivot / D1 path (stacked) — tip
 
-Fixes watchlist **VEDL Action=BUY + Trend=BEARISH** while TradingView shows last red REVERSAL (D1→SELL). Action follows freshest U1/D1; when Trend is BEARISH and `lastConfirmedPivotIsHigh` while ZigZag `signal` is still sticky +1, Action → **SELL**. Worker clears/refreshes stale `pine.signal.*` on scan; API reconciles leftover BUY+BEARISH KV. Stacked on `cursor/purge-all-paper-trades-a4f3` (PR #65).
+Fixes watchlist **VEDL Action=BUY + Trend=BEARISH** while TradingView shows last red REVERSAL (D1→SELL). Prefer the **API recompute** tip above when #66 still shows BUY after hours. Stacked on `cursor/purge-all-paper-trades-a4f3` (PR #65).
 
 ```powershell
 cd C:\algo
