@@ -285,6 +285,23 @@ th.num-cell {
   color: var(--muted);
 }
 
+.trend {
+  font-family: var(--mono);
+  font-size: 0.8rem;
+}
+
+.trend-BULLISH {
+  color: var(--ce);
+}
+
+.trend-BEARISH {
+  color: var(--pe);
+}
+
+.trend-NEUTRAL {
+  color: var(--muted);
+}
+
 h2 {
   font-size: 1rem;
   margin: 1.5rem 0 0.5rem;

@@ -23,14 +23,16 @@ Defaults: **Confirmed Only**, **Medium** sensitivity, ATR length 14, method `ave
 | **STRONG** | Prefer / default filter | `U1 and buysignal==1` / `D1 and sellsignal==1` (EMA 9/14/21 trend aligned) |
 
 - Preview pivots are **never** used for trading.
-- Watchlist Action: **BUY/SELL only (no HOLD)** — temporary mapping until user finalizes:
-  1. Fresh U1/D1 (or STRONG) → BUY/SELL
-  2. Else EMA trend: `buysignal==1` → BUY, `sellsignal==1` → SELL
-  3. Else ZigZag `signal` bias → BUY/SELL
-  4. Else `neutral_action` knob (default BUY)
-  Sticky open overlay from PR #59 still applies. Final mapping TBD after this tip lands.
-- **Entries** still require fresh U1/D1 (or STRONG) — trend Action alone does not open trades.
-- Opposite fresh **U1/D1** closes open (PR #58) — close-only; trend Action does not close.
+- Watchlist **Action** (BUY/SELL only — no HOLD):
+  1. Fresh U1 → BUY / D1 → SELL
+  2. Else ZigZag `signal` sticky (last confirmed reversal)
+  3. Else EMA Trend fallback (`buysignal`/`sellsignal`) when last unset
+  4. Else `neutral_action` (default BUY)
+  Sticky open overlay (PR #59): open long→BUY, open short→SELL; **Trend unchanged**.
+- Watchlist **Trend** (separate column / API field): `buysignal==1` → **BULLISH**,
+  `sellsignal==1` → **BEARISH**, else **NEUTRAL** (same as TV info table).
+- **Entries** still require fresh U1/D1 (or STRONG) — Trend / sticky Action alone does not open trades.
+- Opposite fresh **U1/D1** closes open (PR #58) — close-only; Trend does not close.
 - No cooloff after close (manual, ±2%, opposite, soft flatten) — next bar’s fresh signal can re-enter.
 
 ## Kept (ops)
@@ -53,15 +55,15 @@ method: average              # or high_low
 atr_length: 14
 average_length: 5
 require_strong: true         # false → enter on raw U1/D1
-action_no_hold: true         # temporary: Action never HOLD
-neutral_action: BUY          # when trend+signal unset
+action_no_hold: true         # Action never HOLD
+neutral_action: BUY          # when U1/D1 + signal + trend all unset
 # Custom only:
 # percent_amount / rev_amount / atr_reversal
 ```
 
 `require_strong: true` is the default. If live frequency is too sparse, set `require_strong: false` (documented fallback). Unit fixtures exercise both paths.
 
-`action_no_hold` / `neutral_action` are temporary until the user defines the final BUY/SELL-only Action mapping.
+See tip `cursor/watchlist-action-trend-0791` for Action + Trend columns.
 
 Cooloff off:
 

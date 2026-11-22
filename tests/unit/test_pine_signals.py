@@ -341,19 +341,14 @@ def test_config_require_strong_knob():
     assert off.require_strong is False
 
 
-def test_action_no_hold_uses_trend_not_hold():
-    """While flat without fresh U1/D1, Action follows buysignal/sellsignal."""
-    from options_portal_domain.pine_signals import map_watchlist_action
-
-    # Fake state: no entry, bullish trend
-    base = evaluate_pine_bar(
-        _swing_series(),
-        params=_custom_params(require_strong=False),
-        prefer_closed=False,
+def test_action_from_u1_d1_and_sticky_signal():
+    """Action BUY/SELL from fresh U1/D1; sticky ZigZag between signals; never HOLD."""
+    from options_portal_domain.pine_signals import (
+        PineBarState,
+        map_trend,
+        map_watchlist_action,
     )
-    assert base is not None
-    # Build a HOLD-like state via map with buysignal forced through a params path:
-    # use engine result and assert action is never HOLD when action_no_hold.
+
     p = PineParams(
         **{
             **_custom_params(require_strong=True).__dict__,
@@ -368,14 +363,97 @@ def test_action_no_hold_uses_trend_not_hold():
         prefer_closed=False,
     )
     assert result.action in {SignalAction.BUY, SignalAction.SELL}
-    assert result.action_source in {"entry", "trend", "signal", "neutral"}
-    # Entry gates stay independent of display Action
-    if not result.buy_signal and not result.sell_signal:
-        assert result.action_source != "entry"
+    assert result.action_source in {"reversal", "signal", "trend", "neutral"}
+    assert result.trend in {"BULLISH", "BEARISH", "NEUTRAL"}
 
-    # Explicit trend mapping
-    from options_portal_domain.pine_signals import PineBarState
+    u1 = PineBarState(
+        ema9=1.0,
+        ema14=1.0,
+        ema21=1.0,
+        atr=1.0,
+        reversal_amount=1.0,
+        direction=1,
+        signal=1,
+        u1=True,
+        d1=False,
+        buysignal=0,
+        sellsignal=0,
+        strong_bullish=False,
+        strong_bearish=False,
+        confirmed_pivot=True,
+        buy_signal=False,  # require_strong off for Action; entry separate
+        sell_signal=False,
+    )
+    act, src, _ = map_watchlist_action(u1, params=p)
+    assert act == SignalAction.BUY and src == "reversal"
 
+    d1 = PineBarState(
+        ema9=1.0,
+        ema14=1.0,
+        ema21=1.0,
+        atr=1.0,
+        reversal_amount=1.0,
+        direction=-1,
+        signal=-1,
+        u1=False,
+        d1=True,
+        buysignal=0,
+        sellsignal=0,
+        strong_bullish=False,
+        strong_bearish=False,
+        confirmed_pivot=True,
+        buy_signal=False,
+        sell_signal=False,
+    )
+    act, src, _ = map_watchlist_action(d1, params=p)
+    assert act == SignalAction.SELL and src == "reversal"
+
+    # Between signals: last ZigZag bias sticks (signal ±1, no fresh U1/D1)
+    sticky_buy = PineBarState(
+        ema9=1.0,
+        ema14=1.0,
+        ema21=1.0,
+        atr=1.0,
+        reversal_amount=1.0,
+        direction=1,
+        signal=1,
+        u1=False,
+        d1=False,
+        buysignal=0,
+        sellsignal=1,  # Trend BEARISH must NOT flip Action while signal+ sticky
+        strong_bullish=False,
+        strong_bearish=False,
+        confirmed_pivot=False,
+        buy_signal=False,
+        sell_signal=False,
+    )
+    act, src, _ = map_watchlist_action(sticky_buy, params=p)
+    assert act == SignalAction.BUY and src == "signal"
+    assert map_trend(sticky_buy) == "BEARISH"
+
+    sticky_sell = PineBarState(
+        ema9=1.0,
+        ema14=1.0,
+        ema21=1.0,
+        atr=1.0,
+        reversal_amount=1.0,
+        direction=-1,
+        signal=-1,
+        u1=False,
+        d1=False,
+        buysignal=1,
+        sellsignal=0,
+        strong_bullish=False,
+        strong_bearish=False,
+        confirmed_pivot=False,
+        buy_signal=False,
+        sell_signal=False,
+    )
+    act, src, _ = map_watchlist_action(sticky_sell, params=p)
+    assert act == SignalAction.SELL and src == "signal"
+    assert map_trend(sticky_sell) == "BULLISH"
+
+    # When last reversal unset (signal=0): Trend fallback (#60)
     trend_buy = PineBarState(
         ema9=1.0,
         ema14=1.0,
@@ -396,6 +474,7 @@ def test_action_no_hold_uses_trend_not_hold():
     )
     act, src, _ = map_watchlist_action(trend_buy, params=p)
     assert act == SignalAction.BUY and src == "trend"
+    assert map_trend(trend_buy) == "BULLISH"
     trend_sell = PineBarState(
         ema9=1.0,
         ema14=1.0,
@@ -416,6 +495,29 @@ def test_action_no_hold_uses_trend_not_hold():
     )
     act, src, _ = map_watchlist_action(trend_sell, params=p)
     assert act == SignalAction.SELL and src == "trend"
+    assert map_trend(trend_sell) == "BEARISH"
+    assert map_trend(None) == "NEUTRAL"
+    neutral = PineBarState(
+        ema9=1.0,
+        ema14=1.0,
+        ema21=1.0,
+        atr=1.0,
+        reversal_amount=1.0,
+        direction=0,
+        signal=0,
+        u1=False,
+        d1=False,
+        buysignal=0,
+        sellsignal=0,
+        strong_bullish=False,
+        strong_bearish=False,
+        confirmed_pivot=False,
+        buy_signal=False,
+        sell_signal=False,
+    )
+    assert map_trend(neutral) == "NEUTRAL"
+    act, src, _ = map_watchlist_action(neutral, params=p)
+    assert act == SignalAction.BUY and src == "neutral"
 
 
 def test_watchlist_action_no_expire_when_disabled():

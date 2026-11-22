@@ -27,6 +27,15 @@ from options_portal_hybrid.explain import (
 router = APIRouter(prefix="/api/v1", tags=["signals"])
 
 
+def _normalize_trend(trend: Any) -> str:
+    t = str(trend or "NEUTRAL").strip().upper()
+    if t in {"BULLISH", "BULL", "UP"}:
+        return "BULLISH"
+    if t in {"BEARISH", "BEAR", "DOWN"}:
+        return "BEARISH"
+    return "NEUTRAL"
+
+
 def _normalize_pine_actions(rows: list[dict[str, Any]]) -> None:
     for row in rows:
         act = str(row.get("action") or "HOLD").upper()
@@ -36,6 +45,7 @@ def _normalize_pine_actions(rows: list[dict[str, Any]]) -> None:
             row["action"] = "SELL"
         elif act not in {"BUY", "SELL", "HOLD"}:
             row["action"] = "HOLD"
+        row["trend"] = _normalize_trend(row.get("trend"))
         # Keep pine_action aligned when present (before open-trade overlay).
         if "pine_action" in row:
             pine = str(row.get("pine_action") or "HOLD").upper()
@@ -142,11 +152,12 @@ async def list_signals(
         "price_floor_dropped": floor_meta.get("price_floor_dropped", []),
         "open_trade_action_overlay": sticky,
         "note": (
-            "Action = Pine BUY/SELL/HOLD "
-            "(EMA13/21 cross + next 15m candle fully clear above/below both), "
-            "or sticky BUY/SELL while that symbol has an open dry-run trade "
-            "(LONG→BUY, SHORT→SELL; display only — entries need a fresh Pine bar). "
-            "pine_action keeps signal freshness after expire-stale. "
+            "Action = Reversal Pro U1→BUY / D1→SELL (sticky between signals; "
+            "no HOLD) or sticky BUY/SELL while an open dry-run trade "
+            "(LONG→BUY, SHORT→SELL; display only — entries need fresh U1/D1). "
+            "Trend = Pine table BULLISH/BEARISH/NEUTRAL from EMA buysignal/"
+            "sellsignal (not overwritten by open-trade overlay). "
+            "pine_action keeps signal freshness. "
             "Hover reason_summary for Pine factor detail. "
             "price = live LTP when available, else candle close / last-known mark. "
             f"Symbols below ₹{float(floor_meta.get('min_equity_price') or 20):g} "

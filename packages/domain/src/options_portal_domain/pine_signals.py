@@ -18,6 +18,10 @@ Trade mapping (dry-run):
   Default ``require_strong=True`` (reversal + EMA trend aligned). Set
   ``trading.pine_signals.require_strong: false`` to enter on raw U1/D1.
 
+Watchlist fields:
+  Action = U1→BUY / D1→SELL (sticky ZigZag between signals; never HOLD).
+  Trend  = buysignal→BULLISH / sellsignal→BEARISH / else NEUTRAL.
+
 Preview pivots are never used for trading.
 """
 
@@ -39,10 +43,14 @@ DEFAULT_ATR_REVERSAL = 2.0
 DEFAULT_ATR_LENGTH = 14
 DEFAULT_AVERAGE_LENGTH = 5
 DEFAULT_REQUIRE_STRONG = True
-# Temporary watchlist Action policy (final mapping TBD): never HOLD —
-# prefer EMA trend, then ZigZag signal bias, then neutral_action knob.
+# Watchlist Action never HOLD: fresh U1/D1, else last ZigZag signal bias,
+# else EMA trend (buysignal/sellsignal), else neutral_action.
+# Separate ``trend`` field mirrors Pine info table (BULLISH/BEARISH/NEUTRAL).
 DEFAULT_ACTION_NO_HOLD = True
 DEFAULT_NEUTRAL_ACTION = "BUY"
+TREND_BULLISH = "BULLISH"
+TREND_BEARISH = "BEARISH"
+TREND_NEUTRAL = "NEUTRAL"
 DEFAULT_EMA_SUPERFAST = 9
 DEFAULT_EMA_FAST = 14
 DEFAULT_EMA_SLOW = 21
@@ -138,7 +146,8 @@ class PineBarState:
 class PineSignalResult:
     """Equity dry-run action derived from Reversal Pro U1/D1 (or STRONG).
 
-    ``action`` is the watchlist Action (BUY/SELL; optional no-HOLD trend fallback).
+    ``action`` is the watchlist Action (BUY/SELL from U1/D1; no-HOLD sticky).
+    ``trend`` is the Pine table Trend (BULLISH/BEARISH/NEUTRAL from EMA state).
     ``buy_signal`` / ``sell_signal`` are the **entry** gates (fresh U1/D1 or STRONG).
     """
 
@@ -146,12 +155,13 @@ class PineSignalResult:
     action: SignalAction  # BUY | SELL (| HOLD only if action_no_hold=false)
     buy_signal: bool
     sell_signal: bool
-    score: float  # +1 entry buy, -1 entry sell; ±0.5 trend; ±0.25 neutral
+    score: float  # +1 entry buy, -1 entry sell; ±0.5 sticky; ±0.25 neutral
     confidence: float
     reasons: list[str]
     features: dict[str, Any] = field(default_factory=dict)
     state: PineBarState | None = None
-    action_source: str = "none"  # entry | trend | signal | neutral | hold
+    action_source: str = "none"  # reversal | signal | trend | neutral | hold
+    trend: str = TREND_NEUTRAL  # BULLISH | BEARISH | NEUTRAL
 
     @property
     def reason_summary(self) -> str:
@@ -163,17 +173,21 @@ class PineSignalResult:
             if self.state and self.state.strong_bearish:
                 return "STRONG bearish (D1 + EMA trend)"
             return "D1 bearish reversal"
-        if self.action_source == "trend" and self.action == SignalAction.BUY:
-            return "trend BULLISH (buysignal) → BUY"
-        if self.action_source == "trend" and self.action == SignalAction.SELL:
-            return "trend BEARISH (sellsignal) → SELL"
+        if self.action_source == "reversal" and self.action == SignalAction.BUY:
+            return "U1 → Action BUY"
+        if self.action_source == "reversal" and self.action == SignalAction.SELL:
+            return "D1 → Action SELL"
         if self.action_source == "signal" and self.action == SignalAction.BUY:
-            return "signal bias bullish → BUY"
+            return "last U1 sticky (signal+) → BUY"
         if self.action_source == "signal" and self.action == SignalAction.SELL:
-            return "signal bias bearish → SELL"
+            return "last D1 sticky (signal-) → SELL"
+        if self.action_source == "trend" and self.action == SignalAction.BUY:
+            return "Trend BULLISH fallback → Action BUY"
+        if self.action_source == "trend" and self.action == SignalAction.SELL:
+            return "Trend BEARISH fallback → Action SELL"
         if self.action_source == "neutral":
             return f"neutral fallback → {self.action.value}"
-        return "no Reversal Pro entry signal"
+        return f"no entry · Trend {self.trend}"
 
     @property
     def reason_detail(self) -> str:
@@ -340,27 +354,52 @@ def entry_action_from_result(result: PineSignalResult) -> SignalAction:
     return SignalAction.HOLD
 
 
+def map_trend(state: PineBarState | None) -> str:
+    """Pine info-table Trend from EMA 9/14/21 ``buysignal`` / ``sellsignal``.
+
+    Matches TradingView: buysignal==1 → BULLISH; else sellsignal==1 → BEARISH;
+    else NEUTRAL. Independent of Action / entry gates.
+    """
+    if state is None:
+        return TREND_NEUTRAL
+    if int(state.buysignal) == 1:
+        return TREND_BULLISH
+    if int(state.sellsignal) == 1:
+        return TREND_BEARISH
+    return TREND_NEUTRAL
+
+
 def map_watchlist_action(
     state: PineBarState,
     *,
     params: PineParams,
 ) -> tuple[SignalAction, str, float]:
-    """Watchlist Action: entry signal, else trend, else signal bias, else neutral.
+    """Watchlist Action: fresh U1/D1, else last ZigZag bias, else Trend, else neutral.
 
-    Returns ``(action, source, score)``. With ``action_no_hold`` never returns HOLD.
+    Priority (``action_no_hold`` never returns HOLD):
+      1. Fresh U1 → BUY / D1 → SELL (green/red Reversal — display Action)
+      2. ZigZag ``signal`` >0 / <0 → last confirmed reversal direction (sticky)
+      3. EMA Trend ``buysignal`` / ``sellsignal`` → BUY/SELL (PR #60 fallback)
+      4. ``neutral_action`` knob
+
+    Entries still use ``buy_signal`` / ``sell_signal`` (U1/D1 ± require_strong).
+    Returns ``(action, source, score)``.
     """
-    if state.buy_signal:
-        return SignalAction.BUY, "entry", 1.0
-    if state.sell_signal:
-        return SignalAction.SELL, "entry", -1.0
-    if state.buysignal == 1 and state.sellsignal != 1:
-        return SignalAction.BUY, "trend", 0.5
-    if state.sellsignal == 1 and state.buysignal != 1:
-        return SignalAction.SELL, "trend", -0.5
+    # 1) Fresh reversal (U1/D1) — same green/red labels as TV Reversal
+    if state.u1:
+        return SignalAction.BUY, "reversal", 1.0
+    if state.d1:
+        return SignalAction.SELL, "reversal", -1.0
+    # 2) Sticky last confirmed reversal via ZigZag signal state machine
     if state.signal > 0:
         return SignalAction.BUY, "signal", 0.5
     if state.signal < 0:
         return SignalAction.SELL, "signal", -0.5
+    # 3) When last reversal unset: derive from EMA Trend (as #60)
+    if state.buysignal == 1 and state.sellsignal != 1:
+        return SignalAction.BUY, "trend", 0.5
+    if state.sellsignal == 1 and state.buysignal != 1:
+        return SignalAction.SELL, "trend", -0.5
     if params.action_no_hold:
         neut = str(params.neutral_action or "BUY").upper()
         if neut not in {"BUY", "SELL"}:
@@ -707,11 +746,12 @@ def evaluate_pine_signal(
     now: datetime | None = None,
     prefer_closed: bool = True,
 ) -> PineSignalResult:
-    """Map last bar → watchlist Action + entry gates.
+    """Map last bar → watchlist Action + Trend + entry gates.
 
-    Entries: U1/D1 (or STRONG). Watchlist Action: entry, else trend
-    (buysignal/sellsignal), else ZigZag signal bias, else ``neutral_action``
-    when ``action_no_hold`` (default) so Action is never HOLD.
+    Entries: U1/D1 (or STRONG). Watchlist Action: fresh U1/D1, else ZigZag
+    ``signal`` sticky, else EMA Trend, else ``neutral_action`` when
+    ``action_no_hold`` (default) so Action is never HOLD.
+    ``trend`` always mirrors Pine table buysignal/sellsignal.
     """
     p = params or pine_params_from_config(cfg)
     state = evaluate_pine_bar(
@@ -730,9 +770,14 @@ def evaluate_pine_signal(
                 score=0.25 if act == SignalAction.BUY else -0.25,
                 confidence=0.0,
                 reasons=["no candles — neutral Action fallback"],
-                features={"action_no_hold": True, "action_source": "neutral"},
+                features={
+                    "action_no_hold": True,
+                    "action_source": "neutral",
+                    "trend": TREND_NEUTRAL,
+                },
                 state=None,
                 action_source="neutral",
+                trend=TREND_NEUTRAL,
             )
         return PineSignalResult(
             symbol=sym,
@@ -742,9 +787,10 @@ def evaluate_pine_signal(
             score=0.0,
             confidence=0.0,
             reasons=["no candles"],
-            features={},
+            features={"trend": TREND_NEUTRAL},
             state=None,
             action_source="hold",
+            trend=TREND_NEUTRAL,
         )
 
     reasons: list[str] = []
@@ -761,9 +807,11 @@ def evaluate_pine_signal(
             f"ATR={state.atr:.4f} revAmt={state.reversal_amount:.4f} "
             f"(atrMult={p.atr_multiplier():.2f} pct={p.percent_threshold():.2f}%)"
         )
+    trend = map_trend(state)
     reasons.append(
         f"signal={state.signal} u1={state.u1} d1={state.d1} "
-        f"buysignal={state.buysignal} sellsignal={state.sellsignal}"
+        f"buysignal={state.buysignal} sellsignal={state.sellsignal} "
+        f"trend={trend}"
     )
     if state.u1:
         reasons.append("U1 bullish reversal flip")
@@ -781,7 +829,7 @@ def evaluate_pine_signal(
         reasons.append("sell_signal=True (entry)")
     else:
         reasons.append(
-            f"no fresh entry — Action={action.value} via {action_source}"
+            f"no fresh entry — Action={action.value} via {action_source} · Trend={trend}"
         )
 
     features = {
@@ -802,6 +850,7 @@ def evaluate_pine_signal(
         "action_no_hold": p.action_no_hold,
         "neutral_action": p.neutral_action,
         "action_source": action_source,
+        "trend": trend,
         "zigzag_direction": state.direction,
         "signal": state.signal,
         "u1": state.u1,
@@ -818,7 +867,7 @@ def evaluate_pine_signal(
     }
     conf = 0.9 if (state.strong_bullish or state.strong_bearish) else (
         0.85 if (state.buy_signal or state.sell_signal) else (
-            0.4 if action_source in {"trend", "signal"} else 0.2
+            0.4 if action_source in {"reversal", "trend", "signal"} else 0.2
         )
     )
 
@@ -833,4 +882,5 @@ def evaluate_pine_signal(
         features=features,
         state=state,
         action_source=action_source,
+        trend=trend,
     )

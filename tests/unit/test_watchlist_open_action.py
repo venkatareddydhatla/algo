@@ -39,6 +39,7 @@ def test_open_long_shows_buy_while_pine_hold():
             "id": "pine-rel",
             "symbol": "RELIANCE",
             "action": "HOLD",
+            "trend": "BEARISH",
             "hybrid_score": 0.0,
             "confidence": 0.3,
         }
@@ -50,6 +51,8 @@ def test_open_long_shows_buy_while_pine_hold():
     assert row["pine_action"] == "HOLD"
     assert row["open_trade_mode"] == "BUY"
     assert row["action_from_open_trade"] is True
+    # Sticky Action must not hide / rewrite Trend
+    assert row["trend"] == "BEARISH"
 
 
 def test_open_short_shows_sell_while_pine_hold():

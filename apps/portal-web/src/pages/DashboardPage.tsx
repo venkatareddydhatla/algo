@@ -177,9 +177,10 @@ export default function DashboardPage() {
         <div>
           <h1>Watchlist signals</h1>
           <p className="muted">
-            Curated volatile_fno50 + custom equities ({total} symbols) — Pine NIFTY50ActiveV2
-            Action (BUY / SELL / HOLD); open dry-run trades keep BUY/SELL mode until close.
-            Source: {source}. Hover Reason for EMA / Supertrend / ADX / vol factors.
+            Curated TradingView watchlist + custom equities ({total} symbols) — Reversal Pro
+            Action (U1→BUY / D1→SELL, no HOLD) and Trend (BULLISH / BEARISH / NEUTRAL). Open
+            dry-run trades keep BUY/SELL Action until close; Trend stays live. Source:{" "}
+            {source}. Hover Reason for U1/D1 / EMA detail.
           </p>
         </div>
         <MarketIndexStrip />
@@ -299,6 +300,7 @@ export default function DashboardPage() {
               <th>Symbol</th>
               <th className="num-cell">Price</th>
               <th>Action</th>
+              <th>Trend</th>
               <th>Reason</th>
               <th>Updated</th>
             </tr>
@@ -329,6 +331,11 @@ export default function DashboardPage() {
                 <td>
                   <span className={`action action-${pineAction(r.action)}`}>
                     {pineAction(r.action)}
+                  </span>
+                </td>
+                <td>
+                  <span className={`trend trend-${pineTrend(r.trend)}`}>
+                    {pineTrend(r.trend)}
                   </span>
                 </td>
                 <td>
@@ -403,6 +410,13 @@ function pineAction(action: string | undefined): "BUY" | "SELL" | "HOLD" {
   if (a === "BUY" || a === "BUY_CE_BIAS" || a === "BUY_CE" || a === "LONG") return "BUY";
   if (a === "SELL" || a === "BUY_PE_BIAS" || a === "BUY_PE" || a === "SHORT") return "SELL";
   return "HOLD";
+}
+
+function pineTrend(trend: string | undefined): "BULLISH" | "BEARISH" | "NEUTRAL" {
+  const t = (trend || "NEUTRAL").toUpperCase();
+  if (t === "BULLISH" || t === "BULL" || t === "UP") return "BULLISH";
+  if (t === "BEARISH" || t === "BEAR" || t === "DOWN") return "BEARISH";
+  return "NEUTRAL";
 }
 
 function sortLocal(items: SignalRow[]): SignalRow[] {

@@ -10,11 +10,26 @@ import hashlib
 from datetime import datetime, timezone
 from typing import Any
 
-from options_portal_domain.pine_signals import watchlist_pine_action
+from options_portal_domain.pine_signals import (
+    TREND_BEARISH,
+    TREND_BULLISH,
+    TREND_NEUTRAL,
+    watchlist_pine_action,
+)
 from options_portal_domain.universe import INDEX_SYMBOLS
 from options_portal_hybrid.explain import attach_reason_fields  # noqa: F401 — tests/legacy
 
 NOW = datetime.now(tz=timezone.utc).isoformat()
+
+
+def _normalize_trend(trend: str | None) -> str:
+    """Pine info-table Trend: BULLISH / BEARISH / NEUTRAL."""
+    t = str(trend or TREND_NEUTRAL).strip().upper()
+    if t in {TREND_BULLISH, "BULL", "UP"}:
+        return TREND_BULLISH
+    if t in {TREND_BEARISH, "BEAR", "DOWN"}:
+        return TREND_BEARISH
+    return TREND_NEUTRAL
 
 # Hand-tuned showcase rows (Pine Action labels only).
 _SEED_SIGNALS: list[dict[str, Any]] = [
@@ -23,6 +38,7 @@ _SEED_SIGNALS: list[dict[str, Any]] = [
         "symbol": "NIFTY",
         "timeframe": "15m",
         "action": "HOLD",
+        "trend": TREND_NEUTRAL,
         "hybrid_score": 0.0,
         "tech_score": 0.0,
         "news_score": 0.0,
@@ -41,6 +57,7 @@ _SEED_SIGNALS: list[dict[str, Any]] = [
         "symbol": "BANKNIFTY",
         "timeframe": "15m",
         "action": "HOLD",
+        "trend": TREND_NEUTRAL,
         "hybrid_score": 0.0,
         "tech_score": 0.0,
         "news_score": 0.0,
@@ -57,6 +74,7 @@ _SEED_SIGNALS: list[dict[str, Any]] = [
         "symbol": "RELIANCE",
         "timeframe": "15m",
         "action": "SELL",
+        "trend": TREND_BEARISH,
         "hybrid_score": -1.0,
         "tech_score": -1.0,
         "news_score": 0.0,
@@ -80,18 +98,24 @@ _SEED_SIGNALS: list[dict[str, Any]] = [
         "id": "sig-tcs-1",
         "symbol": "TCS",
         "timeframe": "15m",
-        "action": "HOLD",
-        "hybrid_score": 0.0,
-        "tech_score": 0.0,
+        "action": "BUY",
+        "trend": TREND_NEUTRAL,
+        "hybrid_score": 0.25,
+        "tech_score": 0.25,
         "news_score": 0.0,
         "confidence": 0.3,
         "expiry_hint": "monthly",
         "updated_at": NOW,
-        "reasons": ["buy_signal=False sell_signal=False → HOLD"],
+        "reasons": [
+            "no fresh U1/D1 — Action BUY via neutral · Trend=NEUTRAL"
+        ],
         "reason_kind": "pine",
-        "reason_summary": "no Reversal Pro signal",
-        "reason_detail": "Technical:\n- buy_signal=False sell_signal=False → HOLD",
+        "reason_summary": "neutral fallback → BUY",
+        "reason_detail": (
+            "Technical:\n- no fresh U1/D1 — Action BUY via neutral · Trend=NEUTRAL"
+        ),
         "signal_engine": "reversal_pro_v32",
+        "action_source": "neutral",
     },
 ]
 
@@ -250,6 +274,7 @@ def synthetic_signal_for_symbol(
             "symbol": sym,
             "timeframe": timeframe,
             "action": "HOLD",
+            "trend": TREND_NEUTRAL,
             "hybrid_score": 0.0,
             "tech_score": 0.0,
             "news_score": 0.0,
@@ -266,11 +291,18 @@ def synthetic_signal_for_symbol(
             "reason_detail": "Technical:\n- " + reasons[0],
         }
 
-    # Deterministic placeholder: ~12% BUY, ~12% SELL, else HOLD (until worker KV).
+    # Deterministic placeholder until worker KV: Action BUY/SELL only + Trend.
     roll = _stable_unit(sym, "pine_action")
+    trend_roll = _stable_unit(sym, "pine_trend")
     reasons: list[str] = [
         "Reversal Pro v3.2 placeholder (await worker candles)",
     ]
+    if trend_roll >= 0.55:
+        trend = TREND_BULLISH
+    elif trend_roll <= 0.35:
+        trend = TREND_BEARISH
+    else:
+        trend = TREND_NEUTRAL
     if roll >= 0.88:
         action = "BUY"
         score = 1.0
@@ -279,6 +311,7 @@ def synthetic_signal_for_symbol(
                 "U1 bullish reversal flip",
                 "STRONG bullish (U1 + buysignal)",
                 "buy_signal=True (placeholder until worker persist)",
+                f"trend={trend}",
             ]
         )
         summary = "STRONG bullish (U1 + EMA trend)"
@@ -290,14 +323,20 @@ def synthetic_signal_for_symbol(
                 "D1 bearish reversal flip",
                 "STRONG bearish (D1 + sellsignal)",
                 "sell_signal=True (placeholder until worker persist)",
+                f"trend={trend}",
             ]
         )
         summary = "STRONG bearish (D1 + EMA trend)"
     else:
-        action = "HOLD"
-        score = 0.0
-        reasons.append("buy_signal=False sell_signal=False → HOLD")
-        summary = "no Reversal Pro signal"
+        # No HOLD on equities: sticky/neutral Action; Trend still shown.
+        action = "BUY" if trend == TREND_BULLISH else (
+            "SELL" if trend == TREND_BEARISH else "BUY"
+        )
+        score = 0.5 if action == "BUY" else -0.5
+        reasons.append(
+            f"no fresh U1/D1 — Action {action} via sticky/trend · Trend={trend}"
+        )
+        summary = f"no entry · Trend {trend}"
 
     detail = "Technical:\n" + "\n".join(f"- {r}" for r in reasons)
     return {
@@ -305,10 +344,11 @@ def synthetic_signal_for_symbol(
         "symbol": sym,
         "timeframe": timeframe,
         "action": action,
+        "trend": trend,
         "hybrid_score": score,
         "tech_score": score,
         "news_score": 0.0,
-        "confidence": 0.85 if action != "HOLD" else 0.3,
+        "confidence": 0.85 if roll >= 0.88 or roll <= 0.12 else 0.4,
         "expiry_hint": "monthly",
         "updated_at": updated_at or NOW,
         "reasons": reasons,
@@ -393,11 +433,16 @@ def pine_row_from_kv(
                 else "Neutral: no U1/D1"
             )
         )
+    feats = dict(payload.get("features") or {})
+    trend = _normalize_trend(
+        payload.get("trend") or feats.get("trend")
+    )
     return {
         "id": f"pine-{sym.lower()}",
         "symbol": sym,
         "timeframe": str(payload.get("timeframe") or timeframe),
         "action": action,
+        "trend": trend,
         "hybrid_score": score,
         "tech_score": score,
         "news_score": 0.0,
@@ -415,7 +460,8 @@ def pine_row_from_kv(
         "reason_kind": "pine",
         "reason_summary": summary,
         "reason_detail": detail,
-        "features": dict(payload.get("features") or {}),
+        "features": feats,
+        "action_source": payload.get("action_source") or feats.get("action_source"),
     }
 
 
@@ -581,6 +627,7 @@ def apply_open_trade_display_actions(
     - ``pine_action``: expire-stale Pine Action (signal freshness; unchanged KV).
     - ``action`` / ``display_action``: BUY while open LONG, SELL while open SHORT;
       otherwise same as ``pine_action``.
+    - ``trend`` is **never** overwritten by the open-trade overlay.
     - Sticky BUY/SELL is **display / mode only** — not a fresh entry signal.
     """
     modes = open_modes
@@ -592,6 +639,7 @@ def apply_open_trade_display_actions(
             str(row.get("pine_action") if "pine_action" in row else row.get("action"))
         )
         row["pine_action"] = pine
+        row["trend"] = _normalize_trend(row.get("trend"))
         sym = str(row.get("symbol") or "").strip().upper()
         sticky = modes.get(sym)
         if sticky in {"BUY", "SELL"}:
