@@ -1,5 +1,5 @@
 # India F&O underlyings metadata (examples + index defaults).
-# Active watchlist: config/universe/volatile_fno50_underlyings.csv (universe: volatile_fno50)
+# Active watchlist: TradingView curated ~19 via config/universe/volatile_fno50_underlyings.csv
 # Full equity+index universe (disabled by default): config/universe/nse_fno_underlyings.csv
 # Refresh: python scripts/refresh_nse_fno_universe.py
 timezone: Asia/Kolkata

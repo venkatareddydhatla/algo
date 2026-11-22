@@ -283,14 +283,13 @@ def test_volatile_fno50_equities_all_resolve_instrument_keys():
         sym = str(row.get("symbol") or "").strip().upper()
         if resolve_instrument_key(sym) is None:
             missing.append(sym)
-    assert missing == [], f"unmapped volatile equities (LTP will fail): {missing}"
-    # Legacy names resolve via aliases to current tradingsymbols
-    assert resolve_instrument_key("TATAMOTORS") == resolve_instrument_key("TMPV")
+    assert missing == [], f"unmapped curated equities (LTP will fail): {missing}"
+    # LTIMindtree: UI/TradingView LTIM → official tradingsymbol LTM
     assert resolve_instrument_key("LTIM") == resolve_instrument_key("LTM")
-    assert resolve_instrument_key("GUJGASLTD") == resolve_instrument_key("GUJENERGY")
-    assert resolve_instrument_key("PIIND") == "NSE_EQ|INE603J01030"
-    assert resolve_instrument_key("HAL") is not None
-    assert resolve_instrument_key("SYNGENE") is not None
+    assert resolve_instrument_key("BHARTIARTL") is not None
+    assert resolve_instrument_key("KALYANKJIL") is not None
+    assert resolve_instrument_key("PIDILITIND") is not None
+    assert resolve_instrument_key("IREDA") is not None
 
 
 @pytest.mark.asyncio

@@ -42,7 +42,7 @@ async def list_watchlist(
     limit: int = Query(50, ge=1, le=500),
     q: str | None = Query(None, description="Optional symbol substring filter"),
 ) -> dict:
-    """Return curated volatile_fno50 + persisted custom equities (deduped)."""
+    """Return curated TradingView list + persisted custom equities (deduped)."""
     cfg = load_config()
     trading = cfg.get("trading", {})
     symbols = watchlist_symbols(cfg)
@@ -110,7 +110,7 @@ async def list_watchlist(
         "custom_symbols": customs,
         "source": "config+universe+custom_kv",
         "note": (
-            "Worker scores curated volatile_fno50 plus portal custom equities "
+            "Worker scores curated TradingView watchlist plus portal custom equities "
             f"(base={len(base)} custom={len(customs)} active_scan={len(active)}"
             f"{' unlimited' if unlimited else ''}). "
             "Customs persist in SQLite kv_store; duplicates of curated names are skipped."

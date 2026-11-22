@@ -248,9 +248,26 @@ git pull origin cursor/trades-page-round-trips-cb5e
 
 Open http://127.0.0.1:5173/trades — Open positions unchanged; Closed trades show Symbol, Side LONG/SHORT, Entry/Exit IST, Entry/Exit px, PnL, Reason, dry_run.
 
-### Pull opposite Pine close open (stacked) — tip
+### Pull TradingView curated watchlist (stacked) — tip
 
-Open **long** + fresh Pine **SELL** → close (`opposite_pine_sell`); open **short** + fresh Pine **BUY** → cover (`opposite_pine_buy`). Fresh = same signal-bar / expire-stale rules as watchlist Action (no re-close on sticky SELL hours later). Close-only (no same-bar flip); cooloff recorded like other exits. Prefer this tip. Stacked on `cursor/fix-short-exit-mark-c41d` (PR #57).
+Replaces the old ~49 `volatile_fno50` CSV with Venkata’s **19** TradingView equities. Keeps portal **Custom equities** add/remove (PR #56) on top with dedupe. Same Reversal Pro v3.2 scan, ₹40 floor, dry_run, **no cooloff**, full scan each 15m bar close. Prefer this tip. Stacked on `cursor/reversal-pro-v32-c904` (PR #60).
+
+```powershell
+cd C:\algo
+Set-ExecutionPolicy -Scope Process Bypass -Force
+.\deploy\windows\native\stop-native.ps1
+git fetch origin
+git checkout cursor/tradingview-watchlist-7166
+git pull origin cursor/tradingview-watchlist-7166
+.\deploy\windows\native\setup-native.ps1
+.\deploy\windows\native\start-native.ps1 -WithWorker
+```
+
+**Must stop then start.** Expect watchlist base **19** + customs; worker `Full scan starting symbols=N`. Still `dry_run` only. After merge into the tip chain / `main`, pull that branch instead.
+
+### Pull opposite Pine close open (stacked)
+
+Open **long** + fresh Pine **SELL** → close (`opposite_pine_sell`); open **short** + fresh Pine **BUY** → cover (`opposite_pine_buy`). Fresh = same signal-bar / expire-stale rules as watchlist Action (no re-close on sticky SELL hours later). Close-only (no same-bar flip); cooloff recorded like other exits. Prefer the TradingView tip above. Stacked on `cursor/fix-short-exit-mark-c41d` (PR #57).
 
 ```powershell
 cd C:\algo

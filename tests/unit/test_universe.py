@@ -69,27 +69,46 @@ def test_resolve_universe_alias():
 
 
 def test_resolve_volatile_fno50_universe():
-    """Default trading universe is Venkata’s volatile equities (not full F&O)."""
+    """Default trading universe is Venkata’s TradingView curated equities."""
     csv_path = ROOT / "config" / "universe" / "volatile_fno50_underlyings.csv"
     rows = load_universe_csv(csv_path)
     symbols = resolve_watchlist_symbols(
         {"universe": "volatile_fno50"}, config_dir=ROOT / "config"
     )
-    assert len(symbols) == len(rows) == 49
-    assert len(symbols) == len(set(symbols))  # PIIND once
-    assert "TMPV" in symbols  # Tata Motors → TMPV
+    expected = [
+        "BHARTIARTL",
+        "CGPOWER",
+        "PIDILITIND",
+        "IREDA",
+        "MPHASIS",
+        "KALYANKJIL",
+        "APLAPOLLO",
+        "INOXWIND",
+        "VEDL",
+        "PNB",
+        "INDHOTEL",
+        "POLYCAB",
+        "BAJFINANCE",
+        "BHARATFORG",
+        "ADANIPORTS",
+        "LTM",
+        "HDFCLIFE",
+        "AMBUJACEM",
+        "BAJAJFINSV",
+    ]
+    assert len(symbols) == len(rows) == 19
+    assert symbols == expected
+    assert len(symbols) == len(set(symbols))
+    # Truncated UI → official NSE (sample checks)
+    assert "BHARTIARTL" in symbols and "BHARTI" not in symbols
+    assert "KALYANKJIL" in symbols  # Kalyan Jewellers
     assert "LTM" in symbols  # LTIMindtree LTIM → LTM
-    assert "GUJENERGY" in symbols  # Gujarat Gas → GUJENERGY
-    assert "PIIND" in symbols
-    assert "BHEL" in symbols and "HAL" in symbols
-    assert "SYNGENE" in symbols and "MPHASIS" in symbols
-    # Dropped sub-₹40 / removed names
-    assert "IDEA" not in symbols
-    assert "ASAHIINDIA" not in symbols
-    assert "INDIACEM" not in symbols
-    assert "DELTACORP" not in symbols
+    assert "BHARATFORG" in symbols  # BHARAT → liquid F&O forge (not BHARATHEAVY)
+    # Old fifty-list names not on curated TradingView set
+    assert "RELIANCE" not in symbols
+    assert "TMPV" not in symbols
+    assert "BHEL" not in symbols
     assert "FINNIFTY" not in symbols
-    assert "IDFC" not in symbols
     assert "NIFTY" not in symbols
     assert all(r.kind == "equity" for r in rows)
 
@@ -110,9 +129,9 @@ def test_active_scan_cap_positive():
     watch = resolve_watchlist_symbols(
         {"universe": "volatile_fno50"}, config_dir=ROOT / "config"
     )
-    active = active_scan_symbols(watch, {"max_active_symbols": 20})
-    assert len(active) == 20
-    assert active == watch[:20]
+    active = active_scan_symbols(watch, {"max_active_symbols": 10})
+    assert len(active) == 10
+    assert active == watch[:10]
 
 
 def test_active_scan_unlimited_zero_or_null():
@@ -132,9 +151,9 @@ def test_load_config_resolves_local_yaml(monkeypatch):
     active = scan_symbols(cfg)
     assert cfg["trading"].get("universe") == "volatile_fno50"
     assert cfg["trading"]["risk"].get("min_equity_price") == 40.0
-    assert len(wl) == 49
-    assert "PIIND" in wl
-    assert "IDEA" not in wl
+    assert len(wl) == 19
+    assert "BHARTIARTL" in wl and "KALYANKJIL" in wl and "LTM" in wl
+    assert "RELIANCE" not in wl
     assert "FINNIFTY" not in wl
     # Default: score entire configured universe (max_active_symbols 0/null)
     max_active = cfg["trading"].get("max_active_symbols", 0)

@@ -25,7 +25,7 @@ trading:
       auto_purge: false            # never auto-delete fills/positions during dry_run
       allow_purge_before_live: true  # explicit API/script purge when starting live
       live_min_retain_days: 90     # after live: keep fills ≥ this many days
-  # Venkata’s volatile equities only (not full NSE F&O). Alias → CSV below.
+  # Venkata’s TradingView curated equities (~19; not full NSE F&O). Alias → CSV below.
   universe: volatile_fno50  # config/universe/volatile_fno50_underlyings.csv
   # symbols: volatile_fno50
   # symbols_file: config/universe/volatile_fno50_underlyings.csv
@@ -349,7 +349,7 @@ persistence:
 
 ui:
   guest_hide_pnl: true
-  default_symbols: volatile_fno50   # volatile equities watchlist; UI paginates
+  default_symbols: volatile_fno50   # TradingView curated watchlist; UI paginates
   page_size: 50
 
 backtest:
