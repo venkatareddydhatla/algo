@@ -23,7 +23,7 @@ trading:
       auto_purge: false
       allow_purge_before_live: true
       live_min_retain_days: 90
-  universe: volatile_fno50  # Venkata’s volatile equities (not full NSE F&O)
+  universe: volatile_fno50  # Venkata’s TradingView curated equities (~19; not full NSE F&O)
   symbols_demo:          # quick-test set (set use_symbols_demo: true)
     - NIFTY
     - BANKNIFTY

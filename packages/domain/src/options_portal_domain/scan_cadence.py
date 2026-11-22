@@ -1,10 +1,10 @@
 """Worker full-universe scan cadence — prefer 15m bar-close triggers.
 
-With ``volatile_fno50`` (~49 names) a full Pine Action + entry/exit pass should
-finish well inside one 15m bucket. Bar-close mode waits for each completed
-candle (plus a short settle for broker history), then rescans the **entire**
-active watchlist once. Mid-bar continuous rescans are off by default so the
-same closed bar is not re-scored dozens of times.
+With ``volatile_fno50`` (~19 TradingView names + customs) a full Pine Action +
+entry/exit pass should finish well inside one 15m bucket. Bar-close mode waits
+for each completed candle (plus a short settle for broker history), then
+rescans the **entire** active watchlist once. Mid-bar continuous rescans are
+off by default so the same closed bar is not re-scored dozens of times.
 
 Fallback: fixed ``WORKER_INTERVAL_SEC`` sleep after each cycle when
 ``scan_on_bar_close`` is disabled.

@@ -129,7 +129,7 @@ def test_local_yaml_full_volatile_list_and_bar_close_no_cooloff():
     active = scan_symbols(cfg)
     watch = trading.get("symbols_resolved") or []
     assert len(active) == len(watch)
-    assert len(active) >= 45  # volatile_fno50 curated list
+    assert len(active) == 19  # TradingView curated list (customs may raise total at runtime)
     assert active == [str(s).upper() for s in watch]
     cadence = scan_cadence_config(cfg)
     assert cadence["on_bar_close"] is True

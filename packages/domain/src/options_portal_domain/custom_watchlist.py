@@ -1,7 +1,7 @@
 """User-appended equity symbols on top of the curated universe CSV.
 
 Persists in SQLite ``kv_store`` (same local profile as adaptive hybrid delta).
-Curated ``volatile_fno50`` (or whatever ``trading.universe`` resolves) stays the
+Curated ``volatile_fno50`` TradingView list (or whatever ``trading.universe`` resolves) stays the
 base list; customs are merged with dedupe so the 15m bar-close scan never
 scores the same ticker twice.
 """
@@ -131,7 +131,7 @@ def add_custom_symbol(
     Returns a status dict:
     - ``added`` — stored and will join the next scan
     - ``already_custom`` — already on the custom list
-    - ``already_on_curated`` — on volatile_fno50 (or current base); not double-stored
+    - ``already_on_curated`` — on curated TradingView list (or current base); not double-stored
     - ``error`` — rejected (indices / unknown / invalid)
     """
     sym = normalize_symbol(symbol)
@@ -206,7 +206,7 @@ def remove_custom_symbol(
             "symbol": sym,
             "message": (
                 f"{sym} is not on the custom list "
-                "(curated volatile_fno50 names cannot be removed here)"
+                "(curated TradingView names cannot be removed here)"
             ),
             "customs": current,
         }

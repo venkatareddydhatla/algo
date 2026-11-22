@@ -1,4 +1,4 @@
-"""Custom equity symbols on top of curated volatile_fno50 watchlist."""
+"""Custom equity symbols on top of curated TradingView watchlist."""
 
 from __future__ import annotations
 
@@ -95,25 +95,25 @@ def test_add_remove_persist_roundtrip(kv):
 
 
 def test_load_config_merges_customs_into_scan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kv):
-    save_custom_symbols(["INFY", "HDFCBANK", "RELIANCE"], kv=kv)
-    # RELIANCE is on volatile_fno50 — merge must not double it.
+    save_custom_symbols(["INFY", "HDFCBANK", "BHARTIARTL"], kv=kv)
+    # BHARTIARTL is on curated TradingView list — merge must not double it.
     monkeypatch.setenv("CONFIG_PATH", str(Path("config/local.yaml").resolve()))
     # Force KvStore() default path to our temp DB via DATABASE_URL already set.
     cfg = load_config("config/local.yaml")
     # Re-inject via store used by load_custom_symbols (DATABASE_URL)
-    assert kv.get(KV_KEY_CUSTOM_SYMBOLS) == ["INFY", "HDFCBANK", "RELIANCE"]
+    assert kv.get(KV_KEY_CUSTOM_SYMBOLS) == ["INFY", "HDFCBANK", "BHARTIARTL"]
 
     watch = watchlist_symbols(cfg)
     active = scan_symbols(cfg)
     assert watch == active
-    assert watch.count("RELIANCE") == 1
+    assert watch.count("BHARTIARTL") == 1
     assert "INFY" in watch
     assert "HDFCBANK" in watch
     # Customs that are not on curated appear in symbols_custom
     customs = cfg["trading"].get("symbols_custom") or []
     assert "INFY" in customs
     assert "HDFCBANK" in customs
-    assert "RELIANCE" not in customs  # already on base
+    assert "BHARTIARTL" not in customs  # already on base
 
 
 def test_remove_curated_name_fails(kv):
@@ -153,8 +153,8 @@ def test_api_add_reject_index_and_unknown(tmp_path: Path, monkeypatch: pytest.Mo
     assert listed.status_code == 200
     assert any(r["symbol"] == "INFY" for r in listed.json()["items"])
 
-    # Already on curated volatile_fno50
-    curated = client.post("/api/v1/watchlist/custom", json={"symbol": "RELIANCE"})
+    # Already on curated TradingView list
+    curated = client.post("/api/v1/watchlist/custom", json={"symbol": "BHARTIARTL"})
     assert curated.status_code == 200
     assert curated.json()["status"] == "already_on_curated"
 
