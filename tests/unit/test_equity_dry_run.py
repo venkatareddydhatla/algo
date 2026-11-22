@@ -8,11 +8,17 @@ import pytest
 
 from options_portal_domain.equity import (
     below_min_equity_price,
+    clear_last_good_ltp_cache,
+    last_good_ltp,
+    mark_consistent_with_recent,
+    mark_jump_pct,
     mark_within_session_hl,
     min_equity_price_from_config,
     plan_equity_intents,
     realized_equity_pnl,
+    remember_last_good_ltp,
     resolve_equity_mark,
+    risk_exit_mark_accepted,
     session_mark_bounds,
     unrealized_equity_pnl,
 )
@@ -136,6 +142,146 @@ def test_resolve_equity_mark_rejects_candle_above_session_high():
     assert bounds is not None
     assert bounds[0] == pytest.approx(520.0)
     assert bounds[1] == pytest.approx(500.0)
+
+
+def test_apollohosp_short_rejects_false_day_low_mark():
+    """APOLLOHOSP short: bad mark 8738 vs good LTP ~9230 must not fire pct_profit_2.
+
+    Session H/L alone did not stop this — 8738 can sit inside the day band
+    (e.g. as day low) while live equity LTP is still ~9230.
+    """
+    from options_portal_domain.session_gates import (
+        FixedPctExitPolicy,
+        fixed_pct_exit_decision,
+    )
+
+    clear_last_good_ltp_cache()
+    entry = 9254.0
+    bad_mark = 8738.0
+    good_ltp = 9230.0
+    # Band includes the false day-low so session H/L alone would accept it.
+    session_high = 9300.0
+    session_low = 8700.0
+
+    assert mark_within_session_hl(bad_mark, session_high, session_low) is True
+    assert mark_jump_pct(good_ltp, bad_mark) > 3.0
+    assert mark_consistent_with_recent(bad_mark, good_ltp) is False
+
+    # resolve_equity_mark must reject the false tick vs recent LTP (not use session low).
+    rejected = resolve_equity_mark(
+        ltp=bad_mark,
+        candle_close=bad_mark,
+        entry_avg=entry,
+        session_high=session_high,
+        session_low=session_low,
+        recent_ltp=good_ltp,
+    )
+    assert rejected.source == "entry_avg"
+    assert rejected.price == pytest.approx(entry)
+    assert "jump=" in rejected.detail
+
+    good = resolve_equity_mark(
+        ltp=good_ltp,
+        candle_close=bad_mark,
+        entry_avg=entry,
+        session_high=session_high,
+        session_low=session_low,
+        recent_ltp=good_ltp,
+    )
+    assert good.source == "ltp"
+    assert good.price == pytest.approx(good_ltp)
+
+    ok, note = risk_exit_mark_accepted(
+        mark=bad_mark,
+        mark_source="ltp",
+        recent_ltp=good_ltp,
+        entry_avg=entry,
+    )
+    assert ok is False
+    assert "inconsistent" in note
+
+    # Even without recent LTP, jump vs entry refuses the risk exit.
+    ok_entry, _ = risk_exit_mark_accepted(
+        mark=bad_mark,
+        mark_source="ltp",
+        recent_ltp=None,
+        entry_avg=entry,
+    )
+    assert ok_entry is False
+
+    # Live LTP near entry is accepted and does not fire +2% short profit.
+    ok_good, _ = risk_exit_mark_accepted(
+        mark=good_ltp,
+        mark_source="ltp",
+        recent_ltp=good_ltp,
+        entry_avg=entry,
+    )
+    assert ok_good is True
+
+    from datetime import datetime
+
+    hold = fixed_pct_exit_decision(
+        open_side="short",
+        open_qty=1,
+        entry_avg=entry,
+        mark=good_ltp,
+        policy=FixedPctExitPolicy(),
+        now=datetime(2026, 11, 20, 14, 1, 0),
+        trading_day=True,
+    )
+    assert hold["action"] == "none"
+    assert hold["unrealized_pct"] == pytest.approx(
+        (entry - good_ltp) / entry * 100.0
+    )
+
+    # Ungated bad mark would falsely fire pct_profit_2; worker withholds mark.
+    would_fire = fixed_pct_exit_decision(
+        open_side="short",
+        open_qty=1,
+        entry_avg=entry,
+        mark=bad_mark,
+        policy=FixedPctExitPolicy(),
+        now=datetime(2026, 11, 20, 14, 1, 0),
+        trading_day=True,
+    )
+    assert would_fire["action"] == "pct_profit_2"
+    assert would_fire["unrealized_pct"] == pytest.approx(5.576, abs=0.01)
+    gated = fixed_pct_exit_decision(
+        open_side="short",
+        open_qty=1,
+        entry_avg=entry,
+        mark=None,  # risk_exit_mark_accepted refused the false tick
+        policy=FixedPctExitPolicy(),
+        now=datetime(2026, 11, 20, 14, 1, 0),
+        trading_day=True,
+    )
+    assert gated["action"] == "none"
+    assert "missing entry_avg/mark" in gated["reason"]
+
+    remember_last_good_ltp("APOLLOHOSP", good_ltp)
+    assert last_good_ltp("APOLLOHOSP") == pytest.approx(good_ltp)
+    clear_last_good_ltp_cache()
+    assert last_good_ltp("APOLLOHOSP") is None
+
+
+def test_risk_exit_mark_requires_live_ltp_source():
+    """Candle close / entry avg must not price ±2% risk exits."""
+    ok, note = risk_exit_mark_accepted(
+        mark=9060.0,
+        mark_source="candle_close",
+        recent_ltp=9060.0,
+        entry_avg=9254.0,
+    )
+    assert ok is False
+    assert "live LTP" in note
+
+    ok_ltp, _ = risk_exit_mark_accepted(
+        mark=9060.0,
+        mark_source="ltp",
+        recent_ltp=9100.0,
+        entry_avg=9254.0,
+    )
+    assert ok_ltp is True
 
 
 def test_realized_and_unrealized_pnl_math():

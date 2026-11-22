@@ -22,9 +22,12 @@ from options_portal_domain.entry_selection import (
 )
 from options_portal_domain.equity import (
     below_min_equity_price,
+    last_good_ltp,
     min_equity_price_from_config,
     plan_equity_intents,
+    remember_last_good_ltp,
     resolve_equity_mark,
+    risk_exit_mark_accepted,
     session_mark_bounds,
 )
 from options_portal_domain.high_conviction import (
@@ -708,8 +711,9 @@ async def run_symbol_tick(
         # No token: synthetic / fixture candles are the only MD (local demo)
         live_candle_close = candle_close
 
-    # Session H/L from today's 15m bars — reject stale candle closes (and bad
-    # LTP ticks) outside the band for open-book ±2% / profit_candle / exits.
+    # Session H/L from today's 15m bars — sanity reject only (never use H/L as
+    # the exit mark). Also compare vs last good live LTP so a day-low tick
+    # inside the band cannot fire pct_profit_2 (APOLLOHOSP 8738 vs ~9230).
     session_high: float | None = None
     session_low: float | None = None
     if candles:
@@ -719,6 +723,7 @@ async def run_symbol_tick(
             result["session_high"] = session_high
             result["session_low"] = session_low
 
+    recent_px = last_good_ltp(symbol)
     mark = resolve_equity_mark(
         ltp=ltp_px,
         candle_close=live_candle_close,
@@ -726,23 +731,26 @@ async def run_symbol_tick(
         entry_avg=entry_avg if open_qty > 0 else None,
         session_high=session_high,
         session_low=session_low,
+        recent_ltp=recent_px,
     )
     fill_price = mark.price
     result["mark_price"] = fill_price
     result["mark_source"] = mark.source
     result["quote_source"] = getattr(broker, "last_quote_source", mark.source)
     result["mark_instrument_key"] = quote_instrument_key or instrument_key
+    result["recent_ltp"] = recent_px
     if may_trade:
         logger.log(
             logging.INFO if mark.source == "ltp" else logging.WARNING,
             "%s equity mark source=%s price=%.4f instrument_key=%s "
-            "candle_source=%s quote_source=%s detail=%s",
+            "candle_source=%s quote_source=%s recent_ltp=%s detail=%s",
             symbol,
             mark.source,
             fill_price,
             quote_instrument_key or instrument_key or "UNRESOLVED",
             market_data_source,
             getattr(broker, "last_quote_source", "?"),
+            f"{recent_px:.4f}" if recent_px else "none",
             mark.detail or mark.source,
         )
         # Token present but still on synthetic/entry fallback → skip paper order.
@@ -770,6 +778,29 @@ async def run_symbol_tick(
             result["order"] = None
             result["note"] = note
             return result
+
+    # Open-book risk exits (±2%, profit_candle, ATR, morning) require live LTP
+    # for this equity only, consistent with last good LTP (else entry).
+    risk_mark: float | None = None
+    risk_ok = False
+    risk_note = "risk exits not evaluated"
+    if may_trade and open_qty > 0 and open_side is not None:
+        risk_ok, risk_note = risk_exit_mark_accepted(
+            mark=fill_price if mark.source == "ltp" else None,
+            mark_source=mark.source if mark.source == "ltp" else "none",
+            recent_ltp=recent_px,
+            entry_avg=entry_avg,
+        )
+        if risk_ok:
+            risk_mark = float(fill_price)
+            remember_last_good_ltp(symbol, risk_mark)
+        else:
+            logger.warning("%s skipping risk exits: %s", symbol, risk_note)
+            # Never seed last-good from a rejected / inconsistent mark.
+    elif may_trade and mark.source == "ltp" and fill_price > 0:
+        remember_last_good_ltp(symbol, float(fill_price))
+    result["risk_exit_mark_ok"] = risk_ok
+    result["risk_exit_mark_note"] = risk_note
 
     atr14: float | None = None
     hc_cfg = high_conviction_config(cfg)
@@ -801,20 +832,28 @@ async def run_symbol_tick(
         open_side=open_side,  # type: ignore[arg-type]
         open_qty=open_qty,
         entry_avg=entry_avg,
-        mark=fill_price if may_trade else None,
+        mark=risk_mark,
         policy=fixed_pct_policy,
         now=ist_now,
         is_index=index_underlying,
         session_policy=soft_policy,
         trading_day=trading_day,
     )
+    if not risk_ok and open_qty > 0 and open_side is not None:
+        fixed_pct = {
+            **fixed_pct,
+            "active": True,
+            "action": "none",
+            "reason": f"fixed_pct_exit skipped: {risk_note}",
+            "exit_qty": 0,
+        }
     result["fixed_pct_exit"] = fixed_pct
 
     profit_candle = profit_candle_protect_decision(
         open_side=open_side,  # type: ignore[arg-type]
         open_qty=open_qty,
         entry_avg=entry_avg,
-        mark=fill_price if may_trade else None,
+        mark=risk_mark,
         candles=candles,
         policy=profit_candle_policy,
         now=ist_now,
@@ -822,6 +861,14 @@ async def run_symbol_tick(
         session_policy=soft_policy,
         trading_day=trading_day,
     )
+    if not risk_ok and open_qty > 0 and open_side is not None:
+        profit_candle = {
+            **profit_candle,
+            "active": True,
+            "action": "none",
+            "reason": f"profit_candle_protect skipped: {risk_note}",
+            "exit_qty": 0,
+        }
     result["profit_candle_protect"] = profit_candle
 
     trail_state = get_atr_trail_state(symbol) if atr_mgmt_needed else None
@@ -829,7 +876,7 @@ async def run_symbol_tick(
         open_side=open_side,  # type: ignore[arg-type]
         open_qty=open_qty,
         entry_avg=entry_avg,
-        mark=fill_price if may_trade else None,
+        mark=risk_mark,
         policy=atr_trail_policy,
         atr14=atr14,
         is_index=index_underlying,
@@ -838,13 +885,20 @@ async def run_symbol_tick(
         session_policy=soft_policy,
         trading_day=trading_day,
     )
+    if not risk_ok and open_qty > 0 and open_side is not None:
+        atr_mgmt = {
+            **atr_mgmt,
+            "action": "none",
+            "reason": f"atr_trail skipped: {risk_note}",
+            "exit_qty": 0,
+        }
     result["atr_trail"] = atr_mgmt
 
     morning_tp = morning_profit_book_decision(
         open_side=open_side,  # type: ignore[arg-type]
         open_qty=open_qty,
         entry_avg=entry_avg,
-        mark=fill_price if may_trade else None,
+        mark=risk_mark,
         policy=morning_policy,
         now=ist_now,
         is_index=index_underlying,
@@ -852,6 +906,13 @@ async def run_symbol_tick(
         session_policy=soft_policy,
         trading_day=trading_day,
     )
+    if not risk_ok and open_qty > 0 and open_side is not None:
+        morning_tp = {
+            **morning_tp,
+            "action": "none",
+            "reason": f"morning_tp skipped: {risk_note}",
+            "exit_qty": 0,
+        }
     result["morning_tp"] = morning_tp
 
     # Same-tick priority: fixed ±2% > profit_candle_protect > atr stop/trail >
