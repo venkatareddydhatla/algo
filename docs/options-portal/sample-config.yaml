@@ -94,6 +94,9 @@ trading:
     # In-profit 15m structure break → immediate close (open book).
     profit_candle_protect:
       enabled: true
+    # Close open long on fresh Pine SELL / short on fresh Pine BUY (close-only).
+    opposite_pine_exit:
+      enabled: true
     atr_trail_scale_out:
       enabled: false
       atr_period: 14

@@ -16,19 +16,28 @@ Product rules (equity dry-run) — Pine entry + fixed open-book exits:
   - Long: mark ≥ entry×1.02 → ``pct_profit_2``; mark ≤ entry×0.98 → ``pct_stop_2``
   - Short: mark ≤ entry×0.98 → ``pct_profit_2``; mark ≥ entry×1.02 → ``pct_stop_2``
   - Same-tick priority: stop > profit > profit_candle_protect >
-    (disabled ATR/morning) > soft_flatten
+    (disabled ATR/morning) > opposite_pine_signal > soft_flatten
 - **Profit candle protect** (`trading.risk.profit_candle_protect`, open book):
   when an open stock is **in profit**, latest 15m vs prior:
   - Long: open < mid(prior) **and** close < prior.low → ``profit_candle_protect``
   - Short: open > mid(prior) **and** close > prior.high → ``profit_candle_protect``
   where ``mid = (prior.high + prior.low) / 2``.
+- **Opposite Pine close** (`trading.risk.opposite_pine_exit`, open book,
+  close-only — no same-bar flip):
+  - Open **long** + **fresh** Pine **SELL** → ``opposite_pine_sell`` (cover/sell)
+  - Open **short** + **fresh** Pine **BUY** → ``opposite_pine_buy`` (cover)
+  - Fresh = same signal-bar / expire-stale rules as watchlist Action
+    (``watchlist_pine_action`` / ``pine_signal_bar_is_current``); HOLD or
+    expired Action does **not** re-close on every scan.
+  - Exit fill records cooloff like other closes (120m same-session default).
 - **Open-book risk exits** (``pct_profit_2``, ``pct_stop_2``,
   ``profit_candle_protect``, plus optional ``profit_book`` / ``atr_*`` /
   ``morning_*`` when re-enabled) only on NSE trading days inside
   ``[open_ist, soft_flatten_until_ist]`` IST (default **09:15–15:40**). Use
   ``allow_open_book_risk_exits``. Outside that window the worker may still poll
   for marks / news / TA — **no risk-exit fills**. Cash/risk ``open_ist`` stays
-  **09:15** even when entries wait until 09:30.
+  **09:15** even when entries wait until 09:30. Opposite Pine closes follow the
+  Pine signal path (trading day) and do not require the ±2% LTP consistency gate.
 - **ATR trail / morning dynamic TP** remain in code but are **disabled** as
   primary exits while fixed ±2% is on (`atr_trail_scale_out.enabled: false`,
   `morning_profit_book.enabled: false`). Soft EOD flatten stays as safety.
@@ -82,6 +91,10 @@ DEFAULT_FIXED_PCT_STOP = 2.0
 
 # In-profit structure break on latest 15m vs prior (trading.risk.profit_candle_protect).
 PROFIT_CANDLE_PROTECT_REASON = "profit_candle_protect"
+
+# Close open book on opposite fresh Pine BUY/SELL (trading.risk.opposite_pine_exit).
+OPPOSITE_PINE_SELL_REASON = "opposite_pine_sell"
+OPPOSITE_PINE_BUY_REASON = "opposite_pine_buy"
 
 # All-day ATR trail + profit scale-out (trading.risk.atr_trail_scale_out).
 # Wider stops + higher profit_book so tiny scalp books stop firing.
@@ -966,6 +979,139 @@ def profit_candle_protect_decision(
         ),
         "exit_qty": qty,
     }
+
+
+@dataclass(frozen=True)
+class OppositePineExitPolicy:
+    """Close open equity on a fresh opposite Pine BUY/SELL (close-only).
+
+    Config under ``trading.risk.opposite_pine_exit``. Stocks only; open book.
+    Same-tick priority: after fixed ±2% / profit_candle / (disabled ATR/morning),
+    before soft_flatten. Does **not** open the new direction on the same bar.
+    """
+
+    enabled: bool = True
+
+    @classmethod
+    def from_config(cls, config: dict[str, Any]) -> OppositePineExitPolicy:
+        trading = config.get("trading") or {}
+        risk = dict(trading.get("risk") or {})
+        raw = dict(
+            risk.get("opposite_pine_exit")
+            or trading.get("opposite_pine_exit")
+            or {}
+        )
+        return cls(enabled=bool(raw.get("enabled", True)))
+
+
+def _empty_opposite_pine_result(
+    *,
+    active: bool,
+    action: str,
+    reason: str,
+    fresh_action: str = "HOLD",
+) -> dict[str, Any]:
+    return {
+        "active": active,
+        "action": action,
+        "reason": reason,
+        "exit_qty": 0,
+        "fresh_action": fresh_action,
+    }
+
+
+def opposite_pine_exit_decision(
+    *,
+    open_side: PositionSide | None,
+    open_qty: int,
+    pine_action: SignalAction | str | None,
+    bar_ts: datetime | str | None,
+    policy: OppositePineExitPolicy,
+    now: datetime | None = None,
+    timeframe_minutes: int = 15,
+    is_index: bool = False,
+) -> dict[str, Any]:
+    """Close open long on fresh Pine SELL; cover open short on fresh Pine BUY.
+
+    Freshness uses the same signal-bar / expire-stale rules as watchlist Action
+    (``watchlist_pine_action``): BUY/SELL only while ``bar_ts`` is current or
+    still the latest closed 15m bar; otherwise treated as HOLD so a sticky
+    Action cannot re-close on every scan hours later.
+
+    Close-only: caller should plan ``SignalAction.EXIT`` (no same-bar flip).
+    """
+    from options_portal_domain.pine_signals import watchlist_pine_action
+
+    if is_index:
+        return _empty_opposite_pine_result(
+            active=False,
+            action="none",
+            reason="index_not_equity — opposite pine exits stocks only",
+        )
+    if not policy.enabled:
+        return _empty_opposite_pine_result(
+            active=False,
+            action="none",
+            reason="opposite_pine_exit disabled",
+        )
+    if open_side is None or int(open_qty) <= 0:
+        return _empty_opposite_pine_result(
+            active=False,
+            action="none",
+            reason="no open position",
+        )
+
+    fresh = watchlist_pine_action(
+        pine_action,
+        bar_ts,
+        now=now,
+        timeframe_minutes=int(timeframe_minutes) or 15,
+    )
+    side = str(open_side).strip().lower()
+    qty = profit_book_exit_qty(int(open_qty), fraction=1.0)
+
+    if fresh == "HOLD":
+        return _empty_opposite_pine_result(
+            active=True,
+            action="none",
+            reason=(
+                "opposite_pine_exit hold: Action HOLD or signal bar expired "
+                f"(raw={pine_action!s} bar_ts={bar_ts!s})"
+            ),
+            fresh_action="HOLD",
+        )
+
+    if side == "long" and fresh == "SELL":
+        return {
+            "active": True,
+            "action": OPPOSITE_PINE_SELL_REASON,
+            "reason": (
+                f"{OPPOSITE_PINE_SELL_REASON}: close long on fresh Pine SELL "
+                f"(bar_ts={bar_ts})"
+            ),
+            "exit_qty": qty,
+            "fresh_action": "SELL",
+        }
+    if side == "short" and fresh == "BUY":
+        return {
+            "active": True,
+            "action": OPPOSITE_PINE_BUY_REASON,
+            "reason": (
+                f"{OPPOSITE_PINE_BUY_REASON}: cover short on fresh Pine BUY "
+                f"(bar_ts={bar_ts})"
+            ),
+            "exit_qty": qty,
+            "fresh_action": "BUY",
+        }
+
+    return _empty_opposite_pine_result(
+        active=True,
+        action="none",
+        reason=(
+            f"opposite_pine_exit hold: open {side} not opposite fresh {fresh}"
+        ),
+        fresh_action=fresh,
+    )
 
 
 @dataclass(frozen=True)

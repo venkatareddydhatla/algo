@@ -248,9 +248,26 @@ git pull origin cursor/trades-page-round-trips-cb5e
 
 Open http://127.0.0.1:5173/trades — Open positions unchanged; Closed trades show Symbol, Side LONG/SHORT, Entry/Exit IST, Entry/Exit px, PnL, Reason, dry_run.
 
-### Pull fix short exit mark consistency (stacked) — tip
+### Pull opposite Pine close open (stacked) — tip
 
-APOLLOHOSP short dry-run falsely exited at mark **8738** (`pct_profit_2`) while live LTP was **~9230**. Session H/L alone was not enough (day-low can sit inside the band). Risk exits now require **live equity LTP**, refuse marks that jump **>~3%** vs last good LTP (else entry), and never use session high/low as the mark. Prefer this tip. Stacked on `cursor/custom-watchlist-symbols-e382` (PR #56).
+Open **long** + fresh Pine **SELL** → close (`opposite_pine_sell`); open **short** + fresh Pine **BUY** → cover (`opposite_pine_buy`). Fresh = same signal-bar / expire-stale rules as watchlist Action (no re-close on sticky SELL hours later). Close-only (no same-bar flip); cooloff recorded like other exits. Prefer this tip. Stacked on `cursor/fix-short-exit-mark-c41d` (PR #57).
+
+```powershell
+cd C:\algo
+Set-ExecutionPolicy -Scope Process Bypass -Force
+.\deploy\windows\native\stop-native.ps1
+git fetch origin
+git checkout cursor/opposite-pine-close-7f02
+git pull origin cursor/opposite-pine-close-7f02
+.\deploy\windows\native\setup-native.ps1
+.\deploy\windows\native\start-native.ps1 -WithWorker
+```
+
+**Must stop then start.** Look for `opposite_pine_sell` / `opposite_pine_buy` in worker logs on a fresh opposite print. Still `dry_run` only. After merge into the tip chain / `main`, pull that branch instead.
+
+### Pull fix short exit mark consistency (stacked)
+
+APOLLOHOSP short dry-run falsely exited at mark **8738** (`pct_profit_2`) while live LTP was **~9230**. Session H/L alone was not enough (day-low can sit inside the band). Risk exits now require **live equity LTP**, refuse marks that jump **>~3%** vs last good LTP (else entry), and never use session high/low as the mark. Prefer the opposite-Pine tip above. Stacked on `cursor/custom-watchlist-symbols-e382` (PR #56).
 
 ```powershell
 cd C:\algo
