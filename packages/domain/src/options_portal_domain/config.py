@@ -8,6 +8,10 @@ from typing import Any
 
 import yaml
 
+from options_portal_domain.custom_watchlist import (
+    load_custom_symbols,
+    merge_watchlist_with_customs,
+)
 from options_portal_domain.universe import (
     DEMO_SYMBOLS,
     active_scan_symbols,
@@ -38,7 +42,14 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
     # Resolve universe aliases into concrete symbol lists for consumers
     trading = data.setdefault("trading", {})
     config_dir = cfg_path.parent
-    watchlist = resolve_watchlist_symbols(trading, config_dir=config_dir)
+    base = resolve_watchlist_symbols(trading, config_dir=config_dir)
+    customs = load_custom_symbols()
+    # Curated CSV first; portal-added equities appended with dedupe.
+    watchlist = merge_watchlist_with_customs(base, customs)
+    trading["symbols_base"] = list(base)
+    trading["symbols_custom"] = [
+        s for s in customs if s not in {str(x).upper() for x in base}
+    ]
     trading["symbols_resolved"] = watchlist
     trading["symbols_watchlist"] = watchlist
     trading["symbols_active"] = active_scan_symbols(watchlist, trading)

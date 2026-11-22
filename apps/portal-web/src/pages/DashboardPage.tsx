@@ -18,6 +18,11 @@ export default function DashboardPage() {
   const [topCe, setTopCe] = useState<SignalRow[]>([]);
   const [topPe, setTopPe] = useState<SignalRow[]>([]);
   const [stripSource, setStripSource] = useState("");
+  const [customSymbols, setCustomSymbols] = useState<string[]>([]);
+  const [customInput, setCustomInput] = useState("");
+  const [customMsg, setCustomMsg] = useState("");
+  const [customBusy, setCustomBusy] = useState(false);
+  const [customTick, setCustomTick] = useState(0);
 
   useEffect(() => {
     const s = (params.get("symbol") || "").toUpperCase();
@@ -60,6 +65,23 @@ export default function DashboardPage() {
     let cancelled = false;
     (async () => {
       try {
+        const data = await api.customWatchlist();
+        if (!cancelled) {
+          setCustomSymbols((data.items || []).map((r) => r.symbol));
+        }
+      } catch {
+        if (!cancelled) setCustomSymbols([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [customTick]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
         const data = await api.signals({
           offset,
           limit: PAGE_SIZE,
@@ -86,7 +108,7 @@ export default function DashboardPage() {
     return () => {
       cancelled = true;
     };
-  }, [offset, filter]);
+  }, [offset, filter, customTick]);
 
   const page = Math.floor(offset / PAGE_SIZE) + 1;
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -114,14 +136,50 @@ export default function DashboardPage() {
     });
   }
 
+  async function addCustom() {
+    const sym = customInput.trim().toUpperCase();
+    if (!sym) {
+      setCustomMsg("Enter an NSE equity ticker (e.g. INFY)");
+      return;
+    }
+    setCustomBusy(true);
+    setCustomMsg("");
+    try {
+      const res = await api.addCustomSymbol(sym);
+      setCustomMsg(res.message || `${sym} updated`);
+      setCustomInput("");
+      setCustomTick((n) => n + 1);
+      setOffset(0);
+    } catch (err) {
+      setCustomMsg(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCustomBusy(false);
+    }
+  }
+
+  async function removeCustom(sym: string) {
+    setCustomBusy(true);
+    setCustomMsg("");
+    try {
+      const res = await api.removeCustomSymbol(sym);
+      setCustomMsg(res.message || `${sym} removed`);
+      setCustomTick((n) => n + 1);
+    } catch (err) {
+      setCustomMsg(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCustomBusy(false);
+    }
+  }
+
   return (
     <section>
       <div className="section-head section-head-row">
         <div>
           <h1>Watchlist signals</h1>
           <p className="muted">
-            NSE F&O stocks ({total} symbols) — Pine NIFTY50ActiveV2 Action only (BUY / SELL /
-            HOLD). Source: {source}. Hover Reason for EMA / Supertrend / ADX / vol factors.
+            Curated volatile_fno50 + custom equities ({total} symbols) — Pine NIFTY50ActiveV2
+            Action only (BUY / SELL / HOLD). Source: {source}. Hover Reason for EMA /
+            Supertrend / ADX / vol factors.
           </p>
         </div>
         <MarketIndexStrip />
@@ -134,6 +192,63 @@ export default function DashboardPage() {
         onSelect={selectSymbol}
         source={stripSource}
       />
+
+      <div className="custom-watchlist">
+        <div className="custom-watchlist-head">
+          <h2>Custom equities</h2>
+          <p className="muted">
+            Append NSE stock tickers on top of the curated ~49-name list. Same 15m bar-close
+            scan + gates. Indices rejected. Persists in SQLite across restarts.
+          </p>
+        </div>
+        <div className="toolbar custom-watchlist-toolbar">
+          <label className="filter">
+            <span className="muted">Add symbol</span>
+            <input
+              className="mono"
+              value={customInput}
+              placeholder="e.g. INFY"
+              disabled={customBusy}
+              onChange={(e) => setCustomInput(e.target.value.toUpperCase())}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  void addCustom();
+                }
+              }}
+            />
+          </label>
+          <button type="button" disabled={customBusy} onClick={() => void addCustom()}>
+            Add
+          </button>
+        </div>
+        {customSymbols.length > 0 ? (
+          <ul className="custom-symbol-list">
+            {customSymbols.map((sym) => (
+              <li key={sym}>
+                <button
+                  type="button"
+                  className="sym-link mono"
+                  onClick={() => selectSymbol(sym)}
+                >
+                  {sym}
+                </button>
+                <button
+                  type="button"
+                  className="danger"
+                  disabled={customBusy}
+                  onClick={() => void removeCustom(sym)}
+                >
+                  Remove
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="muted">No custom symbols yet.</p>
+        )}
+        {customMsg ? <p className="notice">{customMsg}</p> : null}
+      </div>
 
       <div className="toolbar">
         <label className="filter">
