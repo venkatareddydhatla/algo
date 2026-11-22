@@ -511,6 +511,99 @@ def clear_persisted_pine_signals(symbols: list[str]) -> list[str]:
     return cleared
 
 
+def display_action_for_open_side(side: str | None) -> str | None:
+    """Map open paper side → sticky watchlist Action (display / mode only).
+
+    LONG → BUY, SHORT → SELL. Not an entry signal — entries still require a
+    fresh Pine signal bar in the worker.
+    """
+    s = str(side or "").strip().lower()
+    if s in {"long", "ce"}:
+        return "BUY"
+    if s in {"short", "pe"}:
+        return "SELL"
+    return None
+
+
+def load_open_trade_display_modes(
+    *,
+    mode: str | None = None,
+) -> dict[str, str]:
+    """Open paper positions → ``{SYMBOL: BUY|SELL}`` for watchlist Action overlay.
+
+    Prefers the paper ledger. Empty when the store is unavailable.
+    """
+    out: dict[str, str] = {}
+    try:
+        from options_portal_domain.config import trading_mode
+        from options_portal_persistence.paper_trades import PaperTradeStore
+
+        requested = (mode or trading_mode() or "dry_run").strip().lower()
+        safe_mode = "dry_run" if requested == "live" else requested
+        store = PaperTradeStore()
+        if not store.available:
+            return out
+        for pos in store.list_positions(mode=safe_mode):  # type: ignore[arg-type]
+            sym = str(pos.get("symbol") or "").strip().upper()
+            sticky = display_action_for_open_side(pos.get("side"))
+            if sym and sticky:
+                out[sym] = sticky
+    except Exception:  # noqa: BLE001
+        return out
+    return out
+
+
+def apply_open_trade_display_actions(
+    rows: list[dict[str, Any]],
+    open_modes: dict[str, str] | None = None,
+    *,
+    load_if_missing: bool = True,
+) -> list[dict[str, Any]]:
+    """Overlay user-facing Action with open-trade entry mode while a position is open.
+
+    - ``pine_action``: expire-stale Pine Action (signal freshness; unchanged KV).
+    - ``action`` / ``display_action``: BUY while open LONG, SELL while open SHORT;
+      otherwise same as ``pine_action``.
+    - Sticky BUY/SELL is **display / mode only** — not a fresh entry signal.
+    """
+    modes = open_modes
+    if modes is None and load_if_missing:
+        modes = load_open_trade_display_modes()
+    modes = modes or {}
+    for row in rows:
+        pine = _normalize_pine_action(
+            str(row.get("pine_action") if "pine_action" in row else row.get("action"))
+        )
+        row["pine_action"] = pine
+        sym = str(row.get("symbol") or "").strip().upper()
+        sticky = modes.get(sym)
+        if sticky in {"BUY", "SELL"}:
+            row["action"] = sticky
+            row["display_action"] = sticky
+            row["open_trade_mode"] = sticky
+            row["action_from_open_trade"] = True
+        else:
+            row["action"] = pine
+            row["display_action"] = pine
+            row["open_trade_mode"] = None
+            row["action_from_open_trade"] = False
+    return rows
+
+
+def rows_for_top_strip(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """TOP BUY/SELL strip uses fresh ``pine_action`` — not sticky open-trade Action."""
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        r = dict(row)
+        pine = _normalize_pine_action(
+            str(r.get("pine_action") if "pine_action" in r else r.get("action"))
+        )
+        r["action"] = pine
+        r["pine_action"] = pine
+        out.append(r)
+    return out
+
+
 def build_universe_signals(
     symbols: list[str],
     *,
