@@ -119,8 +119,8 @@ def test_scan_cadence_env_can_disable_bar_close(monkeypatch):
     assert cfg["fallback_interval_sec"] == 90
 
 
-def test_local_yaml_full_volatile_list_and_bar_close_and_120m_cooloff():
-    """Delivery invariants: full list each pass, bar-close on, 120m cooloff."""
+def test_local_yaml_full_volatile_list_and_bar_close_no_cooloff():
+    """Delivery invariants: full list each pass, bar-close on, cooloff off."""
     cfg = load_config("config/local.yaml")
     trading = cfg["trading"]
     assert trading.get("scan_on_bar_close") is True
@@ -136,8 +136,8 @@ def test_local_yaml_full_volatile_list_and_bar_close_and_120m_cooloff():
     assert cadence["timeframe_minutes"] == 15
     sel = entry_selection_config(cfg)
     cool = sel["reentry_cooloff"]
-    assert cool["enabled"] is True
-    assert cool["minutes"] == 120
+    assert cool["enabled"] is False
+    assert int(cool["minutes"] or 0) == 0
 
 
 def test_floor_aligns_with_latest_closed_helper():

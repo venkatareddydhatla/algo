@@ -528,13 +528,13 @@ def entry_selection_config(cfg: dict[str, Any] | None) -> dict[str, Any]:
     cool_raw = sel.get("reentry_cooloff")
     cool: dict[str, Any] = dict(cool_raw) if isinstance(cool_raw, dict) else {}
     if cool_raw is None:
-        # Default on when omitted from YAML — brokerage churn control.
-        cooloff_enabled = True
-        cooloff_minutes = DEFAULT_REENTRY_COOLOFF_MINUTES
+        # Tip stack: no cooloff — same symbol may re-enter on next fresh signal.
+        cooloff_enabled = False
+        cooloff_minutes = 0
         cooloff_same_session = True
     else:
-        cooloff_enabled = bool(cool.get("enabled", True))
-        cooloff_minutes = int(cool.get("minutes", DEFAULT_REENTRY_COOLOFF_MINUTES))
+        cooloff_enabled = bool(cool.get("enabled", False))
+        cooloff_minutes = int(cool.get("minutes", 0))
         cooloff_same_session = bool(cool.get("same_session_only", True))
 
     return {

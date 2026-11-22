@@ -225,3 +225,44 @@ def test_load_persisted_pine_expires_stale_sell_to_hold(
     assert isinstance(rewritten, dict)
     assert rewritten["action"] == "HOLD"
     assert rewritten.get("expired_from") == "SELL"
+
+
+def test_load_persisted_reversal_pro_keeps_stale_action_no_hold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Reversal Pro action_no_hold: stale BUY/SELL stays (no expire→HOLD)."""
+    from datetime import datetime, timedelta, timezone
+
+    from options_portal_persistence.kv_store import KvStore
+
+    from app.mock_data import load_persisted_pine_signals
+
+    db = tmp_path / "kv.sqlite"
+    monkeypatch.setenv("PERSISTENCE_PROFILE", "local")
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db}")
+    kv = KvStore(url=f"sqlite:///{db}")
+    assert kv.available
+    bar_ts = datetime(2026, 11, 20, 4, 0, tzinfo=timezone.utc)
+    kv.set(
+        "pine.signal.SYRMA",
+        {
+            "symbol": "SYRMA",
+            "action": "BUY",
+            "buy_signal": False,
+            "sell_signal": False,
+            "score": 0.5,
+            "confidence": 0.4,
+            "reasons": ["trend BULLISH"],
+            "bar_ts": bar_ts.isoformat(),
+            "timeframe": "15m",
+            "signal_engine": "reversal_pro_v32",
+            "features": {"action_no_hold": True, "signal_engine": "reversal_pro_v32"},
+        },
+    )
+    stale_now = bar_ts + timedelta(hours=5)
+    stale = load_persisted_pine_signals(["SYRMA"], now=stale_now)
+    assert stale["SYRMA"]["action"] == "BUY"
+    assert stale["SYRMA"].get("pine_action_expired") is not True
+    kept = kv.get("pine.signal.SYRMA")
+    assert isinstance(kept, dict)
+    assert kept["action"] == "BUY"

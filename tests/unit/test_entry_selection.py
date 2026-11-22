@@ -525,9 +525,9 @@ def test_entry_selection_config_defaults():
     assert sel["anti_churn"] == "empty_slots_only"
     assert sel["max_open_symbols"] == 6
     assert sel["dynamic_capacity"]["enabled"] is False
-    # Cooloff defaults on even when YAML omits the block (120m multi-factor)
-    assert sel["reentry_cooloff"]["enabled"] is True
-    assert sel["reentry_cooloff"]["minutes"] == 120
+    # Cooloff defaults off when YAML omits the block (Reversal Pro tip)
+    assert sel["reentry_cooloff"]["enabled"] is False
+    assert sel["reentry_cooloff"]["minutes"] == 0
     # Morning budget off by default (high-conviction time floors supersede)
     assert sel["morning_session"]["enabled"] is False
     assert sel["morning_session"]["until_ist"] == "10:00"
