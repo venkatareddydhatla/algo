@@ -354,6 +354,48 @@ def synthetic_signal_for_symbol(
     }
 
 
+# Pre-Reversal-Pro hybrid / confluence payloads (INFY-style 2026-11-20 linger).
+_LEGACY_HYBRID_ACTIONS = frozenset(
+    {"BUY_CE_BIAS", "BUY_PE_BIAS", "BUY_CE", "BUY_PE"}
+)
+_LEGACY_HYBRID_ENGINES = frozenset(
+    {"hybrid_confluence", "hybrid", "confluence", "weighted_hybrid"}
+)
+_LEGACY_HYBRID_REASON_KINDS = frozenset(
+    {"hybrid", "technical", "news", "neutral"}
+)
+
+
+def is_stale_hybrid_signal_kv(payload: dict[str, Any] | None) -> bool:
+    """True when ``pine.signal.*`` is pre-Reversal-Pro hybrid junk — ignore/delete.
+
+    Customs (e.g. INFY) often still have 2026-11-20 HOLD + hybrid_score rows in
+    SQLite. Those must not win over the live 15m Reversal Pro path.
+    """
+    if not isinstance(payload, dict):
+        return False
+    feats = dict(payload.get("features") or {})
+    engine = str(
+        payload.get("signal_engine") or feats.get("signal_engine") or ""
+    ).lower()
+    if engine == "reversal_pro_v32" or feats.get("pine") is True:
+        return False
+    if feats.get("action_no_hold") is True:
+        return False
+    if engine in _LEGACY_HYBRID_ENGINES:
+        return True
+    reason = str(payload.get("reason_kind") or "").lower()
+    if reason in _LEGACY_HYBRID_REASON_KINDS:
+        return True
+    act = str(payload.get("action") or "").upper()
+    if act in _LEGACY_HYBRID_ACTIONS:
+        return True
+    # HOLD without Reversal Pro markers — hybrid-era linger (no Action/Trend).
+    if act == "HOLD" and not engine:
+        return True
+    return False
+
+
 def _payload_action_no_hold(payload: dict[str, Any]) -> bool:
     """Reversal Pro: watchlist Action stays BUY/SELL (no expire→HOLD)."""
     feats = dict(payload.get("features") or {})
@@ -532,6 +574,13 @@ def load_persisted_pine_signals(
             payload = kv.get(f"pine.signal.{key}")
             if not (isinstance(payload, dict) and payload.get("action")):
                 continue
+            # Drop pre-Reversal-Pro hybrid KV (customs like INFY HOLD + old ts).
+            if is_stale_hybrid_signal_kv(payload):
+                try:
+                    kv.delete(f"pine.signal.{key}")
+                except Exception:  # noqa: BLE001
+                    pass
+                continue
             feats = dict(payload.get("features") or {})
             trend = _normalize_trend(payload.get("trend") or feats.get("trend"))
             reconciled = reconcile_persisted_action(
@@ -567,15 +616,15 @@ def load_persisted_pine_signals(
                 timeframe_minutes=15,
                 expire_to_hold=not no_hold,
             )
-            did_expire = False
             if (not no_hold) and raw in {"BUY", "SELL"} and live == "HOLD":
-                payload = _expire_persisted_pine_payload(
-                    kv, key, payload, now=clock
-                )
-                did_expire = True
+                # Expire → delete (do not rewrite HOLD; synthetics / candle
+                # recompute must supply Reversal Pro BUY/SELL + Trend).
+                try:
+                    kv.delete(f"pine.signal.{key}")
+                except Exception:  # noqa: BLE001
+                    pass
+                continue
             row = pine_row_from_kv(payload, now=clock)
-            if did_expire:
-                row["pine_action_expired"] = True
             out[key] = row
     except Exception:  # noqa: BLE001
         return out
@@ -597,6 +646,47 @@ def clear_persisted_pine_signals(symbols: list[str]) -> list[str]:
                 continue
             if kv.delete(f"pine.signal.{key}"):
                 cleared.append(key)
+    except Exception:  # noqa: BLE001
+        return cleared
+    return cleared
+
+
+def clear_stale_hybrid_signal_kv(symbols: list[str] | None = None) -> list[str]:
+    """Delete hybrid-era ``pine.signal.*`` rows (optional symbol filter).
+
+    Used when adding customs and by docs/ops so INFY-style HOLD + old timestamp
+    cannot block Reversal Pro Action/Trend.
+    """
+    cleared: list[str] = []
+    try:
+        from options_portal_persistence.kv_store import KvStore
+
+        kv = KvStore()
+        if not kv.available:
+            return cleared
+        keys: list[str]
+        if symbols:
+            keys = [f"pine.signal.{str(s).strip().upper()}" for s in symbols if s]
+        else:
+            # Best-effort: only known watchlist keys when no filter.
+            try:
+                from options_portal_domain.config import watchlist_symbols
+
+                keys = [
+                    f"pine.signal.{str(s).strip().upper()}"
+                    for s in watchlist_symbols()
+                    if s
+                ]
+            except Exception:  # noqa: BLE001
+                return cleared
+        for key in keys:
+            sym = key.rsplit(".", 1)[-1]
+            payload = kv.get(key)
+            if is_stale_hybrid_signal_kv(
+                payload if isinstance(payload, dict) else None
+            ):
+                if kv.delete(key):
+                    cleared.append(sym)
     except Exception:  # noqa: BLE001
         return cleared
     return cleared
