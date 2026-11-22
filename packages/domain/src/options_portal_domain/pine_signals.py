@@ -19,7 +19,10 @@ Trade mapping (dry-run):
   ``trading.pine_signals.require_strong: false`` to enter on raw U1/D1.
 
 Watchlist fields:
-  Action = U1→BUY / D1→SELL (sticky ZigZag between signals; never HOLD).
+  Action = **most recent confirmed U1/D1** (green/red Reversal):
+    fresh U1→BUY, fresh D1→SELL; between bars ZigZag ``signal`` sticky
+    (signal>0 last U1, signal<0 last D1). A later opposite flip always
+    replaces the prior Action — never keep an old U1 across a newer D1.
   Trend  = buysignal→BULLISH / sellsignal→BEARISH / else NEUTRAL.
 
 Preview pivots are never used for trading.
@@ -374,23 +377,26 @@ def map_watchlist_action(
     *,
     params: PineParams,
 ) -> tuple[SignalAction, str, float]:
-    """Watchlist Action: fresh U1/D1, else last ZigZag bias, else Trend, else neutral.
+    """Watchlist Action = most recent confirmed U1/D1 (green/red Reversal).
 
     Priority (``action_no_hold`` never returns HOLD):
-      1. Fresh U1 → BUY / D1 → SELL (green/red Reversal — display Action)
-      2. ZigZag ``signal`` >0 / <0 → last confirmed reversal direction (sticky)
-      3. EMA Trend ``buysignal`` / ``sellsignal`` → BUY/SELL (PR #60 fallback)
+      1. Fresh U1 → BUY / D1 → SELL (same bar as TV Reversal label)
+      2. ZigZag ``signal`` >0 / <0 → sticky **last** confirmed reversal
+         (after a later D1, signal=-1 → SELL; after later U1 → BUY).
+         Never keep an old U1 sticky across a newer opposite pivot flip.
+      3. EMA Trend ``buysignal`` / ``sellsignal`` → BUY/SELL only when
+         ``signal==0`` (no reversal yet)
       4. ``neutral_action`` knob
 
-    Entries still use ``buy_signal`` / ``sell_signal`` (U1/D1 ± require_strong).
-    Returns ``(action, source, score)``.
+    Trend is independent (``map_trend``). Entries still use ``buy_signal`` /
+    ``sell_signal`` (U1/D1 ± require_strong). Returns ``(action, source, score)``.
     """
     # 1) Fresh reversal (U1/D1) — same green/red labels as TV Reversal
     if state.u1:
         return SignalAction.BUY, "reversal", 1.0
     if state.d1:
         return SignalAction.SELL, "reversal", -1.0
-    # 2) Sticky last confirmed reversal via ZigZag signal state machine
+    # 2) Sticky most-recent confirmed reversal (ZigZag signal flips with U1/D1)
     if state.signal > 0:
         return SignalAction.BUY, "signal", 0.5
     if state.signal < 0:
@@ -748,9 +754,9 @@ def evaluate_pine_signal(
 ) -> PineSignalResult:
     """Map last bar → watchlist Action + Trend + entry gates.
 
-    Entries: U1/D1 (or STRONG). Watchlist Action: fresh U1/D1, else ZigZag
-    ``signal`` sticky, else EMA Trend, else ``neutral_action`` when
-    ``action_no_hold`` (default) so Action is never HOLD.
+    Entries: U1/D1 (or STRONG). Watchlist Action = most recent confirmed
+    U1/D1 (fresh flip, else ZigZag ``signal`` sticky so a later D1 replaces
+    an older U1), else EMA Trend / ``neutral_action`` when ``action_no_hold``.
     ``trend`` always mirrors Pine table buysignal/sellsignal.
     """
     p = params or pine_params_from_config(cfg)

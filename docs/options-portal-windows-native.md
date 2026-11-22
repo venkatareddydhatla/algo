@@ -250,7 +250,7 @@ Open http://127.0.0.1:5173/trades — Open positions unchanged; Closed trades sh
 
 ### Pull Action + Trend columns (stacked) — tip
 
-Watchlist **Action** = U1→BUY / D1→SELL (sticky ZigZag between signals; no HOLD). **Trend** = BULLISH / BEARISH / NEUTRAL from EMA `buysignal`/`sellsignal` (Pine table). Open-trade sticky Action does not hide Trend. Entries still need fresh U1/D1. Prefer this tip. Stacked on `cursor/tradingview-watchlist-7166` (PR #61).
+Watchlist **Action** = most recent confirmed U1→BUY / D1→SELL (ZigZag sticky; later D1 replaces older U1; no HOLD). **Trend** = BULLISH / BEARISH / NEUTRAL from EMA `buysignal`/`sellsignal` (Pine table). Open-trade overlay only while paper qty>0 and does not hide a fresher opposite pine Action; never hides Trend. Entries still need fresh U1/D1. Prefer tip `cursor/watchlist-action-fresh-d1-12f2` (stacked on PR #63).
 
 ```powershell
 cd C:\algo
