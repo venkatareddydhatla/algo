@@ -16,7 +16,10 @@ from options_portal_domain.candles_agg import (
 )
 from options_portal_domain.config import load_config, trading_mode
 from options_portal_domain.equity import (
+    DEFAULT_MAX_EQUITY_QTY_PER_SYMBOL,
+    PriceQtyTiersPolicy,
     below_min_equity_price,
+    equity_qty_for_price,
     last_good_ltp,
     min_equity_price_from_config,
     plan_equity_intents,
@@ -149,13 +152,35 @@ def build_ta_registry() -> IndicatorRegistry:
     return reg
 
 
-def _equity_share_qty(cfg: dict[str, Any], risk_cfg: dict[str, Any]) -> int:
+def _equity_share_qty(
+    cfg: dict[str, Any],
+    risk_cfg: dict[str, Any],
+    *,
+    price: float | None = None,
+) -> int:
+    """Entry size for any equity (curated CSV + custom watchlist).
+
+    When ``price_qty_tiers`` is enabled (default), bands from mark price:
+    >2000→100, 1000–2000→200, 500–1000→500, else→2000. Same helper for every
+    symbol — customs are not a separate sizing path.
+    """
+    return equity_qty_for_price(
+        price,
+        policy=PriceQtyTiersPolicy.from_config(cfg),
+        config=cfg,
+    )
+
+
+def _equity_max_qty(cfg: dict[str, Any], risk_cfg: dict[str, Any]) -> int:
     equity_cfg = cfg.get("trading", {}).get("equity") or {}
-    raw = equity_cfg.get("share_qty", risk_cfg.get("equity_share_qty", 1))
+    raw = equity_cfg.get(
+        "max_qty_per_symbol",
+        risk_cfg.get("max_equity_qty_per_symbol", DEFAULT_MAX_EQUITY_QTY_PER_SYMBOL),
+    )
     try:
         return max(1, int(raw))
     except (TypeError, ValueError):
-        return 1
+        return DEFAULT_MAX_EQUITY_QTY_PER_SYMBOL
 
 
 def _equity_enabled(cfg: dict[str, Any]) -> bool:
@@ -180,13 +205,12 @@ async def run_symbol_tick(
     risk_cfg = dict(cfg.get("trading", {}).get("risk", {}) or {})
     equity_cfg = cfg.get("trading", {}).get("equity") or {}
     mode = trading_mode(cfg)  # type: ignore[arg-type]
-    share_qty = _equity_share_qty(cfg, risk_cfg)
-    # Expose share qty to risk gate as max entry size default
+    # Provisional size until mark is known; re-sized after fill_price.
+    share_qty = _equity_share_qty(cfg, risk_cfg, price=None)
+    max_qty = _equity_max_qty(cfg, risk_cfg)
+    # Expose caps to risk gate (must clear highest tier qty=2000).
     risk_cfg.setdefault("equity_share_qty", share_qty)
-    risk_cfg.setdefault(
-        "max_equity_qty_per_symbol",
-        int(equity_cfg.get("max_qty_per_symbol", risk_cfg.get("max_equity_qty_per_symbol", share_qty))),
-    )
+    risk_cfg.setdefault("max_equity_qty_per_symbol", max_qty)
 
     broker = UpstoxAdapter()
     use_pine = pine_signals_enabled(cfg)
@@ -780,8 +804,12 @@ async def run_symbol_tick(
         recent_ltp=recent_px,
     )
     fill_price = mark.price
+    # One sizing path for curated + custom: recompute from this symbol's mark.
+    share_qty = _equity_share_qty(cfg, risk_cfg, price=fill_price)
+    risk_cfg["equity_share_qty"] = share_qty
     result["mark_price"] = fill_price
     result["mark_source"] = mark.source
+    result["share_qty"] = share_qty
     result["quote_source"] = getattr(broker, "last_quote_source", mark.source)
     result["mark_instrument_key"] = quote_instrument_key or instrument_key
     result["recent_ltp"] = recent_px

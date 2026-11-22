@@ -354,12 +354,17 @@ async def close_open_position(
     share_qty = int(
         equity_cfg.get("share_qty", merged_risk.get("equity_share_qty", 1)) or 1
     )
+    max_qty = int(
+        equity_cfg.get(
+            "max_qty_per_symbol",
+            merged_risk.get("max_equity_qty_per_symbol", 2000),
+        )
+        or 2000
+    )
     limits = {
         **merged_risk,
         "equity_share_qty": share_qty,
-        "max_equity_qty_per_symbol": int(
-            merged_risk.get("max_equity_qty_per_symbol", share_qty) or share_qty
-        ),
+        "max_equity_qty_per_symbol": max_qty,
         "max_open_symbols": int(
             equity_cfg.get(
                 "max_open_symbols", merged_risk.get("max_open_symbols", 10)
