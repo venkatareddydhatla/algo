@@ -248,9 +248,26 @@ git pull origin cursor/trades-page-round-trips-cb5e
 
 Open http://127.0.0.1:5173/trades — Open positions unchanged; Closed trades show Symbol, Side LONG/SHORT, Entry/Exit IST, Entry/Exit px, PnL, Reason, dry_run.
 
+### Pull VEDL Action = last pivot / D1 path (stacked) — tip
+
+Fixes watchlist **VEDL Action=BUY + Trend=BEARISH** while TradingView shows last red REVERSAL (D1→SELL). Action follows freshest U1/D1; when Trend is BEARISH and `lastConfirmedPivotIsHigh` while ZigZag `signal` is still sticky +1, Action → **SELL**. Worker clears/refreshes stale `pine.signal.*` on scan; API reconciles leftover BUY+BEARISH KV. Stacked on `cursor/purge-all-paper-trades-a4f3` (PR #65).
+
+```powershell
+cd C:\algo
+Set-ExecutionPolicy -Scope Process Bypass -Force
+.\deploy\windows\native\stop-native.ps1
+git fetch origin
+git checkout cursor/vedl-action-last-pivot-b388
+git pull origin cursor/vedl-action-last-pivot-b388
+.\deploy\windows\native\setup-native.ps1
+.\deploy\windows\native\start-native.ps1 -WithWorker
+```
+
+**Must stop then start** so API loads KV reconcile and worker rewrites Action from 15m history. Expect VEDL Action **SELL** when Trend **BEARISH** after red REVERSAL / pivot high. Still `dry_run` only. Never paste Upstox / Gmail secrets.
+
 ### Pull purge ALL paper trades (empty Trades page) (stacked) — tip
 
-Clears the **entire** dry-run paper ledger (open positions + closed round-trips / fills) so http://127.0.0.1:5173/trades is empty — safe Windows-native wipe for a clean Reversal Pro week. Prefer `scripts\purge_paper_ledger.py --confirm` (archives to `paper_fills_archive` unless `--no-archive`). Mode stays `dry_run`. `--yes` is an alias for `--confirm`. Policy: [`docs/options-portal-paper-retention.md`](./options-portal-paper-retention.md). Stacked on `cursor/watchlist-action-fresh-d1-12f2` (PR #64).
+Clears the **entire** dry-run paper ledger (open positions + closed round-trips / fills) so http://127.0.0.1:5173/trades is empty — safe Windows-native wipe for a clean Reversal Pro week. Prefer `scripts\purge_paper_ledger.py --confirm` (archives to `paper_fills_archive` unless `--no-archive`). Mode stays `dry_run`. `--yes` is an alias for `--confirm`. Policy: [`docs/options-portal-paper-retention.md`](./options-portal-paper-retention.md). Stacked on `cursor/watchlist-action-fresh-d1-12f2` (PR #64). Prefer the VEDL Action tip above when Action still shows BUY+BEARISH.
 
 ```powershell
 cd C:\algo
@@ -279,7 +296,7 @@ Equivalent pair (same end state):
 
 ### Pull Action + Trend columns (stacked) — tip
 
-Watchlist **Action** = most recent confirmed U1→BUY / D1→SELL (ZigZag sticky; later D1 replaces older U1; no HOLD). **Trend** = BULLISH / BEARISH / NEUTRAL from EMA `buysignal`/`sellsignal` (Pine table). Open-trade overlay only while paper qty>0 and does not hide a fresher opposite pine Action; never hides Trend. Entries still need fresh U1/D1. Prefer tip `cursor/watchlist-action-fresh-d1-12f2` (stacked on PR #63).
+Watchlist **Action** = most recent confirmed U1→BUY / D1→SELL (ZigZag sticky; later D1 replaces older U1; BEARISH+pivot-high override; no HOLD). **Trend** = BULLISH / BEARISH / NEUTRAL from EMA `buysignal`/`sellsignal` (Pine table). Open-trade overlay only while paper qty>0 and does not hide a fresher opposite pine Action; never hides Trend. Entries still need fresh U1/D1. Prefer tip `cursor/vedl-action-last-pivot-b388` (stacked on PR #65).
 
 ```powershell
 cd C:\algo

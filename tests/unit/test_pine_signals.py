@@ -342,11 +342,12 @@ def test_config_require_strong_knob():
 
 
 def test_action_from_u1_d1_and_sticky_signal():
-    """Action BUY/SELL from fresh U1/D1; sticky ZigZag between signals; never HOLD."""
+    """Action BUY/SELL from fresh U1/D1; last confirmed pivot sticky; never HOLD."""
     from options_portal_domain.pine_signals import (
         PineBarState,
         map_trend,
         map_watchlist_action,
+        reconcile_persisted_action,
     )
 
     p = PineParams(
@@ -363,7 +364,13 @@ def test_action_from_u1_d1_and_sticky_signal():
         prefer_closed=False,
     )
     assert result.action in {SignalAction.BUY, SignalAction.SELL}
-    assert result.action_source in {"reversal", "signal", "trend", "neutral"}
+    assert result.action_source in {
+        "reversal",
+        "pivot",
+        "signal",
+        "trend",
+        "neutral",
+    }
     assert result.trend in {"BULLISH", "BEARISH", "NEUTRAL"}
 
     u1 = PineBarState(
@@ -383,6 +390,7 @@ def test_action_from_u1_d1_and_sticky_signal():
         confirmed_pivot=True,
         buy_signal=False,  # require_strong off for Action; entry separate
         sell_signal=False,
+        last_confirmed_pivot_is_high=False,
     )
     act, src, _ = map_watchlist_action(u1, params=p)
     assert act == SignalAction.BUY and src == "reversal"
@@ -404,12 +412,37 @@ def test_action_from_u1_d1_and_sticky_signal():
         confirmed_pivot=True,
         buy_signal=False,
         sell_signal=False,
+        last_confirmed_pivot_is_high=True,
     )
     act, src, _ = map_watchlist_action(d1, params=p)
     assert act == SignalAction.SELL and src == "reversal"
 
-    # Between signals: last ZigZag bias sticks (signal ±1, no fresh U1/D1)
-    sticky_buy = PineBarState(
+    # VEDL: pivot high + BEARISH overrides stale U1 signal+ → SELL
+    sticky_buy_stale = PineBarState(
+        ema9=1.0,
+        ema14=1.0,
+        ema21=1.0,
+        atr=1.0,
+        reversal_amount=1.0,
+        direction=-1,
+        signal=1,  # old U1 sticky — must NOT win over pivot high + BEARISH
+        u1=False,
+        d1=False,
+        buysignal=0,
+        sellsignal=1,
+        strong_bullish=False,
+        strong_bearish=False,
+        confirmed_pivot=False,
+        buy_signal=False,
+        sell_signal=False,
+        last_confirmed_pivot_is_high=True,
+    )
+    act, src, _ = map_watchlist_action(sticky_buy_stale, params=p)
+    assert act == SignalAction.SELL and src == "pivot"
+    assert map_trend(sticky_buy_stale) == "BEARISH"
+
+    # Pivot low + signal+ (no BEARISH override) → BUY via signal sticky
+    sticky_pivot_low = PineBarState(
         ema9=1.0,
         ema14=1.0,
         ema21=1.0,
@@ -420,17 +453,18 @@ def test_action_from_u1_d1_and_sticky_signal():
         u1=False,
         d1=False,
         buysignal=0,
-        sellsignal=1,  # Trend BEARISH must NOT flip Action while signal+ sticky
+        sellsignal=0,
         strong_bullish=False,
         strong_bearish=False,
         confirmed_pivot=False,
         buy_signal=False,
         sell_signal=False,
+        last_confirmed_pivot_is_high=False,
     )
-    act, src, _ = map_watchlist_action(sticky_buy, params=p)
+    act, src, _ = map_watchlist_action(sticky_pivot_low, params=p)
     assert act == SignalAction.BUY and src == "signal"
-    assert map_trend(sticky_buy) == "BEARISH"
 
+    # Last D1 sticky (signal-) wins even if Trend briefly BULLISH
     sticky_sell = PineBarState(
         ema9=1.0,
         ema14=1.0,
@@ -448,12 +482,54 @@ def test_action_from_u1_d1_and_sticky_signal():
         confirmed_pivot=False,
         buy_signal=False,
         sell_signal=False,
+        last_confirmed_pivot_is_high=True,
     )
     act, src, _ = map_watchlist_action(sticky_sell, params=p)
     assert act == SignalAction.SELL and src == "signal"
     assert map_trend(sticky_sell) == "BULLISH"
 
-    # When last reversal unset (signal=0): Trend fallback (#60)
+    # KV reconcile: stale BUY + BEARISH + pivot/D1 path → SELL
+    assert (
+        reconcile_persisted_action(
+            "BUY",
+            "BEARISH",
+            features={"last_confirmed_pivot_is_high": True, "signal": 1},
+        )
+        == "SELL"
+    )
+    assert (
+        reconcile_persisted_action(
+            "BUY",
+            "BEARISH",
+            features={"signal": -1, "zigzag_direction": -1},
+        )
+        == "SELL"
+    )
+
+    # signal=0 + known pivot → pivot sticky before Trend fallback
+    pivot_only_sell = PineBarState(
+        ema9=1.0,
+        ema14=1.0,
+        ema21=1.0,
+        atr=1.0,
+        reversal_amount=1.0,
+        direction=-1,
+        signal=0,
+        u1=False,
+        d1=False,
+        buysignal=0,
+        sellsignal=0,
+        strong_bullish=False,
+        strong_bearish=False,
+        confirmed_pivot=False,
+        buy_signal=False,
+        sell_signal=False,
+        last_confirmed_pivot_is_high=True,
+    )
+    act, src, _ = map_watchlist_action(pivot_only_sell, params=p)
+    assert act == SignalAction.SELL and src == "pivot"
+
+    # When last reversal unset (signal=0, no pivot): Trend fallback (#60)
     trend_buy = PineBarState(
         ema9=1.0,
         ema14=1.0,
@@ -471,6 +547,7 @@ def test_action_from_u1_d1_and_sticky_signal():
         confirmed_pivot=False,
         buy_signal=False,
         sell_signal=False,
+        last_confirmed_pivot_is_high=None,
     )
     act, src, _ = map_watchlist_action(trend_buy, params=p)
     assert act == SignalAction.BUY and src == "trend"
@@ -492,6 +569,7 @@ def test_action_from_u1_d1_and_sticky_signal():
         confirmed_pivot=False,
         buy_signal=False,
         sell_signal=False,
+        last_confirmed_pivot_is_high=None,
     )
     act, src, _ = map_watchlist_action(trend_sell, params=p)
     assert act == SignalAction.SELL and src == "trend"
@@ -514,6 +592,7 @@ def test_action_from_u1_d1_and_sticky_signal():
         confirmed_pivot=False,
         buy_signal=False,
         sell_signal=False,
+        last_confirmed_pivot_is_high=None,
     )
     assert map_trend(neutral) == "NEUTRAL"
     act, src, _ = map_watchlist_action(neutral, params=p)
@@ -558,7 +637,7 @@ def test_action_follows_later_d1_not_sticky_u1():
     """VEDL regression: after U1 then a later D1, Action=SELL (never leftover BUY).
 
     Trend may be BEARISH (sellsignal) at the same time — Action tracks the
-    most recent confirmed Reversal (ZigZag signal), not an older U1 sticky.
+    last confirmed pivot / freshest D1, not an older U1 ``signal+`` sticky.
     """
     from options_portal_domain.pine_signals import _run_reversal_engine
 
@@ -591,6 +670,7 @@ def test_action_follows_later_d1_not_sticky_u1():
     assert at_d1.action == SignalAction.SELL
     assert at_d1.action_source == "reversal"
     assert at_d1.state is not None and at_d1.state.signal < 0
+    assert at_d1.state.last_confirmed_pivot_is_high is True
 
     # Sticky bars after D1: still SELL; Trend can be BEARISH (BUY+BEARISH bug).
     after = list(candles[: last_d1_i + 1])
@@ -611,7 +691,97 @@ def test_action_follows_later_d1_not_sticky_u1():
     assert sticky.action == SignalAction.SELL
     assert sticky.action != SignalAction.BUY
     assert sticky.state is not None and sticky.state.signal < 0
+    assert sticky.state.last_confirmed_pivot_is_high is True
     # Trend BEARISH is allowed alongside Action SELL (chart-correct pairing).
     assert sticky.trend in {"BULLISH", "BEARISH", "NEUTRAL"}
     if sticky.trend == "BEARISH":
         assert sticky.action == SignalAction.SELL
+
+
+def test_vedl_pivot_high_before_d1_action_sell_when_bearish():
+    """VEDL: pivot high + sellsignal BEARISH → Action SELL even if signal still +1.
+
+    Mirrors chart last red REVERSAL path: lastConfirmedPivotIsHigh while ZigZag
+    ``signal`` may still be sticky +1 from an older U1 — Action must not stay BUY.
+    After later D1 with sellsignal=1 → Action SELL Trend BEARISH.
+    """
+    from options_portal_domain.pine_signals import (
+        PineBarState,
+        _run_reversal_engine,
+        map_trend,
+        map_watchlist_action,
+    )
+
+    p = PineParams(
+        **{
+            **_custom_params(require_strong=False).__dict__,
+            "action_no_hold": True,
+            "neutral_action": "BUY",
+        }
+    )
+    # Explicit VEDL-like state: U1 sticky + later pivot high + BEARISH.
+    gap_state = PineBarState(
+        ema9=1.0,
+        ema14=1.2,
+        ema21=1.4,
+        atr=1.0,
+        reversal_amount=1.0,
+        direction=-1,
+        signal=1,
+        u1=False,
+        d1=False,
+        buysignal=0,
+        sellsignal=1,
+        strong_bullish=False,
+        strong_bearish=False,
+        confirmed_pivot=False,
+        buy_signal=False,
+        sell_signal=False,
+        last_confirmed_pivot_is_high=True,
+    )
+    act, src, _ = map_watchlist_action(gap_state, params=p)
+    assert act == SignalAction.SELL and src == "pivot"
+    assert map_trend(gap_state) == "BEARISH"
+
+    candles = _u1_then_later_d1_series()
+    states = _run_reversal_engine(candles, params=p)
+    flips = [(i, "U1" if s.u1 else "D1") for i, s in enumerate(states) if s.u1 or s.d1]
+    last_u1_i = max(i for i, kind in flips if kind == "U1")
+    last_d1_i = max(i for i, kind in flips if kind == "D1")
+    assert last_d1_i > last_u1_i
+
+    at_d1 = evaluate_pine_signal(
+        "VEDL", candles[: last_d1_i + 1], params=p, prefer_closed=False
+    )
+    assert at_d1.action == SignalAction.SELL
+    assert at_d1.action != SignalAction.BUY
+    assert at_d1.state is not None and at_d1.state.signal < 0
+
+    # Extend lower until sellsignal sticks → SELL + BEARISH (no leftover BUY).
+    extended = list(candles[: last_d1_i + 1])
+    last_c = extended[-1].close
+    bear = None
+    for j in range(40):
+        c = last_c - (j + 1) * 2.0
+        extended.append(
+            _bar(
+                len(extended),
+                close=c,
+                high=c + 0.2,
+                low=c - 1.0,
+                open_=c + 0.1,
+                symbol="VEDL",
+            )
+        )
+        bear = evaluate_pine_signal(
+            "VEDL", extended, params=p, prefer_closed=False
+        )
+        if bear.trend == "BEARISH":
+            break
+    assert bear is not None
+    assert bear.action == SignalAction.SELL
+    assert bear.action != SignalAction.BUY
+    if bear.trend == "BEARISH":
+        assert bear.state is not None
+        assert bear.state.sellsignal == 1
+        assert bear.state.signal < 0 or bear.state.last_confirmed_pivot_is_high is True

@@ -19,10 +19,12 @@ Trade mapping (dry-run):
   ``trading.pine_signals.require_strong: false`` to enter on raw U1/D1.
 
 Watchlist fields:
-  Action = **most recent confirmed U1/D1** (green/red Reversal):
-    fresh U1→BUY, fresh D1→SELL; between bars ZigZag ``signal`` sticky
-    (signal>0 last U1, signal<0 last D1). A later opposite flip always
-    replaces the prior Action — never keep an old U1 across a newer D1.
+  Action = **freshest U1/D1** (TV Reversal labels) via ZigZag ``signal``:
+    fresh U1→BUY, fresh D1→SELL; else ``signal`` sticky. Override: when
+    Trend is BEARISH and ``lastConfirmedPivotIsHigh`` while ``signal`` is
+    still sticky +1 (D1 path lag), Action → SELL so VEDL cannot show
+    BUY+BEARISH after a red REVERSAL / pivot high. Else EMA Trend /
+    ``neutral_action``.
   Trend  = buysignal→BULLISH / sellsignal→BEARISH / else NEUTRAL.
 
 Preview pivots are never used for trading.
@@ -46,8 +48,8 @@ DEFAULT_ATR_REVERSAL = 2.0
 DEFAULT_ATR_LENGTH = 14
 DEFAULT_AVERAGE_LENGTH = 5
 DEFAULT_REQUIRE_STRONG = True
-# Watchlist Action never HOLD: fresh U1/D1, else last ZigZag signal bias,
-# else EMA trend (buysignal/sellsignal), else neutral_action.
+# Watchlist Action never HOLD: fresh U1/D1, else ZigZag signal sticky,
+# with BEARISH+pivot-high override, else EMA trend, else neutral_action.
 # Separate ``trend`` field mirrors Pine info table (BULLISH/BEARISH/NEUTRAL).
 DEFAULT_ACTION_NO_HOLD = True
 DEFAULT_NEUTRAL_ACTION = "BUY"
@@ -134,6 +136,9 @@ class PineBarState:
     confirmed_pivot: bool
     buy_signal: bool  # entry gate (U1 or STRONG)
     sell_signal: bool
+    # Sticky Pine ``lastConfirmedPivotIsHigh`` (None until first confirm).
+    # Pivot high → SELL/D1 path; pivot low → BUY/U1 path for watchlist Action.
+    last_confirmed_pivot_is_high: bool | None = None
     # Compat aliases used by older call sites / logs
     ema_fast: float | None = None
     ema_slow: float | None = None
@@ -163,7 +168,7 @@ class PineSignalResult:
     reasons: list[str]
     features: dict[str, Any] = field(default_factory=dict)
     state: PineBarState | None = None
-    action_source: str = "none"  # reversal | signal | trend | neutral | hold
+    action_source: str = "none"  # reversal | pivot | signal | trend | neutral | hold
     trend: str = TREND_NEUTRAL  # BULLISH | BEARISH | NEUTRAL
 
     @property
@@ -180,6 +185,10 @@ class PineSignalResult:
             return "U1 → Action BUY"
         if self.action_source == "reversal" and self.action == SignalAction.SELL:
             return "D1 → Action SELL"
+        if self.action_source == "pivot" and self.action == SignalAction.BUY:
+            return "last pivot low (U1 path) → BUY"
+        if self.action_source == "pivot" and self.action == SignalAction.SELL:
+            return "last pivot high (D1 path) → SELL"
         if self.action_source == "signal" and self.action == SignalAction.BUY:
             return "last U1 sticky (signal+) → BUY"
         if self.action_source == "signal" and self.action == SignalAction.SELL:
@@ -372,22 +381,76 @@ def map_trend(state: PineBarState | None) -> str:
     return TREND_NEUTRAL
 
 
+def reconcile_persisted_action(
+    action: str | SignalAction | None,
+    trend: str | None,
+    *,
+    features: Mapping[str, Any] | None = None,
+) -> str:
+    """Fix stale KV Action that lags last confirmed pivot / D1 path.
+
+    When Trend is BEARISH and features show last confirmed pivot high, ZigZag
+    ``signal<0``, or zigzag direction already on the D1 path while Action is
+    still BUY (old U1 ``signal+`` sticky), rewrite Action to SELL so watchlist
+    matches TV red REVERSAL + BEARISH without waiting for a fresh worker tick.
+    """
+    raw = action.value if isinstance(action, SignalAction) else str(action or "HOLD")
+    act = raw.upper()
+    if act in {"BUY_CE_BIAS", "BUY_CE", "LONG"}:
+        act = "BUY"
+    elif act in {"BUY_PE_BIAS", "BUY_PE", "SHORT"}:
+        act = "SELL"
+    elif act not in {"BUY", "SELL", "HOLD"}:
+        act = "HOLD"
+    t = str(trend or TREND_NEUTRAL).strip().upper()
+    if t in {"BEAR", "DOWN"}:
+        t = TREND_BEARISH
+    elif t in {"BULL", "UP"}:
+        t = TREND_BULLISH
+    feats = dict(features or {})
+    pivot_high = feats.get("last_confirmed_pivot_is_high")
+    if pivot_high is None:
+        pivot_high = feats.get("lastConfirmedPivotIsHigh")
+    try:
+        sig = int(feats.get("signal")) if feats.get("signal") is not None else None
+    except (TypeError, ValueError):
+        sig = None
+    try:
+        zz = (
+            int(feats.get("zigzag_direction"))
+            if feats.get("zigzag_direction") is not None
+            else None
+        )
+    except (TypeError, ValueError):
+        zz = None
+    d1_path = (
+        pivot_high is True
+        or (sig is not None and sig < 0)
+        or (zz is not None and zz < 0 and pivot_high is not False)
+    )
+    if act == "BUY" and t == TREND_BEARISH and d1_path:
+        return "SELL"
+    return act
+
+
 def map_watchlist_action(
     state: PineBarState,
     *,
     params: PineParams,
 ) -> tuple[SignalAction, str, float]:
-    """Watchlist Action = most recent confirmed U1/D1 (green/red Reversal).
+    """Watchlist Action = freshest U1/D1 (TV labels), with pivot-high fix.
 
     Priority (``action_no_hold`` never returns HOLD):
       1. Fresh U1 → BUY / D1 → SELL (same bar as TV Reversal label)
-      2. ZigZag ``signal`` >0 / <0 → sticky **last** confirmed reversal
-         (after a later D1, signal=-1 → SELL; after later U1 → BUY).
-         Never keep an old U1 sticky across a newer opposite pivot flip.
-      3. EMA Trend ``buysignal`` / ``sellsignal`` → BUY/SELL only when
-         ``signal==0`` (no reversal yet)
-      4. ``neutral_action`` knob
+      2. VEDL override: ``lastConfirmedPivotIsHigh`` + Trend BEARISH while
+         ZigZag ``signal`` still sticky +1 (D1 path lag after pivot high) →
+         SELL. Never leave Action BUY+BEARISH after a red REVERSAL path.
+      3. ZigZag ``signal`` >0 / <0 → sticky **last** confirmed U1/D1
+         (matches TV labels; later D1 replaces older U1).
+      4. EMA Trend ``buysignal`` / ``sellsignal`` when ``signal==0``
+      5. ``neutral_action`` knob
 
+    Invariant: Trend BEARISH + last confirmed pivot high → Action SELL.
     Trend is independent (``map_trend``). Entries still use ``buy_signal`` /
     ``sell_signal`` (U1/D1 ± require_strong). Returns ``(action, source, score)``.
     """
@@ -396,12 +459,26 @@ def map_watchlist_action(
         return SignalAction.BUY, "reversal", 1.0
     if state.d1:
         return SignalAction.SELL, "reversal", -1.0
-    # 2) Sticky most-recent confirmed reversal (ZigZag signal flips with U1/D1)
+    # 2) Pivot-high + BEARISH beats stale U1 signal+ (D1 path lag / VEDL)
+    pivot_high = state.last_confirmed_pivot_is_high
+    if (
+        pivot_high is True
+        and int(state.sellsignal) == 1
+        and int(state.buysignal) != 1
+        and int(state.signal) > 0
+    ):
+        return SignalAction.SELL, "pivot", -0.5
+    # 3) Sticky most-recent confirmed U1/D1 (ZigZag signal; matches TV labels)
     if state.signal > 0:
         return SignalAction.BUY, "signal", 0.5
     if state.signal < 0:
         return SignalAction.SELL, "signal", -0.5
-    # 3) When last reversal unset: derive from EMA Trend (as #60)
+    # 4) signal unset: prefer last confirmed pivot direction when known
+    if pivot_high is True:
+        return SignalAction.SELL, "pivot", -0.5
+    if pivot_high is False:
+        return SignalAction.BUY, "pivot", 0.5
+    # 5) When last reversal unset: derive from EMA Trend (as #60)
     if state.buysignal == 1 and state.sellsignal != 1:
         return SignalAction.BUY, "trend", 0.5
     if state.sellsignal == 1 and state.buysignal != 1:
@@ -554,6 +631,8 @@ def _run_reversal_engine(
     sellsignal = 0
     buy_prev = False
     sell_prev = False
+    # Sticky Pine ``lastConfirmedPivotIsHigh`` (None until first confirm).
+    last_confirmed_pivot_is_high: bool | None = None
 
     states: list[PineBarState] = []
 
@@ -629,9 +708,11 @@ def _run_reversal_engine(
             if last_pivot_is_high:
                 eih = last_pivot_price
                 direction_sig = -1
+                last_confirmed_pivot_is_high = True
             else:
                 eil = last_pivot_price
                 direction_sig = 1
+                last_confirmed_pivot_is_high = False
             # last_pivot_actual / last_pivot_bar unused for trading (labels only)
             _ = (last_pivot_actual, last_pivot_bar)
 
@@ -715,6 +796,7 @@ def _run_reversal_engine(
                 confirmed_pivot=bool(confirmed_pivot),
                 buy_signal=entry_buy,
                 sell_signal=entry_sell,
+                last_confirmed_pivot_is_high=last_confirmed_pivot_is_high,
                 ema_fast=e14,
                 ema_slow=e21,
             )
@@ -754,9 +836,10 @@ def evaluate_pine_signal(
 ) -> PineSignalResult:
     """Map last bar → watchlist Action + Trend + entry gates.
 
-    Entries: U1/D1 (or STRONG). Watchlist Action = most recent confirmed
-    U1/D1 (fresh flip, else ZigZag ``signal`` sticky so a later D1 replaces
-    an older U1), else EMA Trend / ``neutral_action`` when ``action_no_hold``.
+    Entries: U1/D1 (or STRONG). Watchlist Action = freshest U1/D1 (ZigZag
+    ``signal`` sticky so a later D1 replaces an older U1), with override when
+    Trend is BEARISH and last confirmed pivot is high while ``signal`` still
+    sticky +1; else EMA Trend / ``neutral_action`` when ``action_no_hold``.
     ``trend`` always mirrors Pine table buysignal/sellsignal.
     """
     p = params or pine_params_from_config(cfg)
@@ -816,6 +899,7 @@ def evaluate_pine_signal(
     trend = map_trend(state)
     reasons.append(
         f"signal={state.signal} u1={state.u1} d1={state.d1} "
+        f"pivot_high={state.last_confirmed_pivot_is_high} "
         f"buysignal={state.buysignal} sellsignal={state.sellsignal} "
         f"trend={trend}"
     )
@@ -861,6 +945,7 @@ def evaluate_pine_signal(
         "signal": state.signal,
         "u1": state.u1,
         "d1": state.d1,
+        "last_confirmed_pivot_is_high": state.last_confirmed_pivot_is_high,
         "buysignal": state.buysignal,
         "sellsignal": state.sellsignal,
         "strong_bullish": state.strong_bullish,
@@ -873,7 +958,7 @@ def evaluate_pine_signal(
     }
     conf = 0.9 if (state.strong_bullish or state.strong_bearish) else (
         0.85 if (state.buy_signal or state.sell_signal) else (
-            0.4 if action_source in {"reversal", "trend", "signal"} else 0.2
+            0.4 if action_source in {"reversal", "pivot", "trend", "signal"} else 0.2
         )
     )
 

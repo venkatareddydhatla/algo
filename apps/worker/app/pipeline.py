@@ -398,8 +398,21 @@ async def run_symbol_tick(
                 ).upper()
                 if persist_trend not in {"BULLISH", "BEARISH", "NEUTRAL"}:
                     persist_trend = "NEUTRAL"
+                pine_key = f"pine.signal.{symbol.upper()}"
+                # Always rewrite from recomputed 15m history so stale U1 sticky
+                # BUY cannot linger after a later pivot high / D1 (VEDL).
+                try:
+                    prev = kv.get(pine_key)
+                    if (
+                        isinstance(prev, dict)
+                        and str(prev.get("action") or "").upper() == "BUY"
+                        and persist_action == "SELL"
+                    ):
+                        kv.delete(pine_key)
+                except Exception:  # noqa: BLE001
+                    pass
                 kv.set(
-                    f"pine.signal.{symbol.upper()}",
+                    pine_key,
                     {
                         "symbol": symbol.upper(),
                         "action": persist_action,

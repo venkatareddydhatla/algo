@@ -14,6 +14,7 @@ from options_portal_domain.pine_signals import (
     TREND_BEARISH,
     TREND_BULLISH,
     TREND_NEUTRAL,
+    reconcile_persisted_action,
     watchlist_pine_action,
 )
 from options_portal_domain.universe import INDEX_SYMBOLS
@@ -376,7 +377,17 @@ def pine_row_from_kv(
     """
     sym = str(payload.get("symbol") or "").upper()
     clock = now or datetime.now(tz=timezone.utc)
-    raw_action = _normalize_pine_action(str(payload.get("action") or "HOLD"))
+    feats_early = dict(payload.get("features") or {})
+    trend_early = _normalize_trend(
+        payload.get("trend") or feats_early.get("trend")
+    )
+    # Stale U1 sticky BUY while pivot-high / D1 path + BEARISH → SELL (VEDL).
+    raw_action = reconcile_persisted_action(
+        str(payload.get("action") or "HOLD"),
+        trend_early,
+        features=feats_early,
+    )
+    raw_action = _normalize_pine_action(raw_action)
     bar_ts = payload.get("bar_ts")
     no_hold = _payload_action_no_hold(payload)
     action = watchlist_pine_action(
@@ -521,7 +532,33 @@ def load_persisted_pine_signals(
             payload = kv.get(f"pine.signal.{key}")
             if not (isinstance(payload, dict) and payload.get("action")):
                 continue
-            raw = _normalize_pine_action(str(payload.get("action") or "HOLD"))
+            feats = dict(payload.get("features") or {})
+            trend = _normalize_trend(payload.get("trend") or feats.get("trend"))
+            reconciled = reconcile_persisted_action(
+                str(payload.get("action") or "HOLD"),
+                trend,
+                features=feats,
+            )
+            raw = _normalize_pine_action(reconciled)
+            # Refresh stale KV Action in place when pivot/D1 path disagrees.
+            if raw != _normalize_pine_action(str(payload.get("action") or "")):
+                try:
+                    updated = dict(payload)
+                    updated["action"] = raw
+                    updated["score"] = (
+                        1.0 if raw == "BUY" else -1.0 if raw == "SELL" else 0.0
+                    )
+                    updated["action_source"] = "pivot"
+                    updated["updated_at"] = clock.isoformat()
+                    updated["reason_summary"] = (
+                        "last pivot high (D1 path) → SELL"
+                        if raw == "SELL"
+                        else "last pivot low (U1 path) → BUY"
+                    )
+                    kv.set(f"pine.signal.{key}", updated)
+                    payload = updated
+                except Exception:  # noqa: BLE001
+                    payload = {**payload, "action": raw}
             no_hold = _payload_action_no_hold(payload)
             live = watchlist_pine_action(
                 raw,
