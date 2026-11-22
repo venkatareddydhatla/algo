@@ -3,7 +3,7 @@
 Venkata rule card (entry-hurdle ease — no min-trade quota):
 
 **Universe:** NSE F&O **stocks** only; no index trades.
-**Entry window:** 09:30–15:20 IST (``entries_open=09:30``, ``no_new_entries_after=15:20``).
+**Entry window:** 09:30–15:15 IST (``entries_open=09:30``, ``no_new_entries_after=15:15``).
 
 **Entry — ALL must pass**
 1. ``|hybrid|`` floors (IST): ≥0.75 before 12:00 **and** after 12:00 until 14:20
@@ -26,7 +26,7 @@ Venkata rule card (entry-hurdle ease — no min-trade quota):
 
 **Exit / soft flatten**
 - ATR stop + trail; discretionary profit requires min RRR ≥ 1.2.
-- Soft flatten from **15:28 IST** unless ``|hybrid| ≥ 0.85`` and trend confirmed.
+- Soft flatten from **15:15 IST** (flatten ALL; overnight hold off by default).
 - Risk exits remain cash-session only (existing after-hours gate).
 """
 
@@ -51,9 +51,9 @@ from options_portal_domain.types import Candle, NewsItem, SentimentResult
 
 # --- YAML defaults (trading.risk.high_conviction / session) -----------------
 DEFAULT_ENTRY_OPEN_IST = "09:30"
-DEFAULT_NO_NEW_ENTRIES_AFTER = "15:20"
-DEFAULT_SOFT_FLATTEN_IST = "15:28"
-DEFAULT_SOFT_FLATTEN_UNTIL_IST = "15:40"
+DEFAULT_NO_NEW_ENTRIES_AFTER = "15:15"
+DEFAULT_SOFT_FLATTEN_IST = "15:15"
+DEFAULT_SOFT_FLATTEN_UNTIL_IST = "15:30"
 DEFAULT_OVERNIGHT_HOLD_MIN_HYBRID = 0.85
 
 DEFAULT_MIN_HYBRID_BEFORE_12 = 0.75
@@ -811,7 +811,7 @@ def evaluate_entry_gate(
 
     if in_entry_window:
         factors.append(
-            FactorResult(name="entry_window", passed=True, detail="in 09:30–15:20")
+            FactorResult(name="entry_window", passed=True, detail="in 09:30–15:15")
         )
     else:
         factors.append(

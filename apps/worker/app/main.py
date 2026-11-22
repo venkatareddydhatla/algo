@@ -144,7 +144,7 @@ async def _tick_open_book_management(cfg: dict[str, Any]) -> dict[str, Any]:
     - fixed ±2% exits enabled, stock opens exist, and cash risk-exit window
       (09:15–15:40 IST trading days) — not overnight
     - ATR trail / profit scale-out enabled (when re-enabled) + same window
-    - soft-flatten window (15:20–15:40 IST)
+    - soft-flatten window (15:15–15:30 IST)
     - morning profit-book window (09:15–10:00 IST, when enabled)
     - open book contains index underlyings (soft-close ``index_not_equity``)
 
@@ -275,11 +275,12 @@ async def soft_flatten_poll_loop(stop_event: asyncio.Event) -> None:
 
     Full-universe scans can run many minutes under live MD. Soft flatten used
     to fire only when each symbol's turn arrived mid-scan, so a slow/hung cycle
-    (or a symbol last seen before 15:20) could exit hours late. This loop ticks
+    (or a symbol last seen before 15:15) could exit hours late. This loop ticks
     the open book on its own cadence for fixed ±2% exits (cash risk-exit
-    window 09:15–15:40 IST), soft-flatten (15:20–15:40), and any open index
-    underlyings that must leave the equity paper book. ATR trail / morning TP
-    remain callable when re-enabled in config. Overnight: no risk-exit fills.
+    window 09:15–15:30 IST), soft-flatten (15:15–15:30 flatten ALL), and any
+    open index underlyings that must leave the equity paper book. ATR trail /
+    morning TP remain callable when re-enabled in config. Overnight: no
+    risk-exit fills.
     """
     cfg = load_config()
     soft_policy = SoftEodPolicy.from_config(cfg)
@@ -328,7 +329,7 @@ async def daily_summary_poll_loop(stop_event: asyncio.Event) -> None:
     Full-universe scans can run many minutes (longer under live broker limits).
     Soft-flatten open-book + fill emails run on soft_flatten_poll_loop; the
     daily summary used to wait until ``_run_batch`` returned, so a long/hung
-    cycle after 15:20 could miss 16:00.
+    cycle after 15:15 could miss 16:00.
     """
     cfg = load_config()
     poll_sec = daily_summary_config(cfg)["poll_interval_sec"]
