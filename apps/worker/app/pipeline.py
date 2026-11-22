@@ -15,11 +15,6 @@ from options_portal_domain.candles_agg import (
     bar_direction,
 )
 from options_portal_domain.config import load_config, trading_mode
-from options_portal_domain.entry_selection import (
-    entry_selection_config,
-    in_reentry_cooloff,
-    last_exit_times_from_fills,
-)
 from options_portal_domain.equity import (
     below_min_equity_price,
     last_good_ltp,
@@ -322,16 +317,18 @@ async def run_symbol_tick(
         )
         features = {**features, **pine_result.features}
         logger.info(
-            "%s pine_signal action=%s buy=%s sell=%s prior_x=%s prior_xu=%s "
-            "clear_above=%s clear_below=%s",
+            "%s pine_signal action=%s buy=%s sell=%s u1=%s d1=%s "
+            "strong_bull=%s strong_bear=%s buysignal=%s sellsignal=%s",
             symbol,
             pine_result.action.value,
             pine_result.buy_signal,
             pine_result.sell_signal,
-            (pine_result.state.prior_crossover if pine_result.state else None),
-            (pine_result.state.prior_crossunder if pine_result.state else None),
-            (pine_result.state.candle_clear_above if pine_result.state else None),
-            (pine_result.state.candle_clear_below if pine_result.state else None),
+            (pine_result.state.u1 if pine_result.state else None),
+            (pine_result.state.d1 if pine_result.state else None),
+            (pine_result.state.strong_bullish if pine_result.state else None),
+            (pine_result.state.strong_bearish if pine_result.state else None),
+            (pine_result.state.buysignal if pine_result.state else None),
+            (pine_result.state.sellsignal if pine_result.state else None),
         )
         # Persist watchlist Action only while signal bar is current / same 15m;
         # otherwise HOLD so names like APOLLOHOSP cannot linger as SELL for hours.
@@ -433,18 +430,29 @@ async def run_symbol_tick(
         "execution": "dry_run",
         "market_data_source": market_data_source,
         "candle_count": len(candles),
-        "signal_engine": "pine_nifty50_v2" if use_pine else "hybrid_confluence",
+        "signal_engine": "reversal_pro_v32" if use_pine else "hybrid_confluence",
         "pine": (
             {
                 "buy_signal": pine_result.buy_signal,
                 "sell_signal": pine_result.sell_signal,
+                "u1": bool(pine_result.state.u1) if pine_result.state else False,
+                "d1": bool(pine_result.state.d1) if pine_result.state else False,
+                "strong_bullish": (
+                    bool(pine_result.state.strong_bullish) if pine_result.state else False
+                ),
+                "strong_bearish": (
+                    bool(pine_result.state.strong_bearish) if pine_result.state else False
+                ),
                 "params": {
-                    "ema_fast": pine_params.ema_fast,
-                    "ema_slow": pine_params.ema_slow,
-                    "su_len": pine_params.su_len,
-                    "su_mult": pine_params.su_mult,
-                    "adx_len": pine_params.adx_len,
-                    "vol_ratio": pine_params.vol_ratio,
+                    "confirmation_mode": pine_params.confirmation_mode,
+                    "confirmation_bars": pine_params.confirmation_bars,
+                    "sensitivity": pine_params.sensitivity,
+                    "method": pine_params.method,
+                    "atr_length": pine_params.atr_length,
+                    "average_length": pine_params.average_length,
+                    "require_strong": pine_params.require_strong,
+                    "atr_multiplier": pine_params.atr_multiplier(),
+                    "percent_threshold": pine_params.percent_threshold(),
                 },
             }
             if pine_result is not None
@@ -1009,7 +1017,7 @@ async def run_symbol_tick(
         if int(morning_tp.get("exit_qty") or 0) >= int(open_qty):
             clear_atr_trail_state(symbol)
     elif opposite_pine_action not in {"none", ""} and opposite_pine.get("exit_qty"):
-        # Close-only: EXIT intent (cooloff recorded like other closes).
+        # Close-only: EXIT intent (no cooloff gate — may re-enter on next signal).
         logger.info("%s %s", symbol, opposite_pine["reason"])
         intents = plan_equity_intents(
             symbol,
@@ -1203,9 +1211,9 @@ async def run_symbol_tick(
     safe_mode = "dry_run" if mode == "live" else mode
     limits = {**risk_cfg, "halt": cfg.get("trading", {}).get("halt")}
 
-    # High-conviction multi-factor gate — bypassed on Pine path (exact buy/sell only).
-    # Re-entry cooloff still applies on Pine so manual_close / risk exits are not
-    # immediately reversed by the next BUY/SELL tick.
+    # High-conviction multi-factor gate — bypassed on Reversal Pro / Pine path.
+    # No re-entry cooloff: same symbol may re-enter on the next fresh U1/D1
+    # (or STRONG) after close (manual, ±2%, opposite signal, soft flatten).
     hc_enabled = bool(hc_cfg.get("enabled", True)) and (not use_pine)
     if use_pine:
         result["high_conviction"] = {
@@ -1214,51 +1222,11 @@ async def run_symbol_tick(
             "floor": 0.0,
             "factors": [],
         }
+        result["reentry_cooloff"] = False
         logger.info(
-            "%s pine_entry_path — HC/MTF/RVOL/proximity/news/top10%% bypassed "
-            "(reentry_cooloff still enforced)",
+            "%s pine_entry_path — HC/MTF/RVOL/proximity/news/top10%%/cooloff bypassed",
             symbol,
         )
-        sel_cfg = entry_selection_config(cfg)
-        cool = dict(sel_cfg.get("reentry_cooloff") or {})
-        if (
-            cool.get("enabled", True)
-            and int(cool.get("minutes") or 0) > 0
-            and any(
-                getattr(i, "action_kind", None) == "entry"
-                and (open_side is None or open_qty <= 0)
-                for i in intents
-            )
-        ):
-            last_exit = None
-            try:
-                if paper is not None and paper.available:
-                    fills_cool = list(paper.list_all_fills(mode="dry_run"))
-                    last_exit = last_exit_times_from_fills(fills_cool).get(
-                        symbol.upper()
-                    )
-            except Exception:  # noqa: BLE001
-                logger.exception("%s pine reentry_cooloff lookup failed", symbol)
-            if in_reentry_cooloff(
-                last_close=last_exit,
-                now=ist_now,
-                cooloff_minutes=int(cool.get("minutes") or 0),
-                same_session_only=bool(cool.get("same_session_only", True)),
-                session_day=pnl_ist_day(ist_now),
-            ):
-                mins = int(cool.get("minutes") or 0)
-                cool_note = (
-                    f"reentry_cooloff — {symbol.upper()} blocked {mins}m "
-                    f"after exit (incl. manual_close)"
-                )
-                logger.info("%s %s", symbol, cool_note)
-                intents = filter_entry_intents(intents, allow_entries=False)
-                result["reentry_cooloff"] = True
-                if not intents:
-                    result["order"] = None
-                    result["note"] = cool_note
-                    return result
-                result["note"] = cool_note
     if hc_enabled and any(
         getattr(i, "action_kind", None) == "entry"
         and (open_side is None or open_qty <= 0)

@@ -56,18 +56,23 @@ trading:
       atr_period: 14
       exit_fraction: 1.0
     user_hours_note: "09:15–15:40 IST (entries 09:30–15:20; soft flatten 15:28–15:40; overnight |h|≥0.85 + trend; fixed ±2% open exits; no hard 15:40 square-off)"
-  # EMA13/21 cross + next 15m candle fully clear of both EMAs (ST/ADX/vol diagnostics only).
+  # NPR21 Reversal Detection Pro v3.2 (Confirmed Only). See docs/pine-reversal-pro-v32.pine.
   pine_signals:
     enabled: true
-    ema_fast: 13
+    confirmation_mode: "Confirmed Only"
+    confirmation_bars: 0
+    sensitivity: Medium
+    method: average
+    atr_length: 14
+    average_length: 5
+    require_strong: true   # U1/D1 + EMA9/14/21 trend; set false for raw U1/D1
+    # Custom mode knobs (used only when sensitivity: Custom):
+    # percent_amount: 0.08
+    # rev_amount: 0.0001
+    # atr_reversal: 2.0
+    ema_superfast: 9
+    ema_fast: 14
     ema_slow: 21
-    su_len: 10
-    su_mult: 3.0
-    adx_len: 14
-    use_adx: true
-    adx_min: 20
-    vol_ratio: 1.2
-    vol_sma_len: 20
   market_sentiment:
     enabled: false
     symbols: [NIFTY, BANKNIFTY]
@@ -135,7 +140,7 @@ trading:
         lookback_minutes: 60
         fail_open: true
       cooloff:
-        minutes: 120
+        minutes: 0
         same_session_only: true
       capacity:
         max_open: 10
@@ -158,8 +163,8 @@ trading:
       rank_by: abs_hybrid
       anti_churn: empty_slots_only
       reentry_cooloff:
-        enabled: true
-        minutes: 120
+        enabled: false
+        minutes: 0
         same_session_only: true
       morning_session:
         enabled: false

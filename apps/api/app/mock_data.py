@@ -64,16 +64,17 @@ _SEED_SIGNALS: list[dict[str, Any]] = [
         "expiry_hint": "monthly",
         "updated_at": NOW,
         "reasons": [
-            "prior bar: EMA13 crossunder EMA21",
-            "candle clear below both EMAs (confirm)",
+            "D1 bearish reversal flip",
+            "STRONG bearish (D1 + sellsignal)",
             "sell_signal=True",
         ],
         "reason_kind": "pine",
-        "reason_summary": "EMA crossunder + candle clear below both",
+        "reason_summary": "STRONG bearish (D1 + EMA trend)",
         "reason_detail": (
-            "Technical:\n- prior bar: EMA13 crossunder EMA21\n"
-            "- candle clear below both EMAs (confirm)\n- sell_signal=True"
+            "Technical:\n- D1 bearish reversal flip\n"
+            "- STRONG bearish (D1 + sellsignal)\n- sell_signal=True"
         ),
+        "signal_engine": "reversal_pro_v32",
     },
     {
         "id": "sig-tcs-1",
@@ -88,8 +89,9 @@ _SEED_SIGNALS: list[dict[str, Any]] = [
         "updated_at": NOW,
         "reasons": ["buy_signal=False sell_signal=False → HOLD"],
         "reason_kind": "pine",
-        "reason_summary": "no Pine signal",
+        "reason_summary": "no Reversal Pro signal",
         "reason_detail": "Technical:\n- buy_signal=False sell_signal=False → HOLD",
+        "signal_engine": "reversal_pro_v32",
     },
 ]
 
@@ -258,7 +260,7 @@ def synthetic_signal_for_symbol(
             "stub": False,
             "dry_run_synthetic": True,
             "live_news": False,
-            "signal_engine": "pine_nifty50_v2",
+            "signal_engine": "reversal_pro_v32",
             "reason_kind": "pine",
             "reason_summary": "index blocked",
             "reason_detail": "Technical:\n- " + reasons[0],
@@ -267,35 +269,35 @@ def synthetic_signal_for_symbol(
     # Deterministic placeholder: ~12% BUY, ~12% SELL, else HOLD (until worker KV).
     roll = _stable_unit(sym, "pine_action")
     reasons: list[str] = [
-        "EMA13/EMA21 placeholder (await worker candles)",
+        "Reversal Pro v3.2 placeholder (await worker candles)",
     ]
     if roll >= 0.88:
         action = "BUY"
         score = 1.0
         reasons.extend(
             [
-                "prior bar: EMA13 crossover EMA21",
-                "candle clear above both EMAs (confirm)",
+                "U1 bullish reversal flip",
+                "STRONG bullish (U1 + buysignal)",
                 "buy_signal=True (placeholder until worker persist)",
             ]
         )
-        summary = "EMA cross + candle clear above both"
+        summary = "STRONG bullish (U1 + EMA trend)"
     elif roll <= 0.12:
         action = "SELL"
         score = -1.0
         reasons.extend(
             [
-                "prior bar: EMA13 crossunder EMA21",
-                "candle clear below both EMAs (confirm)",
+                "D1 bearish reversal flip",
+                "STRONG bearish (D1 + sellsignal)",
                 "sell_signal=True (placeholder until worker persist)",
             ]
         )
-        summary = "EMA crossunder + candle clear below both"
+        summary = "STRONG bearish (D1 + EMA trend)"
     else:
         action = "HOLD"
         score = 0.0
         reasons.append("buy_signal=False sell_signal=False → HOLD")
-        summary = "no Pine signal"
+        summary = "no Reversal Pro signal"
 
     detail = "Technical:\n" + "\n".join(f"- {r}" for r in reasons)
     return {
@@ -313,7 +315,7 @@ def synthetic_signal_for_symbol(
         "stub": False,
         "dry_run_synthetic": True,
         "live_news": False,
-        "signal_engine": "pine_nifty50_v2",
+        "signal_engine": "reversal_pro_v32",
         "reason_kind": "pine",
         "reason_summary": summary,
         "reason_detail": detail,
@@ -363,11 +365,11 @@ def pine_row_from_kv(
         summary = str(
             payload.get("reason_summary")
             or (
-                "EMA cross + candle clear above both"
+                "STRONG bullish (U1 + EMA trend)"
                 if action == "BUY"
-                else "EMA crossunder + candle clear below both"
+                else "STRONG bearish (D1 + EMA trend)"
                 if action == "SELL"
-                else "no Pine signal"
+                else "no Reversal Pro signal"
             )
         )
         detail = str(
@@ -375,7 +377,7 @@ def pine_row_from_kv(
             or (
                 "Technical:\n" + "\n".join(f"- {r}" for r in reasons)
                 if reasons
-                else "Neutral: no Pine buy/sell"
+                else "Neutral: no U1/D1"
             )
         )
     return {
@@ -393,7 +395,7 @@ def pine_row_from_kv(
         "stub": False,
         "dry_run_synthetic": False,
         "live_news": False,
-        "signal_engine": "pine_nifty50_v2",
+        "signal_engine": "reversal_pro_v32",
         "pine_persisted": True,
         "pine_action_expired": expired,
         "bar_ts": bar_ts,
@@ -634,7 +636,7 @@ def build_universe_signals(
             row = dict(seeds[key])
             row["action"] = _normalize_pine_action(row.get("action"))
             row["updated_at"] = now
-            row.setdefault("signal_engine", "pine_nifty50_v2")
+            row.setdefault("signal_engine", "reversal_pro_v32")
             row.setdefault("reason_kind", "pine")
             rows.append(row)
         else:

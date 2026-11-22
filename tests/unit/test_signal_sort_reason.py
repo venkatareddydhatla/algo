@@ -206,7 +206,7 @@ def test_syrma_synthetic_is_pine_action_only():
     assert row["reason_kind"] == "pine"
     assert "News:" not in row["reason_detail"]
     assert "Technical:" in row["reason_detail"]
-    assert row["signal_engine"] == "pine_nifty50_v2"
+    assert row["signal_engine"] == "reversal_pro_v32"
 
 
 def test_synthetic_full_universe_non_placeholder(monkeypatch):

@@ -39,8 +39,8 @@ trading:
   # 0 or null = unlimited (score entire configured universe). Positive N = first-N cap.
   max_active_symbols: 0
   scan_batch_size: 8     # concurrent symbols per worker batch (rate-limit friendly)
-  # Every 15m candle: re-score ALL active symbols (Pine Action + entries/exits).
-  # Open-book ±2% still on soft_flatten_poll; reentry_cooloff stays 120m.
+  # Every 15m candle: re-score ALL active symbols (Reversal Pro Action + entries/exits).
+  # Open-book ±2% still on soft_flatten_poll; no reentry cooloff.
   scan_on_bar_close: true
   bar_close_settle_sec: 8
   # Expected cycle: short on ~49-name volatile list; must finish inside 15m.
@@ -171,7 +171,7 @@ trading:
         lookback_minutes: 60     # hard block only on clear 1h conflict
         fail_open: true          # missing/empty/neutral → pass
       cooloff:
-        minutes: 120             # after any trade on symbol (same session)
+        minutes: 0               # no cooloff — re-enter on next fresh signal
         same_session_only: true
       capacity:
         max_open: 10
@@ -189,14 +189,14 @@ trading:
         lookback_trading_days: 5
       exit:
         min_rrr: 1.2
-    # Entry selection ranking — OFF while Pine fires buy/sell immediately.
+    # Entry selection ranking — OFF while Reversal Pro fires buy/sell immediately.
     entry_selection:
       enabled: false
       rank_by: abs_hybrid
       anti_churn: empty_slots_only
       reentry_cooloff:
-        enabled: true
-        minutes: 120             # after any trade (entry or exit)
+        enabled: false
+        minutes: 0               # no cooloff — re-enter on next fresh signal
         same_session_only: true  # IST NSE session day via pnl_ist_day
       morning_session:
         enabled: false           # superseded by high_conviction time floors
