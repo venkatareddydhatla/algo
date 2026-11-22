@@ -84,7 +84,6 @@ def test_resolve_volatile_fno50_universe():
         "KALYANKJIL",
         "APLAPOLLO",
         "INOXWIND",
-        "VEDL",
         "PNB",
         "INDHOTEL",
         "POLYCAB",
@@ -96,7 +95,7 @@ def test_resolve_volatile_fno50_universe():
         "AMBUJACEM",
         "BAJAJFINSV",
     ]
-    assert len(symbols) == len(rows) == 19
+    assert len(symbols) == len(rows) == 18
     assert symbols == expected
     assert len(symbols) == len(set(symbols))
     # Truncated UI → official NSE (sample checks)
@@ -104,6 +103,7 @@ def test_resolve_volatile_fno50_universe():
     assert "KALYANKJIL" in symbols  # Kalyan Jewellers
     assert "LTM" in symbols  # LTIMindtree LTIM → LTM
     assert "BHARATFORG" in symbols  # BHARAT → liquid F&O forge (not BHARATHEAVY)
+    assert "VEDL" not in symbols  # dropped from curated; custom add still OK
     # Old fifty-list names not on curated TradingView set
     assert "RELIANCE" not in symbols
     assert "TMPV" not in symbols
@@ -151,8 +151,9 @@ def test_load_config_resolves_local_yaml(monkeypatch):
     active = scan_symbols(cfg)
     assert cfg["trading"].get("universe") == "volatile_fno50"
     assert cfg["trading"]["risk"].get("min_equity_price") == 40.0
-    assert len(wl) == 19
+    assert len(wl) == 18
     assert "BHARTIARTL" in wl and "KALYANKJIL" in wl and "LTM" in wl
+    assert "VEDL" not in wl
     assert "RELIANCE" not in wl
     assert "FINNIFTY" not in wl
     # Default: score entire configured universe (max_active_symbols 0/null)

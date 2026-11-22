@@ -216,8 +216,8 @@ def test_synthetic_full_universe_non_placeholder(monkeypatch):
     monkeypatch.setenv("CONFIG_PATH", str(ROOT / "config" / "local.yaml"))
     cfg = load_config()
     watch = watchlist_symbols(cfg)
-    # Curated TradingView list (~19); seeds must not inflate beyond watch.
-    assert len(watch) == 19
+    # Curated TradingView list (~18); seeds must not inflate beyond watch.
+    assert len(watch) == 18
     rows = build_universe_signals(watch)
     assert len(rows) == len(watch)
     kinds = set()

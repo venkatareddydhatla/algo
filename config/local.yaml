@@ -23,7 +23,7 @@ trading:
       auto_purge: false
       allow_purge_before_live: true
       live_min_retain_days: 90
-  # Venkata’s TradingView curated equities (~19; not full NSE F&O). Alias → CSV below.
+  # Venkata’s TradingView curated equities (~18; not full NSE F&O). Alias → CSV below.
   universe: volatile_fno50  # config/universe/volatile_fno50_underlyings.csv
   # symbols: volatile_fno50
   # symbols_file: config/universe/volatile_fno50_underlyings.csv

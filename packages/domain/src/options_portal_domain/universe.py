@@ -31,7 +31,7 @@ DEMO_SYMBOLS = ("NIFTY", "BANKNIFTY", "RELIANCE", "TCS")
 # Built-in aliases resolved relative to repo root / CONFIG_PATH parent.
 UNIVERSE_ALIASES: dict[str, str] = {
     "nse_fno": "config/universe/nse_fno_underlyings.csv",
-    # Venkata’s TradingView curated equities (~19; alias name kept for config compat).
+    # Venkata’s TradingView curated equities (~18; alias name kept for config compat).
     "volatile_fno50": "config/universe/volatile_fno50_underlyings.csv",
     "nse_fno_demo": "demo",  # sentinel — use DEMO_SYMBOLS
 }

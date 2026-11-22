@@ -1,6 +1,6 @@
 """Worker full-universe scan cadence — prefer 15m bar-close triggers.
 
-With ``volatile_fno50`` (~19 TradingView names + customs) a full Pine Action +
+With ``volatile_fno50`` (~18 TradingView names + customs) a full Pine Action +
 entry/exit pass should finish well inside one 15m bucket. Bar-close mode waits
 for each completed candle (plus a short settle for broker history), then
 rescans the **entire** active watchlist once. Mid-bar continuous rescans are
