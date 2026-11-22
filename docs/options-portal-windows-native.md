@@ -248,9 +248,26 @@ git pull origin cursor/trades-page-round-trips-cb5e
 
 Open http://127.0.0.1:5173/trades — Open positions unchanged; Closed trades show Symbol, Side LONG/SHORT, Entry/Exit IST, Entry/Exit px, PnL, Reason, dry_run.
 
+### Pull drop VEDL from curated watchlist (stacked) — tip
+
+Removes **VEDL** from the TradingView curated CSV (`volatile_fno50` → **18** equities). Portal **Custom equities** add/remove stays — re-add VEDL there if needed. No `pine.signal.VEDL` KV purge step. Stacked on `cursor/vedl-api-recompute-b388` (PR #67). Dry-run only.
+
+```powershell
+cd C:\algo
+Set-ExecutionPolicy -Scope Process Bypass -Force
+.\deploy\windows\native\stop-native.ps1
+git fetch origin
+git checkout cursor/remove-vedl-watchlist-0330
+git pull origin cursor/remove-vedl-watchlist-0330
+.\deploy\windows\native\setup-native.ps1
+.\deploy\windows\native\start-native.ps1 -WithWorker
+```
+
+**Must stop then start.** Expect base count **18** + customs; worker `Full scan starting symbols=N`. Still `dry_run` only. Never paste Upstox / Gmail secrets.
+
 ### Pull VEDL API recompute (BUY+BEARISH after #66) (stacked) — tip
 
-Tip #66 still left live **VEDL Action=BUY + Trend=BEARISH** after hours because GET `/signals` only read stale KV. This tip: hard invariant BEARISH + `lastConfirmedPivotIsHigh` → **SELL** (ignore signal sticky); API recomputes from 15m candles on GET; response gate blocks BUY+BEARISH+pivot-high. Stacked on `cursor/vedl-action-last-pivot-b388` (PR #66).
+Tip #66 still left live **VEDL Action=BUY + Trend=BEARISH** after hours because GET `/signals` only read stale KV. This tip: hard invariant BEARISH + `lastConfirmedPivotIsHigh` → **SELL** (ignore signal sticky); API recomputes from 15m candles on GET; response gate blocks BUY+BEARISH+pivot-high. Prefer the **drop VEDL** tip above when removing VEDL from the curated scan. Stacked on `cursor/vedl-action-last-pivot-b388` (PR #66).
 
 ```powershell
 cd C:\algo
@@ -260,8 +277,6 @@ git fetch origin
 git checkout cursor/vedl-api-recompute-b388
 git pull origin cursor/vedl-api-recompute-b388
 .\deploy\windows\native\setup-native.ps1
-# Optional: purge stale pine.signal.* then let GET /signals rebuild
-.\.venv\Scripts\python.exe scripts\clear_pine_signal_kv.py --confirm
 .\deploy\windows\native\start-native.ps1 -WithWorker
 ```
 
@@ -332,7 +347,7 @@ git pull origin cursor/watchlist-action-trend-0791
 
 ### Pull TradingView curated watchlist (stacked)
 
-Replaces the old ~49 `volatile_fno50` CSV with Venkata’s **19** TradingView equities. Keeps portal **Custom equities** add/remove (PR #56) on top with dedupe. Same Reversal Pro v3.2 scan, ₹40 floor, dry_run, **no cooloff**, full scan each 15m bar close. Prefer the Action+Trend tip above. Stacked on `cursor/reversal-pro-v32-c904` (PR #60).
+Replaces the old ~49 `volatile_fno50` CSV with Venkata’s TradingView equities (now **18** after drop-VEDL tip). Keeps portal **Custom equities** add/remove (PR #56) on top with dedupe. Same Reversal Pro v3.2 scan, ₹40 floor, dry_run, **no cooloff**, full scan each 15m bar close. Prefer the **drop VEDL** tip above. Stacked on `cursor/reversal-pro-v32-c904` (PR #60).
 
 ```powershell
 cd C:\algo
@@ -345,7 +360,7 @@ git pull origin cursor/tradingview-watchlist-7166
 .\deploy\windows\native\start-native.ps1 -WithWorker
 ```
 
-**Must stop then start.** Expect watchlist base **19** + customs; worker `Full scan starting symbols=N`. Still `dry_run` only. After merge into the tip chain / `main`, pull that branch instead.
+**Must stop then start.** Prefer tip `cursor/remove-vedl-watchlist-0330` for current **18** + customs. Still `dry_run` only. After merge into the tip chain / `main`, pull that branch instead.
 
 ### Pull opposite Pine close open (stacked)
 

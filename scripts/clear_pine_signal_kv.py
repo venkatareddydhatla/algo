@@ -3,7 +3,7 @@
 
 Usage (Windows native, after stop, from C:\\algo):
   .\\.venv\\Scripts\\python.exe scripts\\clear_pine_signal_kv.py
-  .\\.venv\\Scripts\\python.exe scripts\\clear_pine_signal_kv.py --symbol VEDL
+  .\\.venv\\Scripts\\python.exe scripts\\clear_pine_signal_kv.py --symbol BHARTIARTL
 """
 
 from __future__ import annotations

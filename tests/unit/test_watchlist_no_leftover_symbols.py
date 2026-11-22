@@ -21,7 +21,7 @@ def test_build_universe_signals_stays_on_requested_symbols(monkeypatch: pytest.M
 
     cfg = load_config()
     watch = watchlist_symbols(cfg)
-    assert len(watch) == 19
+    assert len(watch) == 18
 
     rows = build_universe_signals(watch)
     symbols = {str(r["symbol"]).upper() for r in rows}

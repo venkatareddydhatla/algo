@@ -145,7 +145,7 @@ export default function DashboardPage() {
         <div>
           <h1>Watchlist signals</h1>
           <p className="muted">
-            Curated TradingView watchlist (~19) + custom equities ({total} symbols) — Reversal
+            Curated TradingView watchlist (~18) + custom equities ({total} symbols) — Reversal
             Pro Action (U1→BUY / D1→SELL, no HOLD) and Trend (BULLISH / BEARISH / NEUTRAL).
             Indices never appear as Action rows. Open dry-run trades keep BUY/SELL Action until
             close; Trend stays live. Source: {source}.
@@ -158,7 +158,7 @@ export default function DashboardPage() {
         <div className="custom-watchlist-head">
           <h2>Custom equities</h2>
           <p className="muted">
-            Append NSE stock tickers on top of the curated ~19-name list. Same 15m bar-close
+            Append NSE stock tickers on top of the curated ~18-name list. Same 15m bar-close
             scan + gates. Indices rejected. Persists in SQLite across restarts.
           </p>
         </div>

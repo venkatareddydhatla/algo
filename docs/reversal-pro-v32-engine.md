@@ -39,7 +39,7 @@ Defaults: **Confirmed Only**, **Medium** sensitivity, ATR length 14, method `ave
 
 ## Kept (ops)
 
-- `volatile_fno50` TradingView curated ~19 + custom watchlist symbols
+- `volatile_fno50` TradingView curated ~18 + custom watchlist symbols
 - Full scan each 15m bar close
 - `min_equity_price` ₹40, max 10 opens, entries 09:30–15:20, soft flatten ~15:28
 - ±2% exits + `profit_candle_protect` + live-LTP mark guard (PR #57)
