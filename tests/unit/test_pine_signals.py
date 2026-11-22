@@ -341,6 +341,20 @@ def test_config_require_strong_knob():
     assert off.require_strong is False
 
 
+def test_aligned_entry_action_buy_bullish_sell_bearish():
+    """Entries require Action+Trend alignment; NEUTRAL / misaligned → HOLD."""
+    from options_portal_domain.pine_signals import aligned_entry_action
+
+    assert aligned_entry_action("BUY", "BULLISH") == SignalAction.BUY
+    assert aligned_entry_action("SELL", "BEARISH") == SignalAction.SELL
+    assert aligned_entry_action("BUY", "BEARISH") == SignalAction.HOLD
+    assert aligned_entry_action("SELL", "BULLISH") == SignalAction.HOLD
+    assert aligned_entry_action("BUY", "NEUTRAL") == SignalAction.HOLD
+    assert aligned_entry_action("SELL", "NEUTRAL") == SignalAction.HOLD
+    assert aligned_entry_action("HOLD", "BULLISH") == SignalAction.HOLD
+    assert aligned_entry_action(SignalAction.BUY, "bullish") == SignalAction.BUY
+
+
 def test_action_from_u1_d1_and_sticky_signal():
     """Action BUY/SELL from fresh U1/D1; last confirmed pivot sticky; never HOLD."""
     from options_portal_domain.pine_signals import (

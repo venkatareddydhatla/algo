@@ -13,10 +13,10 @@ On closed 15m bars (prefer_closed):
 Defaults match Pine inputs: Confirmed Only, Medium sensitivity, ATR length 14,
 method ``average``, avg length 5, confirmationBars 0.
 
-Trade mapping (dry-run):
-  U1 → BUY / LONG; D1 → SELL / SHORT.
-  Default ``require_strong=True`` (reversal + EMA trend aligned). Set
-  ``trading.pine_signals.require_strong: false`` to enter on raw U1/D1.
+Trade mapping (dry-run) — Venkata aligned rules:
+  LONG only Action=BUY + Trend=BULLISH; SHORT only Action=SELL + Trend=BEARISH.
+  Opposite aligned pair → close + flip; Trend NEUTRAL → close and wait.
+  Entries 09:30–15:15 IST; flatten ALL from 15:15. No cooloff.
 
 Watchlist fields:
   Action = **freshest U1/D1** (TV Reversal labels) via ZigZag ``signal``:
@@ -26,6 +26,7 @@ Watchlist fields:
     BUY+BEARISH after a red REVERSAL / pivot high. Else EMA Trend /
     ``neutral_action``.
   Trend  = buysignal→BULLISH / sellsignal→BEARISH / else NEUTRAL.
+  Entries use ``aligned_entry_action`` (Action+Trend), not raw U1/D1 alone.
 
 Preview pivots are never used for trading.
 """
@@ -358,12 +359,48 @@ def opposite_close_action_from_state(
 
 
 def entry_action_from_result(result: PineSignalResult) -> SignalAction:
-    """Fresh entry gate only — not trend/watchlist Action."""
+    """Fresh U1/D1 (or STRONG) entry gate — legacy; prefer ``aligned_entry_action``."""
     if result.buy_signal:
         return SignalAction.BUY
     if result.sell_signal:
         return SignalAction.SELL
     return SignalAction.HOLD
+
+
+def _normalize_watchlist_action(action: SignalAction | str | None) -> str:
+    raw = action.value if isinstance(action, SignalAction) else str(action or "HOLD")
+    act = raw.strip().upper()
+    if act in {"BUY_CE_BIAS", "BUY_CE", "LONG"}:
+        return "BUY"
+    if act in {"BUY_PE_BIAS", "BUY_PE", "SHORT"}:
+        return "SELL"
+    if act in {"BUY", "SELL", "HOLD"}:
+        return act
+    return "HOLD"
+
+
+def aligned_entry_action(
+    action: SignalAction | str | None,
+    trend: str | None,
+) -> SignalAction:
+    """Primary entry gate: Action+Trend must agree.
+
+    - LONG only when Action=BUY and Trend=BULLISH
+    - SHORT only when Action=SELL and Trend=BEARISH
+    - NEUTRAL trend or misaligned Action/Trend → HOLD (no entry)
+    """
+    act = _normalize_watchlist_action(action)
+    tr = str(trend or TREND_NEUTRAL).strip().upper()
+    if act == "BUY" and tr == TREND_BULLISH:
+        return SignalAction.BUY
+    if act == "SELL" and tr == TREND_BEARISH:
+        return SignalAction.SELL
+    return SignalAction.HOLD
+
+
+def aligned_entry_action_from_result(result: PineSignalResult) -> SignalAction:
+    """Aligned Action+Trend entry from a Pine evaluate result."""
+    return aligned_entry_action(result.action, result.trend)
 
 
 def map_trend(state: PineBarState | None) -> str:

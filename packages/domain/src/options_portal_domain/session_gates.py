@@ -4,11 +4,11 @@ Product rules (equity dry-run) — Pine entry + fixed open-book exits:
 
 - **New entries (open/add / flip_open)** only on NSE trading days inside the
   cash entry window [entries_open_ist, no_new_entries_after) IST (default
-  **09:30–15:20**). First 15m candle (09:15–09:30) must complete before any
+  **09:30–15:15**). First 15m candle (09:15–09:30) must complete before any
   new entry. Use ``is_trading_session`` / ``SoftEodPolicy.allow_new_entries`` —
   nights, pre-09:30, and post-cutoff must not persist entry fills or send
-  entry Gmail. Primary entry engine: Pine buy/sell. Risk exits / soft flatten
-  still run through soft_flatten_until.
+  entry Gmail. Primary entry: **Action+Trend aligned** (BUY+BULLISH /
+  SELL+BEARISH). Risk exits / soft flatten still run through soft_flatten_until.
 - **Index underlyings** (NIFTY, BANKNIFTY, … / NSE_INDEX|BSE_INDEX) never use
   stock hybrid entry; open index paper is soft-closed with ``index_not_equity``.
 - **Fixed ±2% open-book exits** (stocks only; **open positions only** — not an
@@ -16,38 +16,39 @@ Product rules (equity dry-run) — Pine entry + fixed open-book exits:
   - Long: mark ≥ entry×1.02 → ``pct_profit_2``; mark ≤ entry×0.98 → ``pct_stop_2``
   - Short: mark ≤ entry×0.98 → ``pct_profit_2``; mark ≥ entry×1.02 → ``pct_stop_2``
   - Same-tick priority: stop > profit > profit_candle_protect >
-    (disabled ATR/morning) > opposite_pine_signal > soft_flatten
+    (disabled ATR/morning) > aligned_action_trend > soft_flatten
 - **Profit candle protect** (`trading.risk.profit_candle_protect`, open book):
   when an open stock is **in profit**, latest 15m vs prior:
   - Long: open < mid(prior) **and** close < prior.low → ``profit_candle_protect``
   - Short: open > mid(prior) **and** close > prior.high → ``profit_candle_protect``
   where ``mid = (prior.high + prior.low) / 2``.
-- **Opposite Pine close** (`trading.risk.opposite_pine_exit`, open book,
-  close-only — no same-bar flip):
-  - Open **long** + **fresh** Pine **SELL** → ``opposite_pine_sell`` (cover/sell)
-  - Open **short** + **fresh** Pine **BUY** → ``opposite_pine_buy`` (cover)
-  - Fresh = same signal-bar / expire-stale rules as watchlist Action
-    (``watchlist_pine_action`` / ``pine_signal_bar_is_current``); HOLD or
-    expired Action does **not** re-close on every scan.
-  - Exit fill records cooloff like other closes (120m same-session default).
+  ±2% / profit_candle / LTP mark guard stay **optional secondary**; primary
+  strategy exits are aligned opposite / NEUTRAL / 15:15 flatten.
+- **Aligned Action+Trend open-book** (`trading.risk.aligned_action_trend_exit`):
+  - Open **long** + Action=SELL + Trend=BEARISH → close long **and** open short
+  - Open **short** + Action=BUY + Trend=BULLISH → cover short **and** open long
+  - Trend=NEUTRAL → close open and wait (no reverse)
+  - Misaligned Action/Trend → no exit from this path
+  - One open trade per stock max (same-side aligned → hold)
+  - No cooloff after close
 - **Open-book risk exits** (``pct_profit_2``, ``pct_stop_2``,
   ``profit_candle_protect``, plus optional ``profit_book`` / ``atr_*`` /
   ``morning_*`` when re-enabled) only on NSE trading days inside
-  ``[open_ist, soft_flatten_until_ist]`` IST (default **09:15–15:40**). Use
+  ``[open_ist, soft_flatten_until_ist]`` IST (default **09:15–15:30**). Use
   ``allow_open_book_risk_exits``. Outside that window the worker may still poll
   for marks / news / TA — **no risk-exit fills**. Cash/risk ``open_ist`` stays
-  **09:15** even when entries wait until 09:30. Opposite Pine closes follow the
-  Pine signal path (trading day) and do not require the ±2% LTP consistency gate.
+  **09:15** even when entries wait until 09:30. Aligned Action+Trend exits
+  follow the Pine signal path (trading day) and do not require the ±2% LTP gate.
 - **ATR trail / morning dynamic TP** remain in code but are **disabled** as
   primary exits while fixed ±2% is on (`atr_trail_scale_out.enabled: false`,
   `morning_profit_book.enabled: false`). Soft EOD flatten stays as safety.
 - Soft flatten window [soft_flatten_ist, soft_flatten_until_ist] inclusive by
-  HH:MM (default **15:28–15:40 IST**): close open paper equity unless |hybrid|
-  ≥ overnight floor (**0.85**) on the same side **and** trend confirmed.
-  Separate from the entry window (entries cut at 15:20).
+  HH:MM (default **15:15–15:30 IST**): **flatten ALL** open paper equity
+  (overnight hold off by default). Separate from the entry window (entries cut
+  at 15:15).
 - After soft_flatten_until_ist: refuse new soft_flatten exits (do not invent
   late-afternoon paper fills on a stuck/restarted worker). Positions left open
-  by a missed window stay open — this is not a hard 15:40 force square-off.
+  by a missed window stay open — this is not a hard force square-off.
 - Daily summary (16:00 IST) is also a separate schedule gate.
 - Optional light NIFTY/BANKNIFTY gate: block new opposite entries only when
   index hybrid strongly conflicts; skip when noisy/weak.
@@ -93,8 +94,26 @@ DEFAULT_FIXED_PCT_STOP = 2.0
 PROFIT_CANDLE_PROTECT_REASON = "profit_candle_protect"
 
 # Close open book on opposite fresh Pine BUY/SELL (trading.risk.opposite_pine_exit).
+# Legacy close-only path; prefer aligned_action_trend_exit for Venkata rules.
 OPPOSITE_PINE_SELL_REASON = "opposite_pine_sell"
 OPPOSITE_PINE_BUY_REASON = "opposite_pine_buy"
+
+# Action+Trend aligned open-book exits / flips (trading.risk.aligned_action_trend_exit).
+ALIGNED_NEUTRAL_EXIT_REASON = "aligned_neutral_exit"
+ALIGNED_OPPOSITE_SELL_REASON = "aligned_opposite_sell"
+ALIGNED_OPPOSITE_BUY_REASON = "aligned_opposite_buy"
+
+# Session defaults — entries 09:30–15:15; flatten ALL from 15:15.
+DEFAULT_NO_NEW_ENTRIES_AFTER = "15:15"
+DEFAULT_SOFT_FLATTEN_IST = "15:15"
+DEFAULT_SOFT_FLATTEN_UNTIL_IST = "15:30"
+DEFAULT_OVERNIGHT_HOLD_ENABLED = False
+DEFAULT_OVERNIGHT_HOLD_MIN_HYBRID = 0.85
+DEFAULT_USER_HOURS_NOTE = (
+    "09:15–15:30 IST (entries 09:30–15:15; flatten ALL from 15:15; "
+    "Action+Trend aligned entries/exits; ±2%/profit_candle secondary; "
+    "no overnight hold; no cooloff)"
+)
 
 # All-day ATR trail + profit scale-out (trading.risk.atr_trail_scale_out).
 # Wider stops + higher profit_book so tiny scalp books stop firing.
@@ -161,20 +180,17 @@ class SoftEodPolicy:
     close_ist: str = "15:30"
     # New entries wait for first 15m candle; window ends at no_new_entries_after.
     entries_open_ist: str = DEFAULT_ENTRIES_OPEN_IST
-    no_new_entries_after: str = "15:20"
-    soft_flatten_ist: str = "15:28"
+    no_new_entries_after: str = DEFAULT_NO_NEW_ENTRIES_AFTER
+    soft_flatten_ist: str = DEFAULT_SOFT_FLATTEN_IST
     # Last HH:MM IST minute where soft_flatten exits may still fire (inclusive).
-    soft_flatten_until_ist: str = "15:40"
-    overnight_hold_min_hybrid_abs: float = 0.85
+    soft_flatten_until_ist: str = DEFAULT_SOFT_FLATTEN_UNTIL_IST
+    overnight_hold_enabled: bool = DEFAULT_OVERNIGHT_HOLD_ENABLED
+    overnight_hold_min_hybrid_abs: float = DEFAULT_OVERNIGHT_HOLD_MIN_HYBRID
     soft_flatten_poll_interval_sec: int = DEFAULT_SOFT_FLATTEN_POLL_SEC
     morning_tp_ist: str = DEFAULT_MORNING_TP_IST
     morning_tp_until_ist: str = DEFAULT_MORNING_TP_UNTIL_IST
-    # Documented user monitoring window (no hard flatten at end)
-    user_hours_note: str = (
-        "09:15–15:40 IST (entries 09:30–15:20; risk exits 09:15–15:40; "
-        "soft flatten 15:28–15:40; overnight |h|≥0.85 + trend; "
-        "no hard 15:40 square-off)"
-    )
+    # Documented user monitoring window (flatten ALL from soft_flatten_ist)
+    user_hours_note: str = DEFAULT_USER_HOURS_NOTE
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> SoftEodPolicy:
@@ -186,8 +202,14 @@ class SoftEodPolicy:
             "overnight_hold_min_hybrid_abs",
             equity.get(
                 "overnight_hold_min_hybrid_abs",
-                equity.get("overnight_hold_min_abs_hybrid", 0.85),
+                equity.get(
+                    "overnight_hold_min_abs_hybrid", DEFAULT_OVERNIGHT_HOLD_MIN_HYBRID
+                ),
             ),
+        )
+        overnight_enabled = session.get(
+            "overnight_hold_enabled",
+            equity.get("overnight_hold_enabled", DEFAULT_OVERNIGHT_HOLD_ENABLED),
         )
         poll = session.get(
             "soft_flatten_poll_interval_sec", DEFAULT_SOFT_FLATTEN_POLL_SEC
@@ -205,11 +227,16 @@ class SoftEodPolicy:
                     session.get("entries_open_ist", DEFAULT_ENTRIES_OPEN_IST),
                 )
             ),
-            no_new_entries_after=str(session.get("no_new_entries_after", "15:20")),
-            soft_flatten_ist=str(
-                session.get("soft_flatten_ist", "15:28")
+            no_new_entries_after=str(
+                session.get("no_new_entries_after", DEFAULT_NO_NEW_ENTRIES_AFTER)
             ),
-            soft_flatten_until_ist=str(session.get("soft_flatten_until_ist", "15:40")),
+            soft_flatten_ist=str(
+                session.get("soft_flatten_ist", DEFAULT_SOFT_FLATTEN_IST)
+            ),
+            soft_flatten_until_ist=str(
+                session.get("soft_flatten_until_ist", DEFAULT_SOFT_FLATTEN_UNTIL_IST)
+            ),
+            overnight_hold_enabled=bool(overnight_enabled),
             overnight_hold_min_hybrid_abs=float(overnight),
             soft_flatten_poll_interval_sec=max(5, int(poll)),
             morning_tp_ist=str(
@@ -225,21 +252,16 @@ class SoftEodPolicy:
                 )
             ),
             user_hours_note=str(
-                session.get(
-                    "user_hours_note",
-                    "09:15–15:40 IST (entries 09:30–15:20; risk exits 09:15–15:40; "
-                    "soft flatten 15:28–15:40; overnight |h|≥0.85 + trend; "
-                    "no hard 15:40 square-off)",
-                )
+                session.get("user_hours_note", DEFAULT_USER_HOURS_NOTE)
             ),
         )
 
     def in_risk_exit_window(self, now: datetime | None = None) -> bool:
         """True during inclusive open-book risk-exit HH:MM window.
 
-        Default ``[open_ist, soft_flatten_until_ist]`` = **09:15–15:40 IST**.
+        Default ``[open_ist, soft_flatten_until_ist]`` = **09:15–15:30 IST**.
         Covers ATR stop/trail/profit_book/scale-out and morning TP/stop.
-        Soft flatten still uses its narrower ``[15:20, 15:40]`` gate.
+        Soft flatten uses ``[soft_flatten_ist, soft_flatten_until_ist]`` (15:15–15:30).
         """
         return hhmm_in_inclusive_window(
             self.open_ist, self.soft_flatten_until_ist, now
@@ -276,7 +298,7 @@ class SoftEodPolicy:
         """True when IST clock is in [open_ist, close_ist) cash hours (default 09:15–15:30).
 
         Distinct from ``allow_new_entries`` (starts at entries_open_ist / 09:30,
-        cuts off at no_new_entries_after / 15:20). Use for market OPEN/CLOSE UI
+        cuts off at no_new_entries_after / 15:15). Use for market OPEN/CLOSE UI
         status, not entry gating.
         """
         return not self.before_session_open(now) and not self.past_session_close(now)
@@ -285,9 +307,9 @@ class SoftEodPolicy:
         """True when IST clock is in [entries_open_ist, no_new_entries_after).
 
         Clock-only — callers that also need an NSE trading day should use
-        ``is_trading_session``. Default entry window **09:30–15:20 IST**
-        (wait for first 15m candle); soft flatten starts 15:28. Open-book
-        ±2% exits still use cash ``open_ist`` (09:15).
+        ``is_trading_session``. Default entry window **09:30–15:15 IST**
+        (wait for first 15m candle); soft flatten / flatten-ALL from 15:15.
+        Open-book ±2% exits still use cash ``open_ist`` (09:15).
         """
         return (
             not self.before_entries_open(now)
@@ -346,7 +368,9 @@ def soft_flatten_decision(
     """Evaluate soft EOD for an open paper position.
 
     Returns keys: active, action ('flatten'|'overnight_hold'|'none'), reason.
-    Overnight hold requires |hybrid| ≥ policy floor **and** ``trend_confirmed``.
+    Default policy **flattens ALL** from soft_flatten_ist (overnight hold off).
+    When ``overnight_hold_enabled``, overnight hold still requires |hybrid| ≥
+    policy floor **and** ``trend_confirmed``.
     """
     if open_side is None or int(open_qty) <= 0:
         return {"active": False, "action": "none", "reason": "no open position"}
@@ -365,7 +389,7 @@ def soft_flatten_decision(
                 f"{policy.soft_flatten_until_ist} (missed window; leave open)"
             ),
         }
-    if overnight_hold_allowed(
+    if policy.overnight_hold_enabled and overnight_hold_allowed(
         open_side,
         hybrid_score,
         min_abs=policy.overnight_hold_min_hybrid_abs,
@@ -379,6 +403,15 @@ def soft_flatten_decision(
                 f"|hybrid|={abs(hybrid_score):.3f} ≥ "
                 f"{policy.overnight_hold_min_hybrid_abs} ({open_side}) "
                 f"+ trend_confirmed"
+            ),
+        }
+    if not policy.overnight_hold_enabled:
+        return {
+            "active": True,
+            "action": "flatten",
+            "reason": (
+                f"soft_flatten_ist={policy.soft_flatten_ist}: flatten ALL "
+                f"{open_side} (overnight hold disabled)"
             ),
         }
     trend_note = "" if trend_confirmed else "; trend not confirmed"
@@ -1111,6 +1144,201 @@ def opposite_pine_exit_decision(
             f"opposite_pine_exit hold: open {side} not opposite fresh {fresh}"
         ),
         fresh_action=fresh,
+    )
+
+
+@dataclass(frozen=True)
+class AlignedActionTrendExitPolicy:
+    """Primary open-book exits from Action+Trend alignment (with flip).
+
+    Config under ``trading.risk.aligned_action_trend_exit``. Stocks only.
+    Same-tick priority: after fixed ±2% / profit_candle / (disabled ATR/morning),
+    before soft_flatten.
+
+    - Opposite aligned pair → close current **and** enter new direction
+    - Trend NEUTRAL → close and wait (no reverse)
+    """
+
+    enabled: bool = True
+    allow_flip: bool = True
+
+    @classmethod
+    def from_config(cls, config: dict[str, Any]) -> AlignedActionTrendExitPolicy:
+        trading = config.get("trading") or {}
+        risk = dict(trading.get("risk") or {})
+        raw = dict(
+            risk.get("aligned_action_trend_exit")
+            or trading.get("aligned_action_trend_exit")
+            or {}
+        )
+        # Default on when key absent (Venkata primary rules).
+        return cls(
+            enabled=bool(raw.get("enabled", True)),
+            allow_flip=bool(raw.get("allow_flip", True)),
+        )
+
+
+def _empty_aligned_result(
+    *,
+    active: bool,
+    action: str,
+    reason: str,
+    aligned_action: str = "HOLD",
+    trend: str = "NEUTRAL",
+    flip: bool = False,
+    signal_action: str = "HOLD",
+) -> dict[str, Any]:
+    return {
+        "active": active,
+        "action": action,
+        "reason": reason,
+        "exit_qty": 0,
+        "aligned_action": aligned_action,
+        "trend": trend,
+        "flip": flip,
+        "signal_action": signal_action,
+    }
+
+
+def aligned_action_trend_decision(
+    *,
+    open_side: PositionSide | None,
+    open_qty: int,
+    pine_action: SignalAction | str | None,
+    trend: str | None,
+    policy: AlignedActionTrendExitPolicy,
+    is_index: bool = False,
+) -> dict[str, Any]:
+    """Open-book decision from Action+Trend alignment.
+
+    Returns ``action``:
+      - ``aligned_neutral_exit`` — Trend NEUTRAL → close only
+      - ``aligned_opposite_sell`` — long + SELL+BEARISH → close (+ flip if allowed)
+      - ``aligned_opposite_buy`` — short + BUY+BULLISH → cover (+ flip if allowed)
+      - ``none`` — hold / disabled / no open / same-side / misaligned
+    """
+    from options_portal_domain.pine_signals import (
+        TREND_BEARISH,
+        TREND_BULLISH,
+        TREND_NEUTRAL,
+        aligned_entry_action,
+        _normalize_watchlist_action,
+    )
+
+    if is_index:
+        return _empty_aligned_result(
+            active=False,
+            action="none",
+            reason="index_not_equity — aligned exits stocks only",
+        )
+    if not policy.enabled:
+        return _empty_aligned_result(
+            active=False,
+            action="none",
+            reason="aligned_action_trend_exit disabled",
+        )
+    if open_side is None or int(open_qty) <= 0:
+        return _empty_aligned_result(
+            active=False,
+            action="none",
+            reason="no open position",
+        )
+
+    act = _normalize_watchlist_action(pine_action)
+    tr = str(trend or TREND_NEUTRAL).strip().upper()
+    if tr not in {TREND_BULLISH, TREND_BEARISH, TREND_NEUTRAL}:
+        tr = TREND_NEUTRAL
+    aligned = aligned_entry_action(act, tr)
+    side = str(open_side).strip().lower()
+    qty = profit_book_exit_qty(int(open_qty), fraction=1.0)
+
+    if tr == TREND_NEUTRAL:
+        return {
+            "active": True,
+            "action": ALIGNED_NEUTRAL_EXIT_REASON,
+            "reason": (
+                f"{ALIGNED_NEUTRAL_EXIT_REASON}: close {side} — Trend NEUTRAL "
+                f"(Action={act}; wait, no reverse)"
+            ),
+            "exit_qty": qty,
+            "aligned_action": "HOLD",
+            "trend": tr,
+            "flip": False,
+            "signal_action": SignalAction.EXIT.value,
+        }
+
+    if aligned == SignalAction.HOLD:
+        return _empty_aligned_result(
+            active=True,
+            action="none",
+            reason=(
+                f"aligned_action_trend hold: Action={act} Trend={tr} misaligned "
+                f"(open {side})"
+            ),
+            aligned_action="HOLD",
+            trend=tr,
+        )
+
+    # Same-side aligned — one open max; keep position.
+    if side == "long" and aligned == SignalAction.BUY:
+        return _empty_aligned_result(
+            active=True,
+            action="none",
+            reason="aligned_action_trend hold: open long already BUY+BULLISH",
+            aligned_action="BUY",
+            trend=tr,
+        )
+    if side == "short" and aligned == SignalAction.SELL:
+        return _empty_aligned_result(
+            active=True,
+            action="none",
+            reason="aligned_action_trend hold: open short already SELL+BEARISH",
+            aligned_action="SELL",
+            trend=tr,
+        )
+
+    # Opposite aligned pair → close and (optionally) flip.
+    if side == "long" and aligned == SignalAction.SELL:
+        flip = bool(policy.allow_flip)
+        return {
+            "active": True,
+            "action": ALIGNED_OPPOSITE_SELL_REASON,
+            "reason": (
+                f"{ALIGNED_OPPOSITE_SELL_REASON}: close long on SELL+BEARISH"
+                f"{' + open short' if flip else ' (close-only)'}"
+            ),
+            "exit_qty": qty,
+            "aligned_action": "SELL",
+            "trend": tr,
+            "flip": flip,
+            "signal_action": (
+                SignalAction.SELL.value if flip else SignalAction.EXIT.value
+            ),
+        }
+    if side == "short" and aligned == SignalAction.BUY:
+        flip = bool(policy.allow_flip)
+        return {
+            "active": True,
+            "action": ALIGNED_OPPOSITE_BUY_REASON,
+            "reason": (
+                f"{ALIGNED_OPPOSITE_BUY_REASON}: cover short on BUY+BULLISH"
+                f"{' + open long' if flip else ' (close-only)'}"
+            ),
+            "exit_qty": qty,
+            "aligned_action": "BUY",
+            "trend": tr,
+            "flip": flip,
+            "signal_action": (
+                SignalAction.BUY.value if flip else SignalAction.EXIT.value
+            ),
+        }
+
+    return _empty_aligned_result(
+        active=True,
+        action="none",
+        reason=f"aligned_action_trend hold: open {side} Action={act} Trend={tr}",
+        aligned_action=aligned.value,
+        trend=tr,
     )
 
 

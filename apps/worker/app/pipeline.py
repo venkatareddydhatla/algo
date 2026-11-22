@@ -33,23 +33,23 @@ from options_portal_domain.high_conviction import (
     skip_entry_log,
 )
 from options_portal_domain.pine_signals import (
-    entry_action_from_result,
+    aligned_entry_action_from_result,
     evaluate_pine_signal,
-    opposite_close_action_from_state,
     pine_params_from_config,
     pine_signals_enabled,
     prefer_closed_candles,
     watchlist_pine_action,
 )
 from options_portal_domain.session_gates import (
+    AlignedActionTrendExitPolicy,
     AtrTrailScaleOutPolicy,
     FixedPctExitPolicy,
     MarketSentimentPolicy,
     MorningProfitBookPolicy,
-    OppositePineExitPolicy,
     ProfitCandleProtectPolicy,
     SoftEodPolicy,
     allow_open_book_risk_exits,
+    aligned_action_trend_decision,
     atr_trail_scale_out_decision,
     compute_index_bias,
     entry_conflicts_with_index,
@@ -57,7 +57,6 @@ from options_portal_domain.session_gates import (
     fixed_pct_exit_decision,
     is_trading_session,
     morning_profit_book_decision,
-    opposite_pine_exit_decision,
     profit_candle_protect_decision,
     soft_flatten_decision,
 )
@@ -534,7 +533,7 @@ async def run_symbol_tick(
     atr_trail_policy = AtrTrailScaleOutPolicy.from_config(cfg)
     fixed_pct_policy = FixedPctExitPolicy.from_config(cfg)
     profit_candle_policy = ProfitCandleProtectPolicy.from_config(cfg)
-    opposite_pine_policy = OppositePineExitPolicy.from_config(cfg)
+    aligned_policy = AlignedActionTrendExitPolicy.from_config(cfg)
     mkt_policy = MarketSentimentPolicy.from_config(cfg)
     _remember_index_hybrid(symbol, decision.hybrid_score, mkt_policy)
     # Resolve instrument key early for index segment check (NSE_INDEX/BSE_INDEX).
@@ -962,38 +961,47 @@ async def run_symbol_tick(
         }
     result["morning_tp"] = morning_tp
 
-    # Opposite fresh U1/D1 → close-only (not trend-only watchlist Action).
-    pine_bar_ts = getattr(decision, "bar_ts", None) if use_pine else None
-    opp_action = (
-        opposite_close_action_from_state(
-            pine_result.state if pine_result is not None else None
-        )
-        if use_pine
-        else SignalAction.HOLD
+    # Action+Trend aligned open-book: opposite pair flips; NEUTRAL closes.
+    pine_action_for_align = (
+        pine_result.action if pine_result is not None else SignalAction.HOLD
     )
-    opposite_pine = opposite_pine_exit_decision(
+    pine_trend_for_align = (
+        str(getattr(pine_result, "trend", "NEUTRAL") or "NEUTRAL")
+        if pine_result is not None
+        else "NEUTRAL"
+    )
+    aligned_exit = aligned_action_trend_decision(
         open_side=open_side,  # type: ignore[arg-type]
         open_qty=open_qty,
-        pine_action=opp_action,
-        bar_ts=pine_bar_ts,
-        policy=opposite_pine_policy,
-        now=datetime.now(tz=timezone.utc),
-        timeframe_minutes=15,
+        pine_action=pine_action_for_align if use_pine else SignalAction.HOLD,
+        trend=pine_trend_for_align if use_pine else "NEUTRAL",
+        policy=aligned_policy,
         is_index=index_underlying,
     )
     if not use_pine:
-        opposite_pine = {
-            **opposite_pine,
+        aligned_exit = {
+            **aligned_exit,
             "active": False,
             "action": "none",
-            "reason": "opposite_pine_exit skipped: hybrid path",
+            "reason": "aligned_action_trend_exit skipped: hybrid path",
             "exit_qty": 0,
+            "flip": False,
         }
-    result["opposite_pine_exit"] = opposite_pine
+    result["aligned_action_trend_exit"] = aligned_exit
+    # Keep legacy key for open-book UI / logs that still expect opposite_pine.
+    result["opposite_pine_exit"] = {
+        "active": aligned_exit.get("active"),
+        "action": aligned_exit.get("action"),
+        "reason": aligned_exit.get("reason"),
+        "exit_qty": aligned_exit.get("exit_qty") or 0,
+        "fresh_action": aligned_exit.get("aligned_action") or "HOLD",
+        "flip": bool(aligned_exit.get("flip")),
+    }
 
     # Same-tick priority: fixed ±2% > profit_candle_protect > atr stop/trail >
-    # scale/profit > morning > opposite_pine > soft_flatten. ATR/morning stay
-    # wired but off.
+    # scale/profit > morning > aligned_action_trend > soft_flatten.
+    # ±2%/profit_candle stay optional secondary; primary strategy exits are
+    # aligned opposite / NEUTRAL / 15:15 flatten. ATR/morning stay wired but off.
     atr_exit_actions = {
         "atr_stop",
         "atr_trail",
@@ -1002,7 +1010,7 @@ async def run_symbol_tick(
     }
     fixed_pct_action = str(fixed_pct.get("action") or "none")
     profit_candle_action = str(profit_candle.get("action") or "none")
-    opposite_pine_action = str(opposite_pine.get("action") or "none")
+    aligned_exit_action = str(aligned_exit.get("action") or "none")
     if fixed_pct_action not in {"none", ""} and fixed_pct.get("exit_qty"):
         logger.info("%s %s", symbol, fixed_pct["reason"])
         intents = plan_equity_intents(
@@ -1058,19 +1066,31 @@ async def run_symbol_tick(
         )
         if int(morning_tp.get("exit_qty") or 0) >= int(open_qty):
             clear_atr_trail_state(symbol)
-    elif opposite_pine_action not in {"none", ""} and opposite_pine.get("exit_qty"):
-        # Close-only: EXIT intent (no cooloff gate — may re-enter on next signal).
-        logger.info("%s %s", symbol, opposite_pine["reason"])
+    elif aligned_exit_action not in {"none", ""} and aligned_exit.get("exit_qty"):
+        # Opposite aligned → flip (close + enter); NEUTRAL → close-only.
+        sig_raw = str(aligned_exit.get("signal_action") or "EXIT")
+        try:
+            sig_act = SignalAction(sig_raw)
+        except ValueError:
+            sig_act = SignalAction.EXIT
+        logger.info("%s %s", symbol, aligned_exit["reason"])
         intents = plan_equity_intents(
             symbol,
-            SignalAction.EXIT,
+            sig_act,
             open_side=open_side,  # type: ignore[arg-type]
             open_qty=open_qty,
             qty=share_qty,
             price=fill_price,
-            reason=str(opposite_pine["reason"]),
-            exit_qty=int(opposite_pine.get("exit_qty") or open_qty),
+            reason=str(aligned_exit["reason"]),
+            exit_qty=int(aligned_exit.get("exit_qty") or open_qty),
         )
+        # Flip allowed only when policy says so; strip flip_open otherwise.
+        if not bool(aligned_exit.get("flip")):
+            intents = [
+                i
+                for i in intents
+                if getattr(i, "action_kind", None) != "flip_open"
+            ]
         clear_atr_trail_state(symbol)
     elif flatten["action"] == "flatten":
         logger.info("%s %s", symbol, flatten["reason"])
@@ -1102,18 +1122,18 @@ async def run_symbol_tick(
         intents = []
         result["note"] = "index_not_equity — entry refused"
     elif use_pine:
-        # Entries only on fresh U1/D1 (or STRONG) — not trend/watchlist Action.
+        # Entries only when Action+Trend aligned (BUY+BULLISH / SELL+BEARISH).
         entry_act = (
-            entry_action_from_result(pine_result)
+            aligned_entry_action_from_result(pine_result)
             if pine_result is not None
             else SignalAction.HOLD
         )
         if entry_act == SignalAction.HOLD:
             intents = []
             result["note"] = (
-                "pine_no_entry_signal — watchlist Action may still show "
-                f"{decision.action.value} via sticky/trend fallback "
-                f"(Trend={getattr(pine_result, 'trend', 'NEUTRAL')})"
+                "pine_no_aligned_entry — need BUY+BULLISH or SELL+BEARISH "
+                f"(Action={decision.action.value} "
+                f"Trend={getattr(pine_result, 'trend', 'NEUTRAL')})"
             )
         else:
             intents = plan_equity_intents(
@@ -1123,7 +1143,10 @@ async def run_symbol_tick(
                 open_qty=open_qty,
                 qty=share_qty,
                 price=fill_price,
-                reason=reason_summary,
+                reason=(
+                    f"aligned {entry_act.value}+"
+                    f"{getattr(pine_result, 'trend', 'NEUTRAL')} · {reason_summary}"
+                ),
             )
     else:
         intents = plan_equity_intents(
@@ -1136,17 +1159,8 @@ async def run_symbol_tick(
             reason=reason_summary,
         )
 
-    # Pine path: prefer close-only on opposite signal (no same-bar flip).
-    # Primary path is opposite_pine_exit above; this strips flip_open if a
-    # flip still reached the signal planner (e.g. policy disabled).
-    if use_pine and any(
-        getattr(i, "action_kind", None) == "flip_close" for i in intents
-    ):
-        intents = [
-            i
-            for i in intents
-            if getattr(i, "action_kind", None) != "flip_open"
-        ]
+    # Aligned opposite path may include flip_open on purpose. Do not strip
+    # flips here — one open per stock is enforced by plan_equity_intents.
     # Fresh entry / flip_open should start without stale trail state.
     if any(getattr(i, "action_kind", None) in {"entry", "flip_open"} for i in intents):
         clear_atr_trail_state(symbol)

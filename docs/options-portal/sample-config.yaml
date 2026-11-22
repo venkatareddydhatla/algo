@@ -36,14 +36,15 @@ trading:
   scan_on_bar_close: true
   bar_close_settle_sec: 8
   session:
-    # Entries 09:30–15:20 (wait first 15m); cash/risk from 09:15; soft flatten 15:28.
+    # Entries 09:30–15:15; flatten ALL from 15:15; cash/risk from 09:15.
     open: "09:15"
     entries_open: "09:30"
     close: "15:30"
-    no_new_entries_after: "15:20"
-    soft_flatten_ist: "15:28"
-    soft_flatten_until_ist: "15:40"
+    no_new_entries_after: "15:15"
+    soft_flatten_ist: "15:15"
+    soft_flatten_until_ist: "15:30"
     soft_flatten_poll_interval_sec: 15
+    overnight_hold_enabled: false
     overnight_hold_min_hybrid_abs: 0.85
     morning_profit_book:
       enabled: false
@@ -55,7 +56,7 @@ trading:
       stop_atr_mult: 1.25
       atr_period: 14
       exit_fraction: 1.0
-    user_hours_note: "09:15–15:40 IST (entries 09:30–15:20; soft flatten 15:28–15:40; overnight |h|≥0.85 + trend; fixed ±2% open exits; no hard 15:40 square-off)"
+    user_hours_note: "09:15–15:30 IST (entries 09:30–15:15; flatten ALL from 15:15; Action+Trend aligned; ±2%/profit_candle secondary; no overnight; no cooloff)"
   # NPR21 Reversal Detection Pro v3.2 (Confirmed Only). See docs/pine-reversal-pro-v32.pine.
   pine_signals:
     enabled: true
@@ -102,9 +103,12 @@ trading:
     # In-profit 15m structure break → immediate close (open book).
     profit_candle_protect:
       enabled: true
-    # Close open long on fresh Pine SELL / short on fresh Pine BUY (close-only).
-    opposite_pine_exit:
+    # Action+Trend aligned: opposite flips; NEUTRAL closes; one open per stock.
+    aligned_action_trend_exit:
       enabled: true
+      allow_flip: true
+    opposite_pine_exit:
+      enabled: false
     atr_trail_scale_out:
       enabled: false
       atr_period: 14

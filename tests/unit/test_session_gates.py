@@ -12,6 +12,7 @@ from options_portal_domain.equity import (
     unrealized_pnl_pct,
 )
 from options_portal_domain.session_gates import (
+    AlignedActionTrendExitPolicy,
     AtrTrailScaleOutPolicy,
     FixedPctExitPolicy,
     MarketSentimentPolicy,
@@ -19,6 +20,7 @@ from options_portal_domain.session_gates import (
     OppositePineExitPolicy,
     ProfitCandleProtectPolicy,
     SoftEodPolicy,
+    aligned_action_trend_decision,
     allow_open_book_risk_exits,
     at_or_after_ist,
     atr_trail_scale_out_decision,
@@ -92,7 +94,7 @@ def test_entries_open_0930_blocks_first_15m_keeps_risk_exits():
     policy = SoftEodPolicy()  # entries_open_ist=09:30, open_ist=09:15
     assert policy.entries_open_ist == "09:30"
     assert policy.open_ist == "09:15"
-    assert policy.no_new_entries_after == "15:20"
+    assert policy.no_new_entries_after == "15:15"
 
     cash_open = datetime(2026, 11, 20, 9, 15, 0)
     assert policy.before_session_open(cash_open) is False
@@ -112,7 +114,7 @@ def test_entries_open_0930_blocks_first_15m_keeps_risk_exits():
     assert policy.allow_new_entries(entries_open) is True
     assert is_trading_session(entries_open, policy=policy, trading_day=True) is True
 
-    cutoff = datetime(2026, 11, 20, 15, 20, 0)
+    cutoff = datetime(2026, 11, 20, 15, 15, 0)
     assert policy.allow_new_entries(cutoff) is False
     assert allow_open_book_risk_exits(cutoff, policy=policy, trading_day=True) is True
 
@@ -122,7 +124,7 @@ def test_entries_open_0930_blocks_first_15m_keeps_risk_exits():
                 "session": {
                     "open": "09:15",
                     "entries_open": "09:30",
-                    "no_new_entries_after": "15:20",
+                    "no_new_entries_after": "15:15",
                 }
             }
         }
@@ -181,24 +183,26 @@ def test_soft_eod_policy_from_config():
                 "session": {
                     "open": "09:15",
                     "close": "15:30",
-                    "no_new_entries_after": "15:20",
-                    "soft_flatten_ist": "15:20",
-                    "soft_flatten_until_ist": "15:40",
+                    "no_new_entries_after": "15:15",
+                    "soft_flatten_ist": "15:15",
+                    "soft_flatten_until_ist": "15:30",
+                    "overnight_hold_enabled": False,
                     "overnight_hold_min_hybrid_abs": 0.70,
                 }
             }
         }
     )
     assert policy.close_ist == "15:30"
-    assert policy.soft_flatten_ist == "15:20"
-    assert policy.soft_flatten_until_ist == "15:40"
+    assert policy.soft_flatten_ist == "15:15"
+    assert policy.soft_flatten_until_ist == "15:30"
+    assert policy.overnight_hold_enabled is False
     assert policy.overnight_hold_min_hybrid_abs == 0.70
-    assert "15:40" in policy.user_hours_note
-    assert policy.past_soft_flatten(datetime(2026, 11, 15, 15, 19, 0)) is False
-    assert policy.past_soft_flatten(datetime(2026, 11, 15, 15, 20, 0)) is True
-    assert policy.in_soft_flatten_window(datetime(2026, 11, 15, 15, 20, 0)) is True
-    assert policy.in_soft_flatten_window(datetime(2026, 11, 15, 15, 40, 0)) is True
-    assert policy.in_soft_flatten_window(datetime(2026, 11, 15, 15, 41, 0)) is False
+    assert "15:15" in policy.user_hours_note
+    assert policy.past_soft_flatten(datetime(2026, 11, 15, 15, 14, 0)) is False
+    assert policy.past_soft_flatten(datetime(2026, 11, 15, 15, 15, 0)) is True
+    assert policy.in_soft_flatten_window(datetime(2026, 11, 15, 15, 15, 0)) is True
+    assert policy.in_soft_flatten_window(datetime(2026, 11, 15, 15, 30, 0)) is True
+    assert policy.in_soft_flatten_window(datetime(2026, 11, 15, 15, 31, 0)) is False
     assert policy.past_soft_flatten_until(datetime(2026, 11, 15, 17, 13, 0)) is True
 
 
@@ -221,19 +225,25 @@ def test_overnight_hold_same_side_conviction():
 
 
 def test_soft_eod_policy_high_conviction_defaults():
-    """Defaults: entries 09:30→15:20, soft flatten 15:28, overnight |h|≥0.85."""
+    """Defaults: entries 09:30→15:15, flatten ALL from 15:15, overnight off."""
     policy = SoftEodPolicy()
     assert policy.entries_open_ist == "09:30"
-    assert policy.no_new_entries_after == "15:20"
-    assert policy.soft_flatten_ist == "15:28"
+    assert policy.no_new_entries_after == "15:15"
+    assert policy.soft_flatten_ist == "15:15"
+    assert policy.soft_flatten_until_ist == "15:30"
+    assert policy.overnight_hold_enabled is False
     assert policy.overnight_hold_min_hybrid_abs == 0.85
-    assert policy.past_soft_flatten(datetime(2026, 11, 15, 15, 27, 0)) is False
-    assert policy.past_soft_flatten(datetime(2026, 11, 15, 15, 28, 0)) is True
+    assert policy.past_soft_flatten(datetime(2026, 11, 15, 15, 14, 0)) is False
+    assert policy.past_soft_flatten(datetime(2026, 11, 15, 15, 15, 0)) is True
 
 
 def test_soft_flatten_closes_without_conviction():
-    policy = SoftEodPolicy(soft_flatten_ist="15:20", overnight_hold_min_hybrid_abs=0.70)
-    now = datetime(2026, 11, 15, 15, 25, 0)
+    policy = SoftEodPolicy(
+        soft_flatten_ist="15:15",
+        overnight_hold_enabled=True,
+        overnight_hold_min_hybrid_abs=0.70,
+    )
+    now = datetime(2026, 11, 15, 15, 20, 0)
     decision = soft_flatten_decision(
         open_side="long",
         open_qty=1,
@@ -246,8 +256,12 @@ def test_soft_flatten_closes_without_conviction():
 
 
 def test_soft_flatten_allows_overnight_on_strong_same_side():
-    policy = SoftEodPolicy(soft_flatten_ist="15:20", overnight_hold_min_hybrid_abs=0.70)
-    now = datetime(2026, 11, 15, 15, 25, 0)
+    policy = SoftEodPolicy(
+        soft_flatten_ist="15:15",
+        overnight_hold_enabled=True,
+        overnight_hold_min_hybrid_abs=0.70,
+    )
+    now = datetime(2026, 11, 15, 15, 20, 0)
     decision = soft_flatten_decision(
         open_side="short",
         open_qty=1,
@@ -259,14 +273,31 @@ def test_soft_flatten_allows_overnight_on_strong_same_side():
     assert "conviction" in decision["reason"]
 
 
+def test_soft_flatten_all_when_overnight_disabled():
+    """Default Venkata rule: flatten ALL from 15:15 (no overnight hold)."""
+    policy = SoftEodPolicy()  # overnight_hold_enabled=False
+    now = datetime(2026, 11, 15, 15, 15, 0)
+    decision = soft_flatten_decision(
+        open_side="long",
+        open_qty=1,
+        hybrid_score=0.99,
+        policy=policy,
+        now=now,
+        trend_confirmed=True,
+    )
+    assert decision["action"] == "flatten"
+    assert "flatten ALL" in decision["reason"]
+
+
 def test_soft_flatten_window_end_still_conviction_based():
-    """At soft_flatten_until (15:40) still conviction-based — not a hard force close."""
+    """When overnight enabled, soft_flatten_until is still conviction-based."""
     policy = SoftEodPolicy(
-        soft_flatten_ist="15:20",
-        soft_flatten_until_ist="15:40",
+        soft_flatten_ist="15:15",
+        soft_flatten_until_ist="15:30",
+        overnight_hold_enabled=True,
         overnight_hold_min_hybrid_abs=0.70,
     )
-    late = datetime(2026, 11, 15, 15, 40, 0)
+    late = datetime(2026, 11, 15, 15, 30, 0)
     hold = soft_flatten_decision(
         open_side="long",
         open_qty=1,
@@ -1463,3 +1494,139 @@ def test_opposite_pine_same_side_does_not_close():
     )
     assert same["action"] == "none"
     assert same["fresh_action"] == "BUY"
+
+
+def test_aligned_action_trend_policy_from_config():
+    on = AlignedActionTrendExitPolicy.from_config(
+        {
+            "trading": {
+                "risk": {
+                    "aligned_action_trend_exit": {"enabled": True, "allow_flip": True}
+                }
+            }
+        }
+    )
+    assert on.enabled is True and on.allow_flip is True
+    off = AlignedActionTrendExitPolicy.from_config(
+        {"trading": {"risk": {"aligned_action_trend_exit": {"enabled": False}}}}
+    )
+    assert off.enabled is False
+    default = AlignedActionTrendExitPolicy.from_config({"trading": {"risk": {}}})
+    assert default.enabled is True and default.allow_flip is True
+
+
+def test_aligned_long_flips_on_sell_bearish():
+    """Open LONG + SELL+BEARISH → close long and open short."""
+    hit = aligned_action_trend_decision(
+        open_side="long",
+        open_qty=1,
+        pine_action=SignalAction.SELL,
+        trend="BEARISH",
+        policy=AlignedActionTrendExitPolicy(),
+    )
+    assert hit["action"] == "aligned_opposite_sell"
+    assert hit["flip"] is True
+    assert hit["signal_action"] == "SELL"
+    assert hit["exit_qty"] == 1
+
+    intents = plan_equity_intents(
+        "RELIANCE",
+        SignalAction.SELL,
+        open_side="long",
+        open_qty=1,
+        qty=1,
+        price=2500.0,
+        reason=str(hit["reason"]),
+    )
+    kinds = [i.action_kind for i in intents]
+    assert kinds == ["flip_close", "flip_open"]
+    assert intents[0].side == "SELL"
+    assert intents[1].side == "SELL"
+
+
+def test_aligned_short_flips_on_buy_bullish():
+    """Open SHORT + BUY+BULLISH → cover short and open long."""
+    hit = aligned_action_trend_decision(
+        open_side="short",
+        open_qty=1,
+        pine_action="BUY",
+        trend="BULLISH",
+        policy=AlignedActionTrendExitPolicy(),
+    )
+    assert hit["action"] == "aligned_opposite_buy"
+    assert hit["flip"] is True
+    assert hit["signal_action"] == "BUY"
+
+    intents = plan_equity_intents(
+        "TCS",
+        SignalAction.BUY,
+        open_side="short",
+        open_qty=1,
+        qty=1,
+        price=3900.0,
+        reason=str(hit["reason"]),
+    )
+    assert [i.action_kind for i in intents] == ["flip_close", "flip_open"]
+
+
+def test_aligned_neutral_closes_no_reverse():
+    hit = aligned_action_trend_decision(
+        open_side="long",
+        open_qty=1,
+        pine_action=SignalAction.BUY,
+        trend="NEUTRAL",
+        policy=AlignedActionTrendExitPolicy(),
+    )
+    assert hit["action"] == "aligned_neutral_exit"
+    assert hit["flip"] is False
+    assert hit["signal_action"] == "EXIT"
+
+    intents = plan_equity_intents(
+        "INFY",
+        SignalAction.EXIT,
+        open_side="long",
+        open_qty=1,
+        qty=1,
+        price=1500.0,
+        reason=str(hit["reason"]),
+    )
+    assert len(intents) == 1
+    assert intents[0].action_kind == "exit"
+
+
+def test_aligned_misaligned_holds_open():
+    """BUY+BEARISH while long → no aligned exit (wait for NEUTRAL / opposite)."""
+    hit = aligned_action_trend_decision(
+        open_side="long",
+        open_qty=1,
+        pine_action=SignalAction.BUY,
+        trend="BEARISH",
+        policy=AlignedActionTrendExitPolicy(),
+    )
+    assert hit["action"] == "none"
+    assert hit["exit_qty"] == 0
+
+
+def test_aligned_same_side_holds_one_open_max():
+    hit = aligned_action_trend_decision(
+        open_side="long",
+        open_qty=1,
+        pine_action=SignalAction.BUY,
+        trend="BULLISH",
+        policy=AlignedActionTrendExitPolicy(),
+    )
+    assert hit["action"] == "none"
+    assert "already BUY+BULLISH" in hit["reason"]
+
+
+def test_aligned_close_only_when_flip_disabled():
+    hit = aligned_action_trend_decision(
+        open_side="long",
+        open_qty=1,
+        pine_action=SignalAction.SELL,
+        trend="BEARISH",
+        policy=AlignedActionTrendExitPolicy(allow_flip=False),
+    )
+    assert hit["action"] == "aligned_opposite_sell"
+    assert hit["flip"] is False
+    assert hit["signal_action"] == "EXIT"
