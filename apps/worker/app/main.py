@@ -20,6 +20,7 @@ from options_portal_domain.session_gates import (
     AtrTrailScaleOutPolicy,
     FixedPctExitPolicy,
     MorningProfitBookPolicy,
+    ProfitCandleProtectPolicy,
     SoftEodPolicy,
 )
 from options_portal_domain.tz import ensure_tzdata, now_ist
@@ -141,8 +142,8 @@ async def _tick_open_book_management(cfg: dict[str, Any]) -> dict[str, Any]:
     """Evaluate open-book exits on a timely path (not blocked by full scans).
 
     Runs when any of:
-    - fixed ±2% exits enabled, stock opens exist, and cash risk-exit window
-      (09:15–15:40 IST trading days) — not overnight
+    - profit_candle_protect enabled, stock opens, cash risk-exit window
+    - fixed ±2% exits enabled (OFF by default), stock opens, risk-exit window
     - ATR trail / profit scale-out enabled (when re-enabled) + same window
     - soft-flatten window (15:15–15:30 IST)
     - morning profit-book window (09:15–10:00 IST, when enabled)
@@ -155,6 +156,7 @@ async def _tick_open_book_management(cfg: dict[str, Any]) -> dict[str, Any]:
     morning_policy = MorningProfitBookPolicy.from_config(cfg)
     atr_trail_policy = AtrTrailScaleOutPolicy.from_config(cfg)
     fixed_pct_policy = FixedPctExitPolicy.from_config(cfg)
+    profit_candle_policy = ProfitCandleProtectPolicy.from_config(cfg)
     ist_now = now_ist()
     if not is_nse_trading_day(ist_now.date()):
         return {"ran": False, "reason": "non_trading_day", "symbols": 0}
@@ -180,9 +182,13 @@ async def _tick_open_book_management(cfg: dict[str, Any]) -> dict[str, Any]:
     in_soft = soft_policy.in_soft_flatten_window(ist_now)
     in_morning = morning_policy.enabled and morning_policy.in_window(ist_now)
     in_risk = soft_policy.in_risk_exit_window(ist_now)
-    # Fixed-pct / ATR exits only during [09:15, 15:40] — not overnight.
+    # Risk exits only during [09:15, soft_flatten_until] — not overnight.
+    # Fixed ±2% stays OFF on tip; profit_candle keeps the daytime open-book poll.
     fixed_pct_active = (
         fixed_pct_policy.enabled and bool(stock_opens) and in_risk
+    )
+    profit_candle_active = (
+        profit_candle_policy.enabled and bool(stock_opens) and in_risk
     )
     atr_trail_active = (
         atr_trail_policy.enabled and bool(stock_opens) and in_risk
@@ -192,6 +198,7 @@ async def _tick_open_book_management(cfg: dict[str, Any]) -> dict[str, Any]:
         and not in_morning
         and not index_opens
         and not fixed_pct_active
+        and not profit_candle_active
         and not atr_trail_active
     ):
         return {
@@ -244,10 +251,11 @@ async def _tick_open_book_management(cfg: dict[str, Any]) -> dict[str, Any]:
                 logger.exception("open-book tick failed for %s", symbol)
 
     logger.info(
-        "Open-book pass starting symbols=%d fixed_pct=%s atr_trail=%s "
-        "soft=%s morning=%s index_opens=%s",
+        "Open-book pass starting symbols=%d fixed_pct=%s profit_candle=%s "
+        "atr_trail=%s soft=%s morning=%s index_opens=%s",
         len(symbols),
         fixed_pct_active,
+        profit_candle_active,
         atr_trail_active,
         in_soft,
         in_morning,
@@ -259,6 +267,7 @@ async def _tick_open_book_management(cfg: dict[str, Any]) -> dict[str, Any]:
         "reason": "ok",
         "symbols": len(symbols),
         "fixed_pct": fixed_pct_active,
+        "profit_candle": profit_candle_active,
         "atr_trail": atr_trail_active,
         "soft": in_soft,
         "morning": in_morning,
@@ -271,28 +280,31 @@ _tick_open_book_soft_flatten = _tick_open_book_management
 
 
 async def soft_flatten_poll_loop(stop_event: asyncio.Event) -> None:
-    """Poll open-book exits (fixed ±2%, soft flatten, optional ATR/morning).
+    """Poll open-book exits (profit_candle, soft flatten; ±2% OFF by default).
 
     Full-universe scans can run many minutes under live MD. Soft flatten used
     to fire only when each symbol's turn arrived mid-scan, so a slow/hung cycle
     (or a symbol last seen before 15:15) could exit hours late. This loop ticks
-    the open book on its own cadence for fixed ±2% exits (cash risk-exit
+    the open book on its own cadence for profit_candle_protect (cash risk-exit
     window 09:15–15:30 IST), soft-flatten (15:15–15:30 flatten ALL), and any
-    open index underlyings that must leave the equity paper book. ATR trail /
-    morning TP remain callable when re-enabled in config. Overnight: no
-    risk-exit fills.
+    open index underlyings that must leave the equity paper book. Fixed ±2% /
+    ATR trail / morning TP remain callable when re-enabled in config.
+    Overnight: no risk-exit fills.
     """
     cfg = load_config()
     soft_policy = SoftEodPolicy.from_config(cfg)
     morning_policy = MorningProfitBookPolicy.from_config(cfg)
     atr_trail_policy = AtrTrailScaleOutPolicy.from_config(cfg)
     fixed_pct_policy = FixedPctExitPolicy.from_config(cfg)
+    profit_candle_policy = ProfitCandleProtectPolicy.from_config(cfg)
     poll_sec = soft_policy.soft_flatten_poll_interval_sec
     logger.info(
-        "Open-book management loop starting poll=%ss fixed_pct=%s atr_trail=%s "
-        "morning=%s-%s soft=%s-%s IST (independent of full-universe scan)",
+        "Open-book management loop starting poll=%ss fixed_pct=%s "
+        "profit_candle=%s atr_trail=%s morning=%s-%s soft=%s-%s IST "
+        "(independent of full-universe scan)",
         poll_sec,
         fixed_pct_policy.enabled,
+        profit_candle_policy.enabled,
         atr_trail_policy.enabled,
         morning_policy.start_ist,
         morning_policy.until_ist,

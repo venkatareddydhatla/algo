@@ -220,12 +220,15 @@ def test_apollohosp_short_rejects_false_day_low_mark():
 
     from datetime import datetime
 
+    # Explicit enabled=True — tip defaults fixed_pct_exit OFF; this asserts
+    # the LTP gate still blocks a false fire when the helper is re-enabled.
+    pct_on = FixedPctExitPolicy(enabled=True)
     hold = fixed_pct_exit_decision(
         open_side="short",
         open_qty=1,
         entry_avg=entry,
         mark=good_ltp,
-        policy=FixedPctExitPolicy(),
+        policy=pct_on,
         now=datetime(2026, 11, 20, 14, 1, 0),
         trading_day=True,
     )
@@ -240,7 +243,7 @@ def test_apollohosp_short_rejects_false_day_low_mark():
         open_qty=1,
         entry_avg=entry,
         mark=bad_mark,
-        policy=FixedPctExitPolicy(),
+        policy=pct_on,
         now=datetime(2026, 11, 20, 14, 1, 0),
         trading_day=True,
     )
@@ -251,7 +254,7 @@ def test_apollohosp_short_rejects_false_day_low_mark():
         open_qty=1,
         entry_avg=entry,
         mark=None,  # risk_exit_mark_accepted refused the false tick
-        policy=FixedPctExitPolicy(),
+        policy=pct_on,
         now=datetime(2026, 11, 20, 14, 1, 0),
         trading_day=True,
     )

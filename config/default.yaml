@@ -40,7 +40,7 @@ trading:
   max_active_symbols: 0
   scan_batch_size: 8     # concurrent symbols per worker batch (rate-limit friendly)
   # Every 15m candle: re-score ALL active symbols (Reversal Pro Action + entries/exits).
-  # Open-book ±2% still on soft_flatten_poll; no reentry cooloff.
+  # Open-book poll: profit_candle + soft flatten; fixed ±2% OFF. No reentry cooloff.
   scan_on_bar_close: true
   bar_close_settle_sec: 8
   # Expected cycle: short on ~49-name volatile list; must finish inside 15m.
@@ -48,7 +48,7 @@ trading:
     # NSE equity/F&O regular session (IST); calendar holidays applied in code.
     # New entries [entries_open, no_new_entries_after) IST (09:30–15:15) via
     # is_trading_session — wait for first 15m candle (09:15–09:30) to complete.
-    # Cash open + open-book ±2% risk exits still from open (09:15) to soft_flatten_until.
+    # Cash open + optional open-book risk exits from open (09:15) to soft_flatten_until.
     # Flatten ALL from 15:15 IST (overnight hold off). Next day may re-enter if aligned.
     open: "09:15"                  # cash / risk-exit window start
     entries_open: "09:30"          # no new entries before 09:30 IST
@@ -59,8 +59,7 @@ trading:
     soft_flatten_poll_interval_sec: 15  # open-book loop; independent of full scan
     overnight_hold_enabled: false  # Venkata: flatten ALL by 15:15 (no overnight)
     overnight_hold_min_hybrid_abs: 0.85  # unused while overnight_hold_enabled=false
-    # Morning first-hour dynamic TP/stop — OFF while fixed ±2% is primary.
-    # Kept for rollback (set enabled: true + fixed_pct_exit.enabled: false).
+    # Morning first-hour dynamic TP/stop — OFF (kept for rollback).
     morning_profit_book:
       enabled: false
       start_ist: "09:15"
@@ -71,7 +70,7 @@ trading:
       stop_atr_mult: 1.25
       atr_period: 14
       exit_fraction: 1.0           # 1.0 full exit; 0.5 later for scale-out when qty>1
-    user_hours_note: "09:15–15:30 IST (entries 09:30–15:15; flatten ALL from 15:15; Action+Trend aligned; ±2%/profit_candle secondary; no overnight; no cooloff)"
+    user_hours_note: "09:15–15:30 IST (entries 09:30–15:15; flatten ALL from 15:15; Action+Trend aligned; no ±2%; profit_candle optional; no overnight; no cooloff)"
   # NPR21 Reversal Detection Pro v3.2 (Confirmed Only). See docs/pine-reversal-pro-v32.pine.
   pine_signals:
     enabled: true
@@ -110,19 +109,14 @@ trading:
     require_news_context: false  # if true, skip orders when news pipeline degraded
     # Skip watchlist scoring + new entries when LTP/last close < ₹40.
     min_equity_price: 40.0
-    # Fixed ±2% profit/stop on OPEN equity only (not an entry filter; ~15s poll).
-    # Long: mark≥entry×1.02 → pct_profit_2; mark≤entry×0.98 → pct_stop_2
-    # Short: mark≤entry×0.98 → pct_profit_2; mark≥entry×1.02 → pct_stop_2
-    # Priority same tick: pct_stop/profit > profit_candle_protect >
-    # (disabled ATR/morning) > aligned_action_trend_exit > soft_flatten.
-    # ±2%/profit_candle are optional secondary; primary exits = opposite /
-    # NEUTRAL / 15:15 flatten.
+    # Fixed ±2% profit/stop — OFF (user: remove completely). Code path kept for
+    # rollback only; pct_profit_2 / pct_stop_2 must not fire on this tip.
     fixed_pct_exit:
-      enabled: true
+      enabled: false
       profit_pct: 2.0
       stop_pct: 2.0
     # In-profit structure break on latest 15m vs prior (open book only).
-    # Long: open < mid(prior) and close < prior.low → profit_candle_protect.
+    # Not a % cousin — keep optional. Long: open < mid(prior) and close < prior.low.
     # Short: open > mid(prior) and close > prior.high (symmetric).
     profit_candle_protect:
       enabled: true
@@ -134,8 +128,7 @@ trading:
     # Legacy close-only opposite U1/D1 path (unused while aligned_action_trend on).
     opposite_pine_exit:
       enabled: false
-    # All-day ATR trail + profit scale-out — OFF while fixed ±2% is primary.
-    # Kept for rollback (set enabled: true + fixed_pct_exit.enabled: false).
+    # All-day ATR trail + profit scale-out — OFF (kept for rollback).
     atr_trail_scale_out:
       enabled: false
       atr_period: 14
