@@ -9,7 +9,9 @@ from typing import Any
 import yaml
 
 from options_portal_domain.custom_watchlist import (
+    filter_excluded_symbols,
     load_custom_symbols,
+    load_excluded_curated_symbols,
     merge_watchlist_with_customs,
 )
 from options_portal_domain.universe import (
@@ -43,10 +45,15 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
     trading = data.setdefault("trading", {})
     config_dir = cfg_path.parent
     base = resolve_watchlist_symbols(trading, config_dir=config_dir)
+    excluded = load_excluded_curated_symbols()
+    # Curated CSV stays intact; exclusions drop names from the active watch only.
+    base_active = filter_excluded_symbols(base, excluded)
     customs = load_custom_symbols()
-    # Curated CSV first; portal-added equities appended with dedupe.
-    watchlist = merge_watchlist_with_customs(base, customs)
+    # Active curated first; portal-added equities appended with dedupe.
+    watchlist = merge_watchlist_with_customs(base_active, customs)
     trading["symbols_base"] = list(base)
+    trading["symbols_base_active"] = list(base_active)
+    trading["symbols_excluded"] = list(excluded)
     trading["symbols_custom"] = [
         s for s in customs if s not in {str(x).upper() for x in base}
     ]

@@ -126,12 +126,49 @@ export default function DashboardPage() {
   }
 
   async function removeCustom(sym: string) {
+    const ok = window.confirm(
+      `Remove custom equity ${sym} from the active watch?\nClears pine.signal.${sym} · dry_run only`,
+    );
+    if (!ok) {
+      setCustomMsg("Remove cancelled");
+      return;
+    }
     setCustomBusy(true);
     setCustomMsg("");
     try {
-      const res = await api.removeCustomSymbol(sym);
+      const res = await api.removeActiveWatchSymbol(sym, { confirm: true });
       setCustomMsg(res.message || `${sym} removed`);
       setCustomTick((n) => n + 1);
+    } catch (err) {
+      setCustomMsg(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCustomBusy(false);
+    }
+  }
+
+  async function deleteWatchRow(sym: string) {
+    const ticker = String(sym || "")
+      .trim()
+      .toUpperCase();
+    if (!ticker || customBusy) return;
+    const isCustom = customSymbols.includes(ticker);
+    const ok = window.confirm(
+      isCustom
+        ? `Delete ${ticker} from the active watch?\nRemoves custom equity + clears pine.signal.${ticker} · dry_run only`
+        : `Delete ${ticker} from the active watch?\nCurated CSV unchanged — exclusion list + clears pine.signal.${ticker}.\nRestore later via Custom equities Add (same ticker) or DELETE /api/v1/watchlist/exclusions/${ticker}.\nDry-run only.`,
+    );
+    if (!ok) {
+      setCustomMsg("Delete cancelled");
+      return;
+    }
+    setCustomBusy(true);
+    setCustomMsg("");
+    try {
+      const res = await api.removeActiveWatchSymbol(ticker, { confirm: true });
+      setCustomMsg(res.message || `${ticker} deleted from active watch`);
+      if (highlight === ticker) clearFilter();
+      setCustomTick((n) => n + 1);
+      setOffset(0);
     } catch (err) {
       setCustomMsg(err instanceof Error ? err.message : String(err));
     } finally {
@@ -148,7 +185,8 @@ export default function DashboardPage() {
             Curated TradingView watchlist (~18) + custom equities ({total} symbols) — Reversal
             Pro Action (U1→BUY / D1→SELL, no HOLD) and Trend (BULLISH / BEARISH / NEUTRAL).
             Indices never appear as Action rows. Open dry-run trades keep BUY/SELL Action until
-            close; Trend stays live. Source: {source}.
+            close; Trend stays live. Per-row <strong>Delete</strong> drops customs or excludes
+            curated names (CSV untouched; restore via Add). Source: {source}.
           </p>
         </div>
         <MarketIndexStrip />
@@ -262,6 +300,7 @@ export default function DashboardPage() {
               <th>Action</th>
               <th>Trend</th>
               <th>Updated</th>
+              <th className="row-actions-col"> </th>
             </tr>
           </thead>
           <tbody>
@@ -298,6 +337,21 @@ export default function DashboardPage() {
                   </span>
                 </td>
                 <td className="muted mono">{fmtIstDateTime(r.updated_at)}</td>
+                <td className="row-actions-col">
+                  <button
+                    type="button"
+                    className="danger row-delete"
+                    disabled={customBusy}
+                    title={
+                      customSymbols.includes(r.symbol)
+                        ? `Remove custom ${r.symbol}`
+                        : `Exclude curated ${r.symbol} from active watch`
+                    }
+                    onClick={() => void deleteWatchRow(r.symbol)}
+                  >
+                    Delete
+                  </button>
+                </td>
               </tr>
             ))}
           </tbody>
