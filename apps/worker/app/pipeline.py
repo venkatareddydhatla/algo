@@ -319,10 +319,11 @@ async def run_symbol_tick(
         )
         features = {**features, **pine_result.features}
         logger.info(
-            "%s pine_signal action=%s buy=%s sell=%s u1=%s d1=%s "
+            "%s pine_signal action=%s trend=%s buy=%s sell=%s u1=%s d1=%s "
             "strong_bull=%s strong_bear=%s buysignal=%s sellsignal=%s",
             symbol,
             pine_result.action.value,
+            getattr(pine_result, "trend", "NEUTRAL"),
             pine_result.buy_signal,
             pine_result.sell_signal,
             (pine_result.state.u1 if pine_result.state else None),
@@ -390,11 +391,19 @@ async def run_symbol_tick(
                         persist_summary = pine_result.reason_summary
                         persist_detail = pine_result.reason_detail
                         persist_reasons = list(pine_result.reasons)
+                persist_trend = str(
+                    getattr(pine_result, "trend", None)
+                    or pine_result.features.get("trend")
+                    or "NEUTRAL"
+                ).upper()
+                if persist_trend not in {"BULLISH", "BEARISH", "NEUTRAL"}:
+                    persist_trend = "NEUTRAL"
                 kv.set(
                     f"pine.signal.{symbol.upper()}",
                     {
                         "symbol": symbol.upper(),
                         "action": persist_action,
+                        "trend": persist_trend,
                         "buy_signal": persist_buy,
                         "sell_signal": persist_sell,
                         "action_source": getattr(
@@ -1090,7 +1099,8 @@ async def run_symbol_tick(
             intents = []
             result["note"] = (
                 "pine_no_entry_signal — watchlist Action may still show "
-                f"{decision.action.value} via trend/signal fallback"
+                f"{decision.action.value} via sticky/trend fallback "
+                f"(Trend={getattr(pine_result, 'trend', 'NEUTRAL')})"
             )
         else:
             intents = plan_equity_intents(

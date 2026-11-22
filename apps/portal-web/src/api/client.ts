@@ -137,8 +137,10 @@ export type SignalRow = {
   ltp?: number | null;
   price_source?: "ltp" | "candle_close" | "last_known" | string | null;
   timeframe: string;
-  /** User-facing Action: Pine BUY/SELL/HOLD, or sticky BUY/SELL while open. */
+  /** User-facing Action: U1→BUY / D1→SELL (sticky; no HOLD), or sticky while open. */
   action: string;
+  /** Pine info-table Trend from EMA buysignal/sellsignal. */
+  trend?: "BULLISH" | "BEARISH" | "NEUTRAL" | string;
   /** Expire-stale Pine Action (signal freshness); entries use this path, not sticky. */
   pine_action?: string;
   display_action?: string;

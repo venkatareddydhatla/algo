@@ -248,9 +248,26 @@ git pull origin cursor/trades-page-round-trips-cb5e
 
 Open http://127.0.0.1:5173/trades — Open positions unchanged; Closed trades show Symbol, Side LONG/SHORT, Entry/Exit IST, Entry/Exit px, PnL, Reason, dry_run.
 
-### Pull TradingView curated watchlist (stacked) — tip
+### Pull Action + Trend columns (stacked) — tip
 
-Replaces the old ~49 `volatile_fno50` CSV with Venkata’s **19** TradingView equities. Keeps portal **Custom equities** add/remove (PR #56) on top with dedupe. Same Reversal Pro v3.2 scan, ₹40 floor, dry_run, **no cooloff**, full scan each 15m bar close. Prefer this tip. Stacked on `cursor/reversal-pro-v32-c904` (PR #60).
+Watchlist **Action** = U1→BUY / D1→SELL (sticky ZigZag between signals; no HOLD). **Trend** = BULLISH / BEARISH / NEUTRAL from EMA `buysignal`/`sellsignal` (Pine table). Open-trade sticky Action does not hide Trend. Entries still need fresh U1/D1. Prefer this tip. Stacked on `cursor/tradingview-watchlist-7166` (PR #61).
+
+```powershell
+cd C:\algo
+Set-ExecutionPolicy -Scope Process Bypass -Force
+.\deploy\windows\native\stop-native.ps1
+git fetch origin
+git checkout cursor/watchlist-action-trend-0791
+git pull origin cursor/watchlist-action-trend-0791
+.\deploy\windows\native\setup-native.ps1
+.\deploy\windows\native\start-native.ps1 -WithWorker
+```
+
+**Must stop then start.** Signals page shows Action + Trend; API rows include `action` and `trend`. Still `dry_run` only. After merge into the tip chain / `main`, pull that branch instead.
+
+### Pull TradingView curated watchlist (stacked)
+
+Replaces the old ~49 `volatile_fno50` CSV with Venkata’s **19** TradingView equities. Keeps portal **Custom equities** add/remove (PR #56) on top with dedupe. Same Reversal Pro v3.2 scan, ₹40 floor, dry_run, **no cooloff**, full scan each 15m bar close. Prefer the Action+Trend tip above. Stacked on `cursor/reversal-pro-v32-c904` (PR #60).
 
 ```powershell
 cd C:\algo
