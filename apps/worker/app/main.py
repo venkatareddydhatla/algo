@@ -11,6 +11,11 @@ from typing import Any
 
 from options_portal_domain.calendar import is_nse_trading_day
 from options_portal_domain.config import load_config, scan_symbols, trading_mode, watchlist_symbols
+from options_portal_domain.pine_signals import latest_closed_bar_open
+from options_portal_domain.scan_cadence import (
+    scan_cadence_config,
+    seconds_until_bar_close_scan,
+)
 from options_portal_domain.session_gates import (
     AtrTrailScaleOutPolicy,
     FixedPctExitPolicy,
@@ -349,45 +354,109 @@ async def daily_summary_poll_loop(stop_event: asyncio.Event) -> None:
 
 
 async def pipeline_loop() -> None:
+    """Full-watchlist Pine Action + entry/exit passes.
+
+    Default cadence: **15m bar-close** — after each completed candle (+ settle),
+    re-evaluate **all** ``scan_symbols`` (volatile_fno50 when uncapped). Open-book
+    ±2% / profit-candle exits still run on the dedicated soft-flatten poll.
+    Re-entry cooloff (120m) is unchanged inside ``run_symbol_tick``.
+    """
     cfg = load_config()
     watchlist = watchlist_symbols(cfg)
     active = scan_symbols(cfg)
     trading = cfg.get("trading", {})
-    interval = int(os.environ.get("WORKER_INTERVAL_SEC", "60"))
+    cadence = scan_cadence_config(cfg)
     batch = trading.get("scan_batch_size_resolved") or scan_batch_size(trading)
     max_active = trading.get("max_active_symbols", 0)
     logger.info(
         "Worker starting watchlist=%d active_scan=%d max_active_symbols=%s "
-        "batch=%s interval=%ss mode=%s "
-        "(0/null max_active_symbols = full universe; expect ~2-5 min/pass dry-run)",
+        "batch=%s mode=%s scan_on_bar_close=%s tf=%dm settle=%ss "
+        "fallback_interval=%ss "
+        "(0/null max_active_symbols = full list each pass; "
+        "bar-close preferred so every 15m candle rescored)",
         len(watchlist),
         len(active),
         max_active,
         batch,
-        interval,
         cfg.get("trading", {}).get("mode", "dry_run"),
+        cadence["on_bar_close"],
+        cadence["timeframe_minutes"],
+        cadence["settle_sec"],
+        cadence["fallback_interval_sec"],
     )
     logger.info(
         "Active scan symbols: %s",
         ",".join(active[:40]) + ("..." if len(active) > 40 else ""),
     )
+    last_closed_scanned = None
     while not _stop.is_set():
         cfg = load_config()
         active = scan_symbols(cfg)
+        cadence = scan_cadence_config(cfg)
+        tf = int(cadence["timeframe_minutes"])
+        settle = float(cadence["settle_sec"])
+
+        if cadence["on_bar_close"]:
+            wait_s = seconds_until_bar_close_scan(
+                timeframe_minutes=tf,
+                settle_sec=settle,
+                last_closed_scanned=last_closed_scanned,
+            )
+            if wait_s > 0:
+                logger.info(
+                    "Bar-close scan waiting %.1fs (tf=%dm settle=%ss "
+                    "last_closed=%s symbols=%d)",
+                    wait_s,
+                    tf,
+                    settle,
+                    last_closed_scanned.isoformat()
+                    if last_closed_scanned is not None
+                    else "none",
+                    len(active),
+                )
+                try:
+                    await asyncio.wait_for(_stop.wait(), timeout=wait_s)
+                    break
+                except TimeoutError:
+                    pass
+                if _stop.is_set():
+                    break
+
         cycle_started = time.monotonic()
+        closed_open = latest_closed_bar_open(timeframe_minutes=tf)
+        logger.info(
+            "Full scan starting symbols=%d closed_bar_open=%s "
+            "(Pine Action + entries/exits; cooloff unchanged)",
+            len(active),
+            closed_open.isoformat(),
+        )
         await _run_batch(active, cfg)
         elapsed = time.monotonic() - cycle_started
+        last_closed_scanned = closed_open
         logger.info(
-            "Full scan cycle done symbols=%d elapsed=%.1fs (batch=%s)",
+            "Full scan cycle done symbols=%d elapsed=%.1fs (batch=%s "
+            "closed_bar_open=%s)",
             len(active),
             elapsed,
             scan_batch_size(cfg.get("trading", {})),
+            closed_open.isoformat(),
         )
+        if elapsed > tf * 60:
+            logger.warning(
+                "Full scan took %.1fs (> %dm bar); next pass starts as soon "
+                "as the next closed bar is ready so the list still completes "
+                "each candle when possible",
+                elapsed,
+                tf,
+            )
         # Soft flatten + daily summary run on dedicated loops (not gated on scan).
-        try:
-            await asyncio.wait_for(_stop.wait(), timeout=interval)
-        except TimeoutError:
-            continue
+        if not cadence["on_bar_close"]:
+            interval = int(cadence["fallback_interval_sec"])
+            try:
+                await asyncio.wait_for(_stop.wait(), timeout=interval)
+                break
+            except TimeoutError:
+                continue
     logger.info("Pipeline loop stopped")
 
 

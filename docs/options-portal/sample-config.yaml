@@ -32,6 +32,9 @@ trading:
   use_symbols_demo: false
   max_active_symbols: 0  # 0/null = score entire configured universe; positive N = first-N cap
   scan_batch_size: 8     # concurrent symbols/batch
+  # Full watchlist re-score on each 15m bar close (Pine Action + entries/exits).
+  scan_on_bar_close: true
+  bar_close_settle_sec: 8
   session:
     # Entries 09:30–15:20 (wait first 15m); cash/risk from 09:15; soft flatten 15:28.
     open: "09:15"

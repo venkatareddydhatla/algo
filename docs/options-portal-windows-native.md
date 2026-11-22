@@ -248,9 +248,26 @@ git pull origin cursor/trades-page-round-trips-cb5e
 
 Open http://127.0.0.1:5173/trades — Open positions unchanged; Closed trades show Symbol, Side LONG/SHORT, Entry/Exit IST, Entry/Exit px, PnL, Reason, dry_run.
 
-### Pull fifty volatile F&O watchlist (stacked) — tip
+### Pull scan all symbols each 15m bar (stacked) — tip
 
-Replaces full NSE F&O with Venkata’s **49 volatile equities** (`universe: volatile_fno50`). No sub-₹40 names on the list (dropped IDEA / Asahi / India Cements / Delta, etc.). Adds **BHEL, HAL, PIIND** (once), **SYNGENE, MPHASIS**. Maps: Tata Motors → **TMPV**, LTIM → **LTM**, GUJGASLTD → **GUJENERGY**. Excludes FINNIFTY. Floor **`min_equity_price: 40`**. Stacked on `cursor/expire-stale-pine-action-7f07` (PR #53).
+Worker re-evaluates **all** `volatile_fno50` symbols on each **15m bar close** (Pine Action + entries/exits). `max_active_symbols: 0`, `scan_on_bar_close: true`, settle ~8s for Upstox candles. Keeps **120m** re-entry cooloff. Open-book ±2% / profit-candle still on the dedicated ~15s poll. Prefer this tip. Stacked on `cursor/fifty-volatile-watchlist-bc1e` (PR #54).
+
+```powershell
+cd C:\algo
+Set-ExecutionPolicy -Scope Process Bypass -Force
+.\deploy\windows\native\stop-native.ps1
+git fetch origin
+git checkout cursor/scan-all-15m-bar-811c
+git pull origin cursor/scan-all-15m-bar-811c
+.\deploy\windows\native\setup-native.ps1
+.\deploy\windows\native\start-native.ps1 -WithWorker
+```
+
+**Must stop then start.** Worker log should show `scan_on_bar_close=True`, `Full scan starting symbols=49`, then `Bar-close scan waiting …` until the next 15m close. Confirm `reentry_cooloff.minutes: 120` and `min_equity_price: 40`. After merge into the tip chain / `main`, pull that branch instead.
+
+### Pull fifty volatile F&O watchlist (stacked)
+
+Replaces full NSE F&O with Venkata’s **49 volatile equities** (`universe: volatile_fno50`). No sub-₹40 names on the list (dropped IDEA / Asahi / India Cements / Delta, etc.). Adds **BHEL, HAL, PIIND** (once), **SYNGENE, MPHASIS**. Maps: Tata Motors → **TMPV**, LTIM → **LTM**, GUJGASLTD → **GUJENERGY**. Excludes FINNIFTY. Floor **`min_equity_price: 40`**. Prefer the 15m full-scan tip above. Stacked on `cursor/expire-stale-pine-action-7f07` (PR #53).
 
 ```powershell
 cd C:\algo
@@ -267,7 +284,7 @@ git pull origin cursor/fifty-volatile-watchlist-bc1e
 
 ### Pull expire stale Pine Action → HOLD (stacked)
 
-Watchlist **Action** shows **BUY/SELL** only while that signal’s 15m bar is current (same 15m, or still the latest closed bar). Afterwards → **HOLD** and `pine.signal.*` KV is updated/cleared so morning signals (e.g. APOLLOHOSP SELL) cannot linger for hours. Keeps exit mark LTP + session H/L, ₹20 floor, 120m cooloff, profit candle, Pine clear-EMA, **09:30**, max open **10**. Prefer the fifty-volatile tip above. Stacked on `cursor/fix-exit-mark-ltp-38ba` (PR #52).
+Watchlist **Action** shows **BUY/SELL** only while that signal’s 15m bar is current (same 15m, or still the latest closed bar). Afterwards → **HOLD** and `pine.signal.*` KV is updated/cleared so morning signals (e.g. APOLLOHOSP SELL) cannot linger for hours. Keeps exit mark LTP + session H/L, ₹20 floor, 120m cooloff, profit candle, Pine clear-EMA, **09:30**, max open **10**. Prefer the 15m full-scan tip above. Stacked on `cursor/fix-exit-mark-ltp-38ba` (PR #52).
 
 ```powershell
 cd C:\algo
