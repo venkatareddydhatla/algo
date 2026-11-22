@@ -7,8 +7,10 @@ from pathlib import Path
 import pytest
 
 from options_portal_domain.equity import (
+    PriceQtyTiersPolicy,
     below_min_equity_price,
     clear_last_good_ltp_cache,
+    equity_qty_for_price,
     last_good_ltp,
     mark_consistent_with_recent,
     mark_jump_pct,
@@ -26,6 +28,78 @@ from options_portal_domain.types import OrderResult, SignalAction
 from options_portal_persistence.paper_trades import PaperTradeStore
 from options_portal_risk.gates import DefaultRiskGate
 from options_portal_risk.order_router import SafeOrderRouter
+
+
+def test_price_qty_tiers_bands_and_boundaries():
+    """>2000→100; 1000–2000→200; 500–1000→500; else→2000 (all equities)."""
+    assert equity_qty_for_price(2500.0) == 100
+    assert equity_qty_for_price(2000.01) == 100
+    assert equity_qty_for_price(2000.0) == 200
+    assert equity_qty_for_price(1500.0) == 200
+    assert equity_qty_for_price(1000.0) == 200
+    assert equity_qty_for_price(999.99) == 500
+    assert equity_qty_for_price(500.0) == 500
+    assert equity_qty_for_price(499.99) == 2000
+    assert equity_qty_for_price(40.0) == 2000
+    # Missing mark → fallback (share_qty), not else tier.
+    assert equity_qty_for_price(None) == 1
+    assert equity_qty_for_price(0.0) == 1
+
+
+def test_price_qty_tiers_from_config_and_disabled_fallback():
+    cfg = {
+        "trading": {
+            "equity": {
+                "share_qty": 7,
+                "price_qty_tiers": {
+                    "enabled": True,
+                    "qty_gt_2000": 100,
+                    "qty_1000_2000": 200,
+                    "qty_500_1000": 500,
+                    "qty_else": 2000,
+                },
+            }
+        }
+    }
+    assert equity_qty_for_price(2100.0, config=cfg) == 100
+    assert equity_qty_for_price(None, config=cfg) == 7
+    off = PriceQtyTiersPolicy.from_config(
+        {"trading": {"equity": {"share_qty": 3, "price_qty_tiers": {"enabled": False}}}}
+    )
+    assert off.enabled is False
+    assert equity_qty_for_price(2500.0, policy=off) == 3
+
+
+def test_price_qty_tiers_entry_intent_uses_band_qty():
+    """plan_equity_intents entry qty is whatever the shared sizer returns."""
+    qty = equity_qty_for_price(1200.0)
+    assert qty == 200
+    intent = plan_equity_intents(
+        "CUSTOM1",
+        SignalAction.BUY,
+        open_side=None,
+        open_qty=0,
+        qty=qty,
+        price=1200.0,
+    )[0]
+    assert intent.qty == 200
+    assert intent.action_kind == "entry"
+    # Risk gate must allow highest tier when max is 2000.
+    hi = plan_equity_intents(
+        "CHEAP",
+        SignalAction.BUY,
+        open_side=None,
+        open_qty=0,
+        qty=equity_qty_for_price(100.0),
+        price=100.0,
+    )[0]
+    assert hi.qty == 2000
+    ok, _ = DefaultRiskGate().validate_equity(
+        hi,
+        {"open_symbols": [], "day_realized_pnl": 0},
+        {"max_open_symbols": 10, "max_equity_qty_per_symbol": 2000},
+    )
+    assert ok is True
 
 
 def test_min_equity_price_floor_defaults_to_40():

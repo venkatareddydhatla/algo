@@ -248,6 +248,23 @@ git pull origin cursor/trades-page-round-trips-cb5e
 
 Open http://127.0.0.1:5173/trades — Open positions unchanged; Closed trades show Symbol, Side LONG/SHORT, Entry/Exit IST, Entry/Exit px, PnL, Reason, dry_run.
 
+### Pull price→qty tiers for all equities (stacked) — tip
+
+Dry-run entry size from mark price for **every** equity (curated CSV + custom watchlist, one path): **>₹2000 → 100**, **₹1000–2000 → 200**, **₹500–1000 → 500**, **else → 2000**. Raises `max_qty_per_symbol` to 2000. Stacked on `cursor/remove-fixed-2pct-exits-3adc` (PR #70). Dry-run only.
+
+```powershell
+cd C:\algo
+Set-ExecutionPolicy -Scope Process Bypass -Force
+.\deploy\windows\native\stop-native.ps1
+git fetch origin
+git checkout cursor/price-qty-tiers-all-equities-3adc
+git pull origin cursor/price-qty-tiers-all-equities-3adc
+.\deploy\windows\native\setup-native.ps1
+.\deploy\windows\native\start-native.ps1 -WithWorker
+```
+
+**Must stop then start.** Confirm `trading.equity.price_qty_tiers.enabled: true` and `max_qty_per_symbol: 2000`. New entries should size by LTP band (customs included). Still `dry_run` only. Never paste Upstox / Gmail secrets.
+
 ### Pull remove fixed ±2% exits (stacked) — tip
 
 Turns **off** open-book `fixed_pct_exit` so `pct_profit_2` / `pct_stop_2` never fire. Keeps Action+Trend aligned entries/exits, NEUTRAL flatten, opposite flip, 09:30–15:15 entries, flatten ALL from 15:15, and optional `profit_candle_protect` (structure, not %). Stacked on `cursor/aligned-action-trend-trades-7cb4` (PR #69). Dry-run only.

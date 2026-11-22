@@ -15,8 +15,15 @@ trading:
   timeframe: 15m
   equity:
     enabled: true
-    share_qty: 1           # fixed shares per dry-run equity entry
-    max_qty_per_symbol: 1
+    share_qty: 1           # fallback when mark ≤0 or price_qty_tiers off
+    max_qty_per_symbol: 2000
+    # Curated + custom share one path: >2000→100; 1000–2000→200; 500–1000→500; else→2000.
+    price_qty_tiers:
+      enabled: true
+      qty_gt_2000: 100
+      qty_1000_2000: 200
+      qty_500_1000: 500
+      qty_else: 2000
     # Paper fill marks: prefer live Upstox LTP on entry/exit/soft_flatten.
     # Fallback order (logged loudly): candle close → entry avg (PnL=0) → min price.
     paper_retention:
@@ -93,7 +100,7 @@ trading:
     max_premium_spread_pct: 2.0
     min_option_oi: 50000
     equity_share_qty: 1
-    max_equity_qty_per_symbol: 1
+    max_equity_qty_per_symbol: 2000
     require_news_context: false  # if true, skip orders when news pipeline degraded
     min_equity_price: 40.0       # skip score/entry when LTP or last close < ₹40
     fixed_pct_exit:

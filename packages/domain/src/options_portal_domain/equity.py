@@ -57,6 +57,15 @@ DEFAULT_MIN_EQUITY_PRICE = 40.0
 # ±2% profit/stop clears the gate; a ~5.6% day-low false mark (APOLLOHOSP) does not.
 DEFAULT_MARK_JUMP_PCT = 3.0
 
+# Price → share qty for every equity dry-run entry (curated + custom, same path).
+# >2000 → 100; [1000, 2000] → 200; [500, 1000) → 500; else → 2000.
+DEFAULT_PRICE_QTY_GT_2000 = 100
+DEFAULT_PRICE_QTY_1000_2000 = 200
+DEFAULT_PRICE_QTY_500_1000 = 500
+DEFAULT_PRICE_QTY_ELSE = 2000
+DEFAULT_PRICE_QTY_FALLBACK = 1  # missing/invalid mark when tiers on
+DEFAULT_MAX_EQUITY_QTY_PER_SYMBOL = DEFAULT_PRICE_QTY_ELSE
+
 # Process-local last accepted live LTP per symbol (worker + tests).
 _LAST_GOOD_LTP: dict[str, float] = {}
 
@@ -528,6 +537,81 @@ def profit_book_exit_qty(open_qty: int, *, fraction: float = 1.0) -> int:
         return 0
     # Scale-out: at least 1 share, never more than open.
     return max(1, min(q, int(q * frac)))
+
+
+@dataclass(frozen=True)
+class PriceQtyTiersPolicy:
+    """Price-banded share qty for open/add / flip_open (all equities).
+
+    Config under ``trading.equity.price_qty_tiers`` (or ``trading.risk`` mirror).
+    Applies to curated CSV and custom watchlist symbols alike — one worker path.
+    """
+
+    enabled: bool = True
+    qty_gt_2000: int = DEFAULT_PRICE_QTY_GT_2000
+    qty_1000_2000: int = DEFAULT_PRICE_QTY_1000_2000
+    qty_500_1000: int = DEFAULT_PRICE_QTY_500_1000
+    qty_else: int = DEFAULT_PRICE_QTY_ELSE
+    fallback_qty: int = DEFAULT_PRICE_QTY_FALLBACK
+
+    @classmethod
+    def from_config(cls, config: Mapping[str, Any] | None) -> PriceQtyTiersPolicy:
+        cfg = dict(config or {})
+        trading = dict(cfg.get("trading") or {})
+        equity = dict(trading.get("equity") or {})
+        risk = dict(trading.get("risk") or {})
+        raw = dict(
+            equity.get("price_qty_tiers")
+            or risk.get("price_qty_tiers")
+            or trading.get("price_qty_tiers")
+            or {}
+        )
+        fallback = equity.get("share_qty", risk.get("equity_share_qty", DEFAULT_PRICE_QTY_FALLBACK))
+        try:
+            fallback_i = max(1, int(fallback))
+        except (TypeError, ValueError):
+            fallback_i = DEFAULT_PRICE_QTY_FALLBACK
+        return cls(
+            enabled=bool(raw.get("enabled", True)),
+            qty_gt_2000=max(1, int(raw.get("qty_gt_2000", DEFAULT_PRICE_QTY_GT_2000))),
+            qty_1000_2000=max(
+                1, int(raw.get("qty_1000_2000", DEFAULT_PRICE_QTY_1000_2000))
+            ),
+            qty_500_1000=max(1, int(raw.get("qty_500_1000", DEFAULT_PRICE_QTY_500_1000))),
+            qty_else=max(1, int(raw.get("qty_else", DEFAULT_PRICE_QTY_ELSE))),
+            fallback_qty=fallback_i,
+        )
+
+
+def equity_qty_for_price(
+    price: float | None,
+    *,
+    policy: PriceQtyTiersPolicy | None = None,
+    config: Mapping[str, Any] | None = None,
+) -> int:
+    """Share qty from mark price — same bands for curated and custom equities.
+
+    - price > 2000 → 100
+    - 1000 ≤ price ≤ 2000 → 200
+    - 500 ≤ price < 1000 → 500
+    - else (price < 500 or invalid) → 2000 when tiers on; fallback_qty if mark ≤ 0
+    """
+    pol = policy or PriceQtyTiersPolicy.from_config(config)
+    if not pol.enabled:
+        return max(1, int(pol.fallback_qty))
+    try:
+        px = float(price) if price is not None else 0.0
+    except (TypeError, ValueError):
+        px = 0.0
+    if px <= 0:
+        return max(1, int(pol.fallback_qty))
+    if px > 2000.0:
+        return max(1, int(pol.qty_gt_2000))
+    if px >= 1000.0:
+        return max(1, int(pol.qty_1000_2000))
+    if px >= 500.0:
+        return max(1, int(pol.qty_500_1000))
+    return max(1, int(pol.qty_else))
 
 
 def plan_equity_intents(
