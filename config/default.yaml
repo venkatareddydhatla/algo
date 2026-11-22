@@ -71,20 +71,21 @@ trading:
       atr_period: 14
       exit_fraction: 1.0           # 1.0 full exit; 0.5 later for scale-out when qty>1
     user_hours_note: "09:15–15:40 IST (entries 09:30–15:20; soft flatten 15:28–15:40; overnight |h|≥0.85 + trend; fixed ±2% open exits; no hard 15:40 square-off)"
-  # Pine equity dry-run (primary): EMA13/21 cross + next 15m candle fully clear of both EMAs.
-  # buy  = prior crossover  AND open > both EMAs; sell = prior crossunder AND open < both.
-  # ST/ADX/vol kept for diagnostics only (not buy/sell gate). Stocks-only dry_run.
+  # NPR21 Reversal Detection Pro v3.2 (Confirmed Only). See docs/pine-reversal-pro-v32.pine.
   pine_signals:
     enabled: true
-    ema_fast: 13
+    confirmation_mode: "Confirmed Only"
+    confirmation_bars: 0
+    sensitivity: Medium
+    method: average
+    atr_length: 14
+    average_length: 5
+    require_strong: true
+    action_no_hold: true
+    neutral_action: BUY
+    ema_superfast: 9
+    ema_fast: 14
     ema_slow: 21
-    su_len: 10
-    su_mult: 3.0
-    adx_len: 14
-    use_adx: true
-    adx_min: 20
-    vol_ratio: 1.2
-    vol_sma_len: 20
   # Light broader-market gate — disabled while Pine is primary (stocks-only still).
   market_sentiment:
     enabled: false

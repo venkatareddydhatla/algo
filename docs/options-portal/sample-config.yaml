@@ -66,6 +66,9 @@ trading:
     atr_length: 14
     average_length: 5
     require_strong: true   # U1/D1 + EMA9/14/21 trend; set false for raw U1/D1
+    # Temporary: watchlist Action BUY/SELL only (final mapping TBD after tip lands).
+    action_no_hold: true
+    neutral_action: BUY    # when trend+signal unset; entries still need U1/D1/STRONG
     # Custom mode knobs (used only when sensitivity: Custom):
     # percent_amount: 0.08
     # rev_amount: 0.0001

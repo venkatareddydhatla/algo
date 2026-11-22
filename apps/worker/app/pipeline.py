@@ -33,7 +33,9 @@ from options_portal_domain.high_conviction import (
     skip_entry_log,
 )
 from options_portal_domain.pine_signals import (
+    entry_action_from_result,
     evaluate_pine_signal,
+    opposite_close_action_from_state,
     pine_params_from_config,
     pine_signals_enabled,
     prefer_closed_candles,
@@ -343,15 +345,24 @@ async def run_symbol_tick(
                     if getattr(bar_ts, "tzinfo", None)
                     else bar_ts.replace(tzinfo=timezone.utc).isoformat()
                 )
+                # action_no_hold: persist BUY/SELL every bar; do not rewrite to HOLD.
+                expire_to_hold = not bool(pine_params.action_no_hold)
                 wl_action = watchlist_pine_action(
                     pine_result.action,
                     bar_ts,
                     now=now_utc,
                     timeframe_minutes=15,
+                    expire_to_hold=expire_to_hold,
                 )
                 live = wl_action in {"BUY", "SELL"}
-                if live:
-                    persist_action = pine_result.action.value
+                if live or pine_params.action_no_hold:
+                    persist_action = (
+                        wl_action
+                        if live
+                        else pine_result.action.value
+                    )
+                    if persist_action not in {"BUY", "SELL"}:
+                        persist_action = pine_result.action.value
                     persist_buy = bool(pine_result.buy_signal)
                     persist_sell = bool(pine_result.sell_signal)
                     persist_score = float(pine_result.score)
@@ -386,6 +397,9 @@ async def run_symbol_tick(
                         "action": persist_action,
                         "buy_signal": persist_buy,
                         "sell_signal": persist_sell,
+                        "action_source": getattr(
+                            pine_result, "action_source", "none"
+                        ),
                         "score": persist_score,
                         "confidence": persist_conf,
                         "reasons": persist_reasons,
@@ -926,13 +940,19 @@ async def run_symbol_tick(
         }
     result["morning_tp"] = morning_tp
 
-    # Opposite fresh Pine BUY/SELL → close-only (no same-bar flip). Freshness
-    # matches watchlist expire-stale (signal bar current / latest closed 15m).
+    # Opposite fresh U1/D1 → close-only (not trend-only watchlist Action).
     pine_bar_ts = getattr(decision, "bar_ts", None) if use_pine else None
+    opp_action = (
+        opposite_close_action_from_state(
+            pine_result.state if pine_result is not None else None
+        )
+        if use_pine
+        else SignalAction.HOLD
+    )
     opposite_pine = opposite_pine_exit_decision(
         open_side=open_side,  # type: ignore[arg-type]
         open_qty=open_qty,
-        pine_action=decision.action if use_pine else SignalAction.HOLD,
+        pine_action=opp_action,
         bar_ts=pine_bar_ts,
         policy=opposite_pine_policy,
         now=datetime.now(tz=timezone.utc),
@@ -1059,10 +1079,29 @@ async def run_symbol_tick(
         # Defense: never plan stock entry for indices even if earlier gate missed.
         intents = []
         result["note"] = "index_not_equity — entry refused"
-    elif use_pine and decision.action == SignalAction.HOLD:
-        # Pine HOLD = no trade (do not close open book — only sell_signal / exits).
-        intents = []
-        result["note"] = "pine_hold — no buy/sell signal"
+    elif use_pine:
+        # Entries only on fresh U1/D1 (or STRONG) — not trend/watchlist Action.
+        entry_act = (
+            entry_action_from_result(pine_result)
+            if pine_result is not None
+            else SignalAction.HOLD
+        )
+        if entry_act == SignalAction.HOLD:
+            intents = []
+            result["note"] = (
+                "pine_no_entry_signal — watchlist Action may still show "
+                f"{decision.action.value} via trend/signal fallback"
+            )
+        else:
+            intents = plan_equity_intents(
+                symbol,
+                entry_act,
+                open_side=open_side,  # type: ignore[arg-type]
+                open_qty=open_qty,
+                qty=share_qty,
+                price=fill_price,
+                reason=reason_summary,
+            )
     else:
         intents = plan_equity_intents(
             symbol,
@@ -1073,20 +1112,21 @@ async def run_symbol_tick(
             price=fill_price,
             reason=reason_summary,
         )
-        # Pine path: prefer close-only on opposite signal (no same-bar flip).
-        # Primary path is opposite_pine_exit above; this strips flip_open if a
-        # flip still reached the signal planner (e.g. policy disabled).
-        if use_pine and any(
-            getattr(i, "action_kind", None) == "flip_close" for i in intents
-        ):
-            intents = [
-                i
-                for i in intents
-                if getattr(i, "action_kind", None) != "flip_open"
-            ]
-        # Fresh entry / flip_open should start without stale trail state.
-        if any(getattr(i, "action_kind", None) in {"entry", "flip_open"} for i in intents):
-            clear_atr_trail_state(symbol)
+
+    # Pine path: prefer close-only on opposite signal (no same-bar flip).
+    # Primary path is opposite_pine_exit above; this strips flip_open if a
+    # flip still reached the signal planner (e.g. policy disabled).
+    if use_pine and any(
+        getattr(i, "action_kind", None) == "flip_close" for i in intents
+    ):
+        intents = [
+            i
+            for i in intents
+            if getattr(i, "action_kind", None) != "flip_open"
+        ]
+    # Fresh entry / flip_open should start without stale trail state.
+    if any(getattr(i, "action_kind", None) in {"entry", "flip_open"} for i in intents):
+        clear_atr_trail_state(symbol)
 
     # ₹20 floor on new entries even if scoring already ran (LTP may be cheaper
     # than last candle close). Exits / covers kept.

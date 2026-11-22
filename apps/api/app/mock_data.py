@@ -322,6 +322,17 @@ def synthetic_signal_for_symbol(
     }
 
 
+def _payload_action_no_hold(payload: dict[str, Any]) -> bool:
+    """Reversal Pro: watchlist Action stays BUY/SELL (no expire→HOLD)."""
+    feats = dict(payload.get("features") or {})
+    if "action_no_hold" in feats:
+        return bool(feats.get("action_no_hold"))
+    engine = str(
+        payload.get("signal_engine") or feats.get("signal_engine") or ""
+    ).lower()
+    return engine == "reversal_pro_v32"
+
+
 def pine_row_from_kv(
     payload: dict[str, Any],
     *,
@@ -330,17 +341,19 @@ def pine_row_from_kv(
 ) -> dict[str, Any]:
     """Normalize a worker-persisted ``pine.signal.*`` KV payload into an API row.
 
-    BUY/SELL only while ``bar_ts`` is current / same 15m; otherwise HOLD.
+    With ``action_no_hold`` (Reversal Pro default), BUY/SELL do not expire to HOLD.
     """
     sym = str(payload.get("symbol") or "").upper()
     clock = now or datetime.now(tz=timezone.utc)
     raw_action = _normalize_pine_action(str(payload.get("action") or "HOLD"))
     bar_ts = payload.get("bar_ts")
+    no_hold = _payload_action_no_hold(payload)
     action = watchlist_pine_action(
         raw_action,
         bar_ts,
         now=clock,
         timeframe_minutes=15,
+        expire_to_hold=not no_hold,
     )
     expired = raw_action in {"BUY", "SELL"} and action == "HOLD"
     if expired:
@@ -472,14 +485,16 @@ def load_persisted_pine_signals(
             if not (isinstance(payload, dict) and payload.get("action")):
                 continue
             raw = _normalize_pine_action(str(payload.get("action") or "HOLD"))
+            no_hold = _payload_action_no_hold(payload)
             live = watchlist_pine_action(
                 raw,
                 payload.get("bar_ts"),
                 now=clock,
                 timeframe_minutes=15,
+                expire_to_hold=not no_hold,
             )
             did_expire = False
-            if raw in {"BUY", "SELL"} and live == "HOLD":
+            if (not no_hold) and raw in {"BUY", "SELL"} and live == "HOLD":
                 payload = _expire_persisted_pine_payload(
                     kv, key, payload, now=clock
                 )

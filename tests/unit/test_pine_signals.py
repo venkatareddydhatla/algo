@@ -110,6 +110,8 @@ def test_pine_config_defaults_match_reversal_pro_v32():
     assert p.average_length == 5
     assert p.require_strong is True
     assert p.require_strong is DEFAULT_REQUIRE_STRONG
+    assert p.action_no_hold is True
+    assert p.neutral_action == "BUY"
     assert p.ema_superfast == 9
     assert p.ema_fast == 14
     assert p.ema_slow == 21
@@ -337,3 +339,97 @@ def test_config_require_strong_knob():
     )
     assert on.require_strong is True
     assert off.require_strong is False
+
+
+def test_action_no_hold_uses_trend_not_hold():
+    """While flat without fresh U1/D1, Action follows buysignal/sellsignal."""
+    from options_portal_domain.pine_signals import map_watchlist_action
+
+    # Fake state: no entry, bullish trend
+    base = evaluate_pine_bar(
+        _swing_series(),
+        params=_custom_params(require_strong=False),
+        prefer_closed=False,
+    )
+    assert base is not None
+    # Build a HOLD-like state via map with buysignal forced through a params path:
+    # use engine result and assert action is never HOLD when action_no_hold.
+    p = PineParams(
+        **{
+            **_custom_params(require_strong=True).__dict__,
+            "action_no_hold": True,
+            "neutral_action": "BUY",
+        }
+    )
+    result = evaluate_pine_signal(
+        "RELIANCE",
+        _swing_series(),
+        params=p,
+        prefer_closed=False,
+    )
+    assert result.action in {SignalAction.BUY, SignalAction.SELL}
+    assert result.action_source in {"entry", "trend", "signal", "neutral"}
+    # Entry gates stay independent of display Action
+    if not result.buy_signal and not result.sell_signal:
+        assert result.action_source != "entry"
+
+    # Explicit trend mapping
+    from options_portal_domain.pine_signals import PineBarState
+
+    trend_buy = PineBarState(
+        ema9=1.0,
+        ema14=1.0,
+        ema21=1.0,
+        atr=1.0,
+        reversal_amount=1.0,
+        direction=1,
+        signal=0,
+        u1=False,
+        d1=False,
+        buysignal=1,
+        sellsignal=0,
+        strong_bullish=False,
+        strong_bearish=False,
+        confirmed_pivot=False,
+        buy_signal=False,
+        sell_signal=False,
+    )
+    act, src, _ = map_watchlist_action(trend_buy, params=p)
+    assert act == SignalAction.BUY and src == "trend"
+    trend_sell = PineBarState(
+        ema9=1.0,
+        ema14=1.0,
+        ema21=1.0,
+        atr=1.0,
+        reversal_amount=1.0,
+        direction=-1,
+        signal=0,
+        u1=False,
+        d1=False,
+        buysignal=0,
+        sellsignal=1,
+        strong_bullish=False,
+        strong_bearish=False,
+        confirmed_pivot=False,
+        buy_signal=False,
+        sell_signal=False,
+    )
+    act, src, _ = map_watchlist_action(trend_sell, params=p)
+    assert act == SignalAction.SELL and src == "trend"
+
+
+def test_watchlist_action_no_expire_when_disabled():
+    bar = datetime(2026, 11, 20, 4, 30, tzinfo=timezone.utc)
+    hours_later = bar + timedelta(hours=3)
+    assert (
+        watchlist_pine_action(
+            "BUY", bar, now=hours_later, expire_to_hold=False
+        )
+        == "BUY"
+    )
+    assert (
+        watchlist_pine_action(
+            "BUY", bar, now=hours_later, expire_to_hold=True
+        )
+        == "HOLD"
+    )

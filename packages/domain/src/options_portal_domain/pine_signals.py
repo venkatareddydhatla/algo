@@ -39,6 +39,10 @@ DEFAULT_ATR_REVERSAL = 2.0
 DEFAULT_ATR_LENGTH = 14
 DEFAULT_AVERAGE_LENGTH = 5
 DEFAULT_REQUIRE_STRONG = True
+# Temporary watchlist Action policy (final mapping TBD): never HOLD —
+# prefer EMA trend, then ZigZag signal bias, then neutral_action knob.
+DEFAULT_ACTION_NO_HOLD = True
+DEFAULT_NEUTRAL_ACTION = "BUY"
 DEFAULT_EMA_SUPERFAST = 9
 DEFAULT_EMA_FAST = 14
 DEFAULT_EMA_SLOW = 21
@@ -77,6 +81,9 @@ class PineParams:
     atr_length: int = DEFAULT_ATR_LENGTH
     average_length: int = DEFAULT_AVERAGE_LENGTH
     require_strong: bool = DEFAULT_REQUIRE_STRONG
+    # Watchlist Action: BUY/SELL only (no HOLD). Entries still use buy_signal/sell_signal.
+    action_no_hold: bool = DEFAULT_ACTION_NO_HOLD
+    neutral_action: str = DEFAULT_NEUTRAL_ACTION  # when trend+signal both unset
     ema_superfast: int = DEFAULT_EMA_SUPERFAST
     ema_fast: int = DEFAULT_EMA_FAST
     ema_slow: int = DEFAULT_EMA_SLOW
@@ -129,17 +136,22 @@ class PineBarState:
 
 @dataclass(frozen=True)
 class PineSignalResult:
-    """Equity dry-run action derived from Reversal Pro U1/D1 (or STRONG)."""
+    """Equity dry-run action derived from Reversal Pro U1/D1 (or STRONG).
+
+    ``action`` is the watchlist Action (BUY/SELL; optional no-HOLD trend fallback).
+    ``buy_signal`` / ``sell_signal`` are the **entry** gates (fresh U1/D1 or STRONG).
+    """
 
     symbol: str
-    action: SignalAction  # BUY | SELL | HOLD
+    action: SignalAction  # BUY | SELL (| HOLD only if action_no_hold=false)
     buy_signal: bool
     sell_signal: bool
-    score: float  # +1 buy, -1 sell, 0 hold
+    score: float  # +1 entry buy, -1 entry sell; ±0.5 trend; ±0.25 neutral
     confidence: float
     reasons: list[str]
     features: dict[str, Any] = field(default_factory=dict)
     state: PineBarState | None = None
+    action_source: str = "none"  # entry | trend | signal | neutral | hold
 
     @property
     def reason_summary(self) -> str:
@@ -151,7 +163,17 @@ class PineSignalResult:
             if self.state and self.state.strong_bearish:
                 return "STRONG bearish (D1 + EMA trend)"
             return "D1 bearish reversal"
-        return "no Reversal Pro signal"
+        if self.action_source == "trend" and self.action == SignalAction.BUY:
+            return "trend BULLISH (buysignal) → BUY"
+        if self.action_source == "trend" and self.action == SignalAction.SELL:
+            return "trend BEARISH (sellsignal) → SELL"
+        if self.action_source == "signal" and self.action == SignalAction.BUY:
+            return "signal bias bullish → BUY"
+        if self.action_source == "signal" and self.action == SignalAction.SELL:
+            return "signal bias bearish → SELL"
+        if self.action_source == "neutral":
+            return f"neutral fallback → {self.action.value}"
+        return "no Reversal Pro entry signal"
 
     @property
     def reason_detail(self) -> str:
@@ -182,6 +204,8 @@ def pine_params_from_config(cfg: Mapping[str, Any] | None) -> PineParams:
         atr_length=int(raw.get("atr_length", DEFAULT_ATR_LENGTH)),
         average_length=int(raw.get("average_length", DEFAULT_AVERAGE_LENGTH)),
         require_strong=bool(raw.get("require_strong", DEFAULT_REQUIRE_STRONG)),
+        action_no_hold=bool(raw.get("action_no_hold", DEFAULT_ACTION_NO_HOLD)),
+        neutral_action=str(raw.get("neutral_action", DEFAULT_NEUTRAL_ACTION)).upper(),
         ema_superfast=int(raw.get("ema_superfast", DEFAULT_EMA_SUPERFAST)),
         ema_fast=int(raw.get("ema_fast", DEFAULT_EMA_FAST)),
         ema_slow=int(raw.get("ema_slow", DEFAULT_EMA_SLOW)),
@@ -268,8 +292,13 @@ def watchlist_pine_action(
     *,
     now: datetime | None = None,
     timeframe_minutes: int = DEFAULT_TIMEFRAME_MINUTES,
+    expire_to_hold: bool = True,
 ) -> str:
-    """Map a Pine action to watchlist BUY/SELL/HOLD with signal-bar expiry."""
+    """Map a Pine action to watchlist BUY/SELL/HOLD with optional signal-bar expiry.
+
+    When ``expire_to_hold=False`` (Reversal Pro ``action_no_hold``), stale bars
+    keep BUY/SELL so the Action column never falls back to HOLD.
+    """
     raw = action.value if isinstance(action, SignalAction) else str(action or "HOLD")
     act = raw.upper()
     if act in {"BUY_CE_BIAS", "BUY_CE", "LONG"}:
@@ -284,7 +313,61 @@ def watchlist_pine_action(
         bar_ts, now=now, timeframe_minutes=timeframe_minutes
     ):
         return act
+    if not expire_to_hold:
+        return act
     return "HOLD"
+
+
+def opposite_close_action_from_state(
+    state: PineBarState | None,
+) -> SignalAction:
+    """Fresh U1/D1 for opposite-signal close (ignores trend-only Action)."""
+    if state is None:
+        return SignalAction.HOLD
+    if state.u1:
+        return SignalAction.BUY
+    if state.d1:
+        return SignalAction.SELL
+    return SignalAction.HOLD
+
+
+def entry_action_from_result(result: PineSignalResult) -> SignalAction:
+    """Fresh entry gate only — not trend/watchlist Action."""
+    if result.buy_signal:
+        return SignalAction.BUY
+    if result.sell_signal:
+        return SignalAction.SELL
+    return SignalAction.HOLD
+
+
+def map_watchlist_action(
+    state: PineBarState,
+    *,
+    params: PineParams,
+) -> tuple[SignalAction, str, float]:
+    """Watchlist Action: entry signal, else trend, else signal bias, else neutral.
+
+    Returns ``(action, source, score)``. With ``action_no_hold`` never returns HOLD.
+    """
+    if state.buy_signal:
+        return SignalAction.BUY, "entry", 1.0
+    if state.sell_signal:
+        return SignalAction.SELL, "entry", -1.0
+    if state.buysignal == 1 and state.sellsignal != 1:
+        return SignalAction.BUY, "trend", 0.5
+    if state.sellsignal == 1 and state.buysignal != 1:
+        return SignalAction.SELL, "trend", -0.5
+    if state.signal > 0:
+        return SignalAction.BUY, "signal", 0.5
+    if state.signal < 0:
+        return SignalAction.SELL, "signal", -0.5
+    if params.action_no_hold:
+        neut = str(params.neutral_action or "BUY").upper()
+        if neut not in {"BUY", "SELL"}:
+            neut = "BUY"
+        act = SignalAction.BUY if neut == "BUY" else SignalAction.SELL
+        return act, "neutral", 0.25 if act == SignalAction.BUY else -0.25
+    return SignalAction.HOLD, "hold", 0.0
 
 
 def prefer_closed_candles(
@@ -624,13 +707,33 @@ def evaluate_pine_signal(
     now: datetime | None = None,
     prefer_closed: bool = True,
 ) -> PineSignalResult:
-    """Map last-bar U1/D1 (or STRONG) → BUY / SELL / HOLD."""
+    """Map last bar → watchlist Action + entry gates.
+
+    Entries: U1/D1 (or STRONG). Watchlist Action: entry, else trend
+    (buysignal/sellsignal), else ZigZag signal bias, else ``neutral_action``
+    when ``action_no_hold`` (default) so Action is never HOLD.
+    """
     p = params or pine_params_from_config(cfg)
     state = evaluate_pine_bar(
         candles, params=p, now=now, prefer_closed=prefer_closed
     )
     sym = str(symbol or "").upper()
     if state is None:
+        neut = str(p.neutral_action or "BUY").upper()
+        if p.action_no_hold and neut in {"BUY", "SELL"}:
+            act = SignalAction.BUY if neut == "BUY" else SignalAction.SELL
+            return PineSignalResult(
+                symbol=sym,
+                action=act,
+                buy_signal=False,
+                sell_signal=False,
+                score=0.25 if act == SignalAction.BUY else -0.25,
+                confidence=0.0,
+                reasons=["no candles — neutral Action fallback"],
+                features={"action_no_hold": True, "action_source": "neutral"},
+                state=None,
+                action_source="neutral",
+            )
         return PineSignalResult(
             symbol=sym,
             action=SignalAction.HOLD,
@@ -641,12 +744,13 @@ def evaluate_pine_signal(
             reasons=["no candles"],
             features={},
             state=None,
+            action_source="hold",
         )
 
     reasons: list[str] = []
     reasons.append(
         f"mode={p.confirmation_mode} sensitivity={p.sensitivity} "
-        f"require_strong={p.require_strong}"
+        f"require_strong={p.require_strong} action_no_hold={p.action_no_hold}"
     )
     if state.ema9 is not None and state.ema14 is not None and state.ema21 is not None:
         reasons.append(
@@ -670,18 +774,15 @@ def evaluate_pine_signal(
     if state.strong_bearish:
         reasons.append("STRONG bearish (D1 + sellsignal)")
 
+    action, action_source, score = map_watchlist_action(state, params=p)
     if state.buy_signal:
-        action = SignalAction.BUY
-        score = 1.0
-        reasons.append("buy_signal=True")
+        reasons.append("buy_signal=True (entry)")
     elif state.sell_signal:
-        action = SignalAction.SELL
-        score = -1.0
-        reasons.append("sell_signal=True")
+        reasons.append("sell_signal=True (entry)")
     else:
-        action = SignalAction.HOLD
-        score = 0.0
-        reasons.append("buy_signal=False sell_signal=False → HOLD")
+        reasons.append(
+            f"no fresh entry — Action={action.value} via {action_source}"
+        )
 
     features = {
         "ema9": state.ema9,
@@ -698,6 +799,9 @@ def evaluate_pine_signal(
         "confirmation_bars": p.confirmation_bars,
         "method": p.method,
         "require_strong": p.require_strong,
+        "action_no_hold": p.action_no_hold,
+        "neutral_action": p.neutral_action,
+        "action_source": action_source,
         "zigzag_direction": state.direction,
         "signal": state.signal,
         "u1": state.u1,
@@ -713,7 +817,9 @@ def evaluate_pine_signal(
         "signal_engine": SIGNAL_ENGINE_ID,
     }
     conf = 0.9 if (state.strong_bullish or state.strong_bearish) else (
-        0.85 if (state.buy_signal or state.sell_signal) else 0.0
+        0.85 if (state.buy_signal or state.sell_signal) else (
+            0.4 if action_source in {"trend", "signal"} else 0.2
+        )
     )
 
     return PineSignalResult(
@@ -726,4 +832,5 @@ def evaluate_pine_signal(
         reasons=reasons,
         features=features,
         state=state,
+        action_source=action_source,
     )

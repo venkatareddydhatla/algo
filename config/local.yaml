@@ -73,6 +73,9 @@ trading:
     atr_length: 14
     average_length: 5
     require_strong: true   # U1/D1 + EMA9/14/21 trend; set false for raw U1/D1
+    # Temporary: watchlist Action is BUY/SELL only (final mapping TBD).
+    action_no_hold: true
+    neutral_action: BUY    # when trend+signal unset; entries still need U1/D1/STRONG
     ema_superfast: 9
     ema_fast: 14
     ema_slow: 21
