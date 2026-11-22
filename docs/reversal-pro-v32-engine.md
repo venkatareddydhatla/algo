@@ -25,12 +25,12 @@ Defaults: **Confirmed Only**, **Medium** sensitivity, ATR length 14, method `ave
 - Preview pivots are **never** used for trading.
 - Watchlist **Action** (BUY/SELL only — no HOLD) = **freshest U1/D1** (TV labels):
   1. Fresh U1 → BUY / D1 → SELL
-  2. **VEDL override:** `lastConfirmedPivotIsHigh` + Trend BEARISH while ZigZag `signal` still sticky +1 → **SELL** (D1 path lag; never BUY+BEARISH after red REVERSAL / pivot high)
+  2. **Hard invariant:** `lastConfirmedPivotIsHigh` + Trend BEARISH → **SELL** (ignores ZigZag `signal` sticky)
   3. Else ZigZag `signal` sticky (last confirmed reversal; later D1 replaces older U1)
   4. Else last confirmed pivot when `signal==0` (high→SELL / low→BUY)
   5. Else EMA Trend fallback (`buysignal`/`sellsignal`) when last unset
   6. Else `neutral_action` (default BUY)
-  Worker rewrites `pine.signal.*` each scan; API reconciles stale BUY+BEARISH KV. Open overlay (PR #59, tightened ALG-83): only while paper qty>0; does not hide a fresher opposite pine Action; **Trend unchanged**.
+  **GET `/signals`** recomputes from 15m candles when BUY+BEARISH / stale KV (Sunday/after-hours without worker) and response-gates BEARISH+pivot-high → SELL. Worker still rewrites `pine.signal.*` on scan. Open overlay (PR #59): only while paper qty>0; **Trend unchanged**.
 - Watchlist **Trend** (separate column / API field): `buysignal==1` → **BULLISH**,
   `sellsignal==1` → **BEARISH**, else **NEUTRAL** (same as TV info table).
 - **Entries** still require fresh U1/D1 (or STRONG) — Trend / sticky Action alone does not open trades.

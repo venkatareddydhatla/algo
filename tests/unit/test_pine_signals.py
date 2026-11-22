@@ -417,7 +417,7 @@ def test_action_from_u1_d1_and_sticky_signal():
     act, src, _ = map_watchlist_action(d1, params=p)
     assert act == SignalAction.SELL and src == "reversal"
 
-    # VEDL: pivot high + BEARISH overrides stale U1 signal+ → SELL
+    # VEDL hard invariant: pivot high + BEARISH → SELL (ignore signal sticky)
     sticky_buy_stale = PineBarState(
         ema9=1.0,
         ema14=1.0,
@@ -425,7 +425,7 @@ def test_action_from_u1_d1_and_sticky_signal():
         atr=1.0,
         reversal_amount=1.0,
         direction=-1,
-        signal=1,  # old U1 sticky — must NOT win over pivot high + BEARISH
+        signal=1,  # old U1 sticky — ignored when pivot high + BEARISH
         u1=False,
         d1=False,
         buysignal=0,
@@ -440,6 +440,12 @@ def test_action_from_u1_d1_and_sticky_signal():
     act, src, _ = map_watchlist_action(sticky_buy_stale, params=p)
     assert act == SignalAction.SELL and src == "pivot"
     assert map_trend(sticky_buy_stale) == "BEARISH"
+    # Same when signal already -1 (still SELL via pivot before sticky)
+    sticky_buy_stale_neg = PineBarState(
+        **{**sticky_buy_stale.__dict__, "signal": -1}
+    )
+    act, src, _ = map_watchlist_action(sticky_buy_stale_neg, params=p)
+    assert act == SignalAction.SELL and src == "pivot"
 
     # Pivot low + signal+ (no BEARISH override) → BUY via signal sticky
     sticky_pivot_low = PineBarState(
