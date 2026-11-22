@@ -19,12 +19,23 @@ from options_portal_domain.equity import (
     filter_rows_below_min_equity_price,
     min_equity_price_from_config,
 )
+from options_portal_domain.universe import INDEX_SYMBOLS, is_index_underlying
 from options_portal_hybrid.explain import (
     pick_top_hybrid_sides,
     sort_signal_rows,
 )
 
 router = APIRouter(prefix="/api/v1", tags=["signals"])
+
+
+# Watchlist / strip list payloads omit reason_* — UI shows Action + Trend only.
+# Engine / paper / notify still keep full reasons; entries/exits unchanged.
+_WATCHLIST_OMIT_REASON_KEYS = (
+    "reasons",
+    "reason_kind",
+    "reason_summary",
+    "reason_detail",
+)
 
 
 def _normalize_trend(trend: Any) -> str:
@@ -34,6 +45,27 @@ def _normalize_trend(trend: Any) -> str:
     if t in {"BEARISH", "BEAR", "DOWN"}:
         return "BEARISH"
     return "NEUTRAL"
+
+
+def _omit_watchlist_reason_fields(row: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy without reason fields for Signals watchlist / strip rows."""
+    out = dict(row)
+    for key in _WATCHLIST_OMIT_REASON_KEYS:
+        out.pop(key, None)
+    return out
+
+
+def _drop_index_action_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Indices may stay on MarketIndexStrip quotes — never as Action table rows."""
+    kept: list[dict[str, Any]] = []
+    for row in rows:
+        sym = str(row.get("symbol") or "").upper()
+        if not sym:
+            continue
+        if sym in INDEX_SYMBOLS or is_index_underlying(sym):
+            continue
+        kept.append(row)
+    return kept
 
 
 def _normalize_pine_actions(rows: list[dict[str, Any]]) -> None:
@@ -135,9 +167,10 @@ async def list_signals(
     _normalize_pine_actions(rows)
     rows, floor_meta = await _apply_min_equity_price_filter(rows, cfg=cfg)
     apply_open_trade_display_actions(rows)
+    rows = _drop_index_action_rows(rows)
     rows = sort_signal_rows(rows)
     total = len(rows)
-    page = rows[offset : offset + limit]
+    page = [_omit_watchlist_reason_fields(r) for r in rows[offset : offset + limit]]
     sticky = sum(1 for r in page if r.get("action_from_open_trade"))
     return {
         "items": page,
@@ -158,10 +191,11 @@ async def list_signals(
             "Trend = Pine table BULLISH/BEARISH/NEUTRAL from EMA buysignal/"
             "sellsignal (not overwritten by open-trade overlay). "
             "pine_action keeps signal freshness. "
-            "Hover reason_summary for Pine factor detail. "
+            "Watchlist rows omit reason_* (UI shows Action + Trend only). "
+            "Index underlyings (NIFTY, BANKNIFTY, …) are excluded from Action rows. "
             "price = live LTP when available, else candle close / last-known mark. "
             f"Symbols below ₹{float(floor_meta.get('min_equity_price') or 20):g} "
-            "are excluded from watchlist / TOP strips."
+            "are excluded from the Signals table."
         ),
     }
 
@@ -181,20 +215,24 @@ async def top_hybrid(
     # Enrich + price-floor filter BEFORE picking TOP BUY/SELL so IDEA-like
     # sub-₹20 names cannot occupy the strip from stale Pine KV.
     rows, floor_meta = await _apply_min_equity_price_filter(rows, cfg=cfg)
-    # Capture pine before optional overlay; strip must not treat open LONGs as
-    # fresh BUY signals.
+    # Capture pine before optional overlay; ranking must not treat open LONGs as
+    # fresh BUY signals. Signals UI no longer renders TOP BUY/SELL; endpoint kept
+    # for API/tests.
     apply_open_trade_display_actions(rows)
+    rows = _drop_index_action_rows(rows)
     sides = pick_top_hybrid_sides(rows_for_top_strip(rows), limit=limit)
     return {
-        "ce": sides["ce"],
-        "pe": sides["pe"],
+        "ce": [_omit_watchlist_reason_fields(r) for r in sides["ce"]],
+        "pe": [_omit_watchlist_reason_fields(r) for r in sides["pe"]],
         "limit": limit,
         "source": source,
         "min_equity_price": floor_meta.get("min_equity_price"),
         "price_floor_dropped": floor_meta.get("price_floor_dropped", []),
         "note": (
             "Top Pine BUY / SELL from fresh pine_action only "
-            "(sticky open-trade Action does not enter the strip). "
+            "(sticky open-trade Action does not enter ranking). "
+            "Signals UI no longer shows TOP BUY/SELL strip. "
+            "Index underlyings excluded. Rows omit reason_*. "
             f"Excludes symbols below ₹{float(floor_meta.get('min_equity_price') or 20):g}."
         ),
     }
