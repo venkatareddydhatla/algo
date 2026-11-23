@@ -1,4 +1,4 @@
-# Shared helpers for Options Portal native (Docker-free) Windows scripts.
+﻿# Shared helpers for Options Portal native (Docker-free) Windows scripts.
 # Dot-source from sibling scripts only. Not meant to be run directly.
 
 Set-StrictMode -Version Latest
@@ -244,12 +244,53 @@ function Stop-PidFileProcess {
     $proc = Get-Process -Id $id -ErrorAction SilentlyContinue
     if ($proc) {
         Write-Host ('Stopping {0} PID {1} ({2})...' -f $Label, $id, $proc.ProcessName)
-        Stop-Process -Id $id -Force -ErrorAction SilentlyContinue
+        # Kill process tree when possible — uvicorn spawns a child that keeps :8000.
+        try {
+            & taskkill.exe /F /T /PID $id 2>$null | Out-Null
+        } catch {
+            Stop-Process -Id $id -Force -ErrorAction SilentlyContinue
+        }
         Start-Sleep -Milliseconds 400
     } else {
         Write-Host "$Label PID $id is not running."
     }
     Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue
+}
+
+function Stop-NativePortListeners {
+    <#
+    .SYNOPSIS
+      Best-effort free native stack ports when PID files missed orphan children.
+    #>
+    param(
+        [int[]]$Ports = @(8000, 5173)
+    )
+    foreach ($port in $Ports) {
+        $conns = @()
+        try {
+            $conns = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
+        } catch {
+            $conns = @()
+        }
+        foreach ($c in $conns) {
+            $owning = [int]$c.OwningProcess
+            if ($owning -le 0) { continue }
+            $proc = Get-Process -Id $owning -ErrorAction SilentlyContinue
+            if (-not $proc) { continue }
+            $name = [string]$proc.ProcessName
+            if ($name -notmatch '^(python|uvicorn|node)$') { continue }
+            Write-Host ("Stopping orphan {0} PID {1} listening on port {2}..." -f $name, $owning, $port)
+            try {
+                & taskkill.exe /F /T /PID $owning 2>$null | Out-Null
+            } catch {
+                try {
+                    [System.Diagnostics.Process]::GetProcessById($owning).Kill()
+                } catch {
+                    Stop-Process -Id $owning -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
+    }
 }
 
 function Test-IsAdministrator {
