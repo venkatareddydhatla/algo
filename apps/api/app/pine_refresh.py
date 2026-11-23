@@ -43,13 +43,24 @@ def _norm_trend(trend: Any) -> str:
 
 
 def row_needs_candle_recompute(row: Mapping[str, Any]) -> bool:
-    """True when KV/placeholder may be stale vs chart (esp. BUY+BEARISH)."""
+    """True when KV/placeholder may be stale vs chart (esp. BUY+BEARISH).
+
+    Also forces refresh for HOLD (customs stuck on hybrid-era HOLD) and any
+    non-Reversal-Pro engine so Action/Trend never linger from old hybrid KV.
+    """
     action = _norm_action(row.get("action") or row.get("pine_action"))
     trend = _norm_trend(row.get("trend"))
     feats = dict(row.get("features") or {})
     pivot = feats.get("last_confirmed_pivot_is_high")
     if pivot is None:
         pivot = feats.get("lastConfirmedPivotIsHigh")
+    if action == "HOLD":
+        return True
+    engine = str(
+        row.get("signal_engine") or feats.get("signal_engine") or ""
+    ).lower()
+    if engine and engine != "reversal_pro_v32":
+        return True
     if action == "BUY" and trend == TREND_BEARISH:
         return True
     if trend == TREND_BEARISH and pivot is None:
@@ -147,7 +158,12 @@ def persist_recomputed_pine_row(row: Mapping[str, Any]) -> None:
                 "reason_kind": "pine",
                 "reason_summary": row.get("reason_summary"),
                 "reason_detail": row.get("reason_detail"),
-                "features": dict(row.get("features") or {}),
+                "features": {
+                    **dict(row.get("features") or {}),
+                    "action_no_hold": True,
+                    "signal_engine": "reversal_pro_v32",
+                    "pine": True,
+                },
                 "bar_ts": row.get("bar_ts"),
                 "updated_at": row.get("updated_at")
                 or datetime.now(tz=timezone.utc).isoformat(),

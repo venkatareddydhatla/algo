@@ -53,6 +53,17 @@ def test_validate_rejects_index_and_unknown():
 
 def test_add_remove_persist_roundtrip(kv):
     base = ["RELIANCE", "TCS"]
+    # Pre-seed hybrid-era HOLD so Add must clear pine.signal.INFY.
+    kv.set(
+        "pine.signal.INFY",
+        {
+            "symbol": "INFY",
+            "action": "HOLD",
+            "reason_kind": "hybrid",
+            "updated_at": "2026-11-20T10:15:00+00:00",
+            "score": 0.05,
+        },
+    )
     added = add_custom_symbol(
         "infy",
         instrument_key="NSE_EQ|INE009A01021",
@@ -62,6 +73,8 @@ def test_add_remove_persist_roundtrip(kv):
     assert added["ok"] is True
     assert added["status"] == "added"
     assert load_custom_symbols(kv=kv) == ["INFY"]
+    assert added.get("stale_pine_kv_cleared") is True
+    assert kv.get("pine.signal.INFY") is None
 
     dup = add_custom_symbol(
         "INFY",

@@ -178,6 +178,9 @@ def add_custom_symbol(
             "message": "failed to persist custom symbol (SQLite kv unavailable)",
             "instrument_key": instrument_key,
         }
+    # Drop leftover pine.signal.* (hybrid-era HOLD + old ts) so the next 15m
+    # scan / GET /signals builds Reversal Pro Action+Trend (no HOLD linger).
+    cleared_stale = clear_custom_symbol_signal_kv(sym, kv=kv)
     return {
         "ok": True,
         "status": "added",
@@ -185,7 +188,37 @@ def add_custom_symbol(
         "message": f"{sym} added to custom watchlist (persisted in SQLite kv)",
         "instrument_key": instrument_key,
         "customs": next_list,
+        "stale_pine_kv_cleared": cleared_stale,
     }
+
+
+def clear_custom_symbol_signal_kv(
+    symbol: str,
+    *,
+    kv: Any | None = None,
+) -> bool:
+    """Delete ``pine.signal.{SYM}`` so customs never keep hybrid HOLD/timestamp."""
+    sym = normalize_symbol(symbol)
+    if not sym:
+        return False
+    store = kv
+    if store is None:
+        try:
+            from options_portal_persistence.kv_store import KvStore
+
+            store = KvStore()
+        except Exception:  # noqa: BLE001
+            return False
+    if store is None or not getattr(store, "available", False):
+        return False
+    try:
+        key = f"pine.signal.{sym}"
+        had = store.get(key) is not None
+        store.delete(key)
+        return bool(had)
+    except Exception:  # noqa: BLE001
+        logger.exception("custom_watchlist: clear pine.signal.%s failed", sym)
+        return False
 
 
 def remove_custom_symbol(

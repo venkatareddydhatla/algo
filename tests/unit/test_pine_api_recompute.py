@@ -168,11 +168,22 @@ def test_row_needs_recompute_for_buy_bearish():
             "features": {},  # missing pivot → refresh
         }
     )
+    # Customs stuck on hybrid HOLD must always refresh → Reversal Pro BUY/SELL.
+    assert row_needs_candle_recompute(
+        {
+            "action": "HOLD",
+            "trend": "NEUTRAL",
+            "pine_persisted": True,
+            "signal_engine": "hybrid_confluence",
+            "features": {},
+        }
+    )
     assert not row_needs_candle_recompute(
         {
             "action": "SELL",
             "trend": "BEARISH",
             "pine_persisted": True,
+            "signal_engine": "reversal_pro_v32",
             "features": {"last_confirmed_pivot_is_high": True},
         }
     )

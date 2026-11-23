@@ -248,6 +248,23 @@ git pull origin cursor/trades-page-round-trips-cb5e
 
 Open http://127.0.0.1:5173/trades — Open positions unchanged; Closed trades show Symbol, Side LONG/SHORT, Entry/Exit IST, Entry/Exit px, PnL, Reason, dry_run.
 
+### Pull custom symbols Reversal Pro (stacked) — tip
+
+Customs (e.g. **INFY**) no longer linger as **HOLD** + old hybrid/`Updated` (~2026-11-20). Stale hybrid `pine.signal.*` KV is cleared/ignored; customs join the same **15m** Reversal Pro Action/Trend + aligned entries + price→qty tiers as curated. Stacked on `cursor/price-qty-tiers-all-equities-3adc` (PR #71). Dry-run only.
+
+```powershell
+cd C:\algo
+Set-ExecutionPolicy -Scope Process Bypass -Force
+.\deploy\windows\native\stop-native.ps1
+git fetch origin
+git checkout cursor/custom-symbols-reversal-pro-dd79
+git pull origin cursor/custom-symbols-reversal-pro-dd79
+.\deploy\windows\native\setup-native.ps1
+.\deploy\windows\native\start-native.ps1 -WithWorker
+```
+
+**Must stop then start.** Signals for customs → BUY/SELL + Trend (fresh `Updated`), not HOLD from hybrid KV. Still `dry_run` only. Never paste Upstox / Gmail secrets.
+
 ### Pull price→qty tiers for all equities (stacked) — tip
 
 Dry-run entry size from mark price for **every** equity (curated CSV + custom watchlist, one path): **>₹2000 → 100**, **₹1000–2000 → 200**, **₹500–1000 → 500**, **else → 2000**. Raises `max_qty_per_symbol` to 2000. Stacked on `cursor/remove-fixed-2pct-exits-3adc` (PR #70). Dry-run only.

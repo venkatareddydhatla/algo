@@ -171,12 +171,14 @@ def test_clear_persisted_pine_signals_deletes_kv(tmp_path: Path, monkeypatch: py
             "reasons": ["stale"],
         },
     )
-    # Missing bar_ts → expired to HOLD but row still present until clear.
+    # Missing bar_ts → expire deletes KV (no HOLD rewrite) so watchlist can
+    # rebuild Reversal Pro Action/Trend via synthetics / candle recompute.
     loaded = load_persisted_pine_signals(["IDEA"])
-    assert "IDEA" in loaded
-    assert loaded["IDEA"]["action"] == "HOLD"
+    assert loaded == {}
+    assert kv.get("pine.signal.IDEA") is None
+    # clear is still idempotent when already gone.
     cleared = clear_persisted_pine_signals(["IDEA"])
-    assert cleared == ["IDEA"]
+    assert cleared == ["IDEA"] or cleared == []
     assert load_persisted_pine_signals(["IDEA"]) == {}
 
 
@@ -216,15 +218,11 @@ def test_load_persisted_pine_expires_stale_sell_to_hold(
     assert live["APOLLOHOSP"]["action"] == "SELL"
     assert live["APOLLOHOSP"].get("pine_action_expired") is False
 
-    # Hours later → HOLD and KV rewritten.
+    # Hours later → KV deleted (no HOLD linger); watchlist rebuilds Reversal Pro.
     stale_now = bar_ts + timedelta(hours=5)
     stale = load_persisted_pine_signals(["APOLLOHOSP"], now=stale_now)
-    assert stale["APOLLOHOSP"]["action"] == "HOLD"
-    assert stale["APOLLOHOSP"].get("pine_action_expired") is True
-    rewritten = kv.get("pine.signal.APOLLOHOSP")
-    assert isinstance(rewritten, dict)
-    assert rewritten["action"] == "HOLD"
-    assert rewritten.get("expired_from") == "SELL"
+    assert "APOLLOHOSP" not in stale
+    assert kv.get("pine.signal.APOLLOHOSP") is None
 
 
 def test_load_persisted_reversal_pro_keeps_stale_action_no_hold(
@@ -266,6 +264,48 @@ def test_load_persisted_reversal_pro_keeps_stale_action_no_hold(
     kept = kv.get("pine.signal.SYRMA")
     assert isinstance(kept, dict)
     assert kept["action"] == "BUY"
+
+
+def test_stale_hybrid_kv_infy_cleared_not_hold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Customs (INFY): hybrid-era HOLD + old timestamp must not win watchlist."""
+    from options_portal_persistence.kv_store import KvStore
+
+    from app.mock_data import (
+        build_universe_signals,
+        is_stale_hybrid_signal_kv,
+        load_persisted_pine_signals,
+    )
+
+    db = tmp_path / "kv.sqlite"
+    monkeypatch.setenv("PERSISTENCE_PROFILE", "local")
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db}")
+    kv = KvStore(url=f"sqlite:///{db}")
+    assert kv.available
+    stale = {
+        "symbol": "INFY",
+        "action": "HOLD",
+        "score": 0.12,
+        "confidence": 0.4,
+        "reason_kind": "hybrid",
+        "reasons": ["tech weak", "news neutral"],
+        "updated_at": "2026-11-20T10:15:00+00:00",
+        "timeframe": "15m",
+    }
+    assert is_stale_hybrid_signal_kv(stale) is True
+    kv.set("pine.signal.INFY", stale)
+
+    loaded = load_persisted_pine_signals(["INFY"])
+    assert loaded == {}
+    assert kv.get("pine.signal.INFY") is None
+
+    rows = build_universe_signals(["INFY", "BHARTIARTL"])
+    infy = next(r for r in rows if r["symbol"] == "INFY")
+    assert infy["action"] in {"BUY", "SELL"}
+    assert infy.get("trend") in {"BULLISH", "BEARISH", "NEUTRAL"}
+    assert infy.get("signal_engine") == "reversal_pro_v32"
+    assert infy.get("updated_at") != "2026-11-20T10:15:00+00:00"
 
 
 def test_load_persisted_reconciles_vedl_buy_bearish_pivot_high(

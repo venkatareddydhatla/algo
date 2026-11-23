@@ -434,6 +434,14 @@ async def run_symbol_tick(
                         kv.delete(pine_key)
                 except Exception:  # noqa: BLE001
                     pass
+                pine_feats = {
+                    k: v
+                    for k, v in pine_result.features.items()
+                    if isinstance(v, (int, float, bool, str, type(None)))
+                }
+                pine_feats.setdefault("action_no_hold", True)
+                pine_feats.setdefault("signal_engine", "reversal_pro_v32")
+                pine_feats.setdefault("pine", True)
                 kv.set(
                     pine_key,
                     {
@@ -451,14 +459,11 @@ async def run_symbol_tick(
                         "reason_kind": "pine",
                         "reason_summary": persist_summary,
                         "reason_detail": persist_detail,
-                        "features": {
-                            k: v
-                            for k, v in pine_result.features.items()
-                            if isinstance(v, (int, float, bool, str, type(None)))
-                        },
+                        "features": pine_feats,
                         "bar_ts": bar_ts_iso,
                         "updated_at": now_utc.isoformat(),
                         "timeframe": "15m",
+                        "signal_engine": "reversal_pro_v32",
                     },
                 )
         except Exception:  # noqa: BLE001
