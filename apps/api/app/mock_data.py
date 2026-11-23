@@ -581,6 +581,17 @@ def load_persisted_pine_signals(
                 except Exception:  # noqa: BLE001
                     pass
                 continue
+            # ALG-94: refuse synthetic-candle Pine sticky (hash bars ≠ TV chart).
+            feats_src = dict(payload.get("features") or {})
+            candle_src = str(
+                payload.get("candle_source") or feats_src.get("candle_source") or ""
+            ).strip().lower()
+            if candle_src == "synthetic":
+                try:
+                    kv.delete(f"pine.signal.{key}")
+                except Exception:  # noqa: BLE001
+                    pass
+                continue
             feats = dict(payload.get("features") or {})
             trend = _normalize_trend(payload.get("trend") or feats.get("trend"))
             reconciled = reconcile_persisted_action(
