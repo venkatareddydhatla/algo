@@ -123,6 +123,7 @@ async def _prepare_signal_rows(
         "pine_recomputed": refresh_meta.get("recomputed") or [],
         "pine_recompute_attempted": refresh_meta.get("attempted") or [],
         "pine_candle_symbols": int(refresh_meta.get("candle_symbols") or 0),
+        "pine_candle_miss_cleared": refresh_meta.get("candle_miss_cleared") or [],
         "invariant_forced_sell": int(forced),
     }
     return rows, meta
@@ -220,17 +221,17 @@ async def list_signals(
         "min_equity_price": prep_meta.get("min_equity_price"),
         "price_floor_dropped": prep_meta.get("price_floor_dropped", []),
         "pine_recomputed": prep_meta.get("pine_recomputed", []),
+        "pine_candle_miss_cleared": prep_meta.get("pine_candle_miss_cleared", []),
         "invariant_forced_sell": prep_meta.get("invariant_forced_sell", 0),
         "open_trade_action_overlay": sticky,
         "note": (
             "Action = Reversal Pro U1→BUY / D1→SELL; hard invariant: "
             "lastConfirmedPivotIsHigh → SELL / pivot low → BUY (ignores "
-            "signal sticky and Trend). API recomputes from 15m candles on GET "
-            "when Action vs pivot mismatches, BUY without pivot evidence, "
-            "stale bar_ts, or BUY+BEARISH — so morning/after-hours still flips "
-            "without a worker scan. "
-            "Open-trade overlay never hides a fresher opposite pine Action; "
-            "Trend is never overwritten. "
+            "signal sticky and Trend). GET force-recomputes from Upstox 15m "
+            "candles; if candles missing, clears pine.signal KV and refuses "
+            "stale/synthetic BUY (pivot-high gate still applies on features). "
+            "Worker never persists Pine from synthetic candles. "
+            "Open-trade overlay never hides a fresher opposite pine Action. "
             "Watchlist rows omit reason_* (UI shows Action + Trend only). "
             f"Symbols below ₹{float(prep_meta.get('min_equity_price') or 20):g} "
             "are excluded from the Signals table."

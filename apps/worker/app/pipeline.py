@@ -356,116 +356,138 @@ async def run_symbol_tick(
             (pine_result.state.buysignal if pine_result.state else None),
             (pine_result.state.sellsignal if pine_result.state else None),
         )
-        # Persist watchlist Action only while signal bar is current / same 15m;
-        # otherwise HOLD so names like APOLLOHOSP cannot linger as SELL for hours.
+        # Persist watchlist Action only from **real Upstox 15m candles**.
+        # Synthetic hash bars (token missing / history fail) invent BUY+BULLISH
+        # that disagree with TradingView — never write those into pine.signal.*
+        # (ALG-94 BAJFINANCE: live LTP + synthetic Pine Action).
         try:
             from options_portal_persistence.kv_store import KvStore
 
             kv = KvStore()
             if kv.available:
-                now_utc = datetime.now(tz=timezone.utc)
-                bar_ts_iso = (
-                    bar_ts.astimezone(timezone.utc).isoformat()
-                    if getattr(bar_ts, "tzinfo", None)
-                    else bar_ts.replace(tzinfo=timezone.utc).isoformat()
-                )
-                # action_no_hold: persist BUY/SELL every bar; do not rewrite to HOLD.
-                expire_to_hold = not bool(pine_params.action_no_hold)
-                wl_action = watchlist_pine_action(
-                    pine_result.action,
-                    bar_ts,
-                    now=now_utc,
-                    timeframe_minutes=15,
-                    expire_to_hold=expire_to_hold,
-                )
-                live = wl_action in {"BUY", "SELL"}
-                if live or pine_params.action_no_hold:
-                    persist_action = (
-                        wl_action
-                        if live
-                        else pine_result.action.value
-                    )
-                    if persist_action not in {"BUY", "SELL"}:
-                        persist_action = pine_result.action.value
-                    persist_buy = bool(pine_result.buy_signal)
-                    persist_sell = bool(pine_result.sell_signal)
-                    persist_score = float(pine_result.score)
-                    persist_conf = float(pine_result.confidence)
-                    persist_summary = pine_result.reason_summary
-                    persist_detail = pine_result.reason_detail
-                    persist_reasons = list(pine_result.reasons)
-                else:
-                    persist_action = SignalAction.HOLD.value
-                    persist_buy = False
-                    persist_sell = False
-                    persist_score = 0.0
-                    persist_conf = 0.0
-                    if pine_result.action != SignalAction.HOLD:
-                        persist_summary = "stale Pine signal → HOLD"
-                        persist_detail = (
-                            "Neutral: signal bar no longer current "
-                            f"(bar_ts={bar_ts_iso}); watchlist Action expired to HOLD"
+                pine_key = f"pine.signal.{symbol.upper()}"
+                md_src = str(market_data_source or "").strip().lower()
+                if md_src != "upstox":
+                    # Drop leftover synthetic / unverified sticky so GET cannot
+                    # serve fake Action while quotes show a real LTP.
+                    try:
+                        if kv.delete(pine_key):
+                            logger.warning(
+                                "%s cleared pine.signal KV — candle_source=%s "
+                                "(refuse synthetic Pine persist)",
+                                symbol.upper(),
+                                md_src or "unknown",
+                            )
+                    except Exception:  # noqa: BLE001
+                        logger.exception(
+                            "%s pine.signal clear on synthetic candles failed",
+                            symbol,
                         )
-                        persist_reasons = [
-                            f"signal bar {bar_ts_iso} expired → HOLD",
-                            *list(pine_result.reasons)[:6],
-                        ]
-                    else:
+                else:
+                    now_utc = datetime.now(tz=timezone.utc)
+                    bar_ts_iso = (
+                        bar_ts.astimezone(timezone.utc).isoformat()
+                        if getattr(bar_ts, "tzinfo", None)
+                        else bar_ts.replace(tzinfo=timezone.utc).isoformat()
+                    )
+                    # action_no_hold: persist BUY/SELL every bar; do not rewrite to HOLD.
+                    expire_to_hold = not bool(pine_params.action_no_hold)
+                    wl_action = watchlist_pine_action(
+                        pine_result.action,
+                        bar_ts,
+                        now=now_utc,
+                        timeframe_minutes=15,
+                        expire_to_hold=expire_to_hold,
+                    )
+                    live = wl_action in {"BUY", "SELL"}
+                    if live or pine_params.action_no_hold:
+                        persist_action = (
+                            wl_action
+                            if live
+                            else pine_result.action.value
+                        )
+                        if persist_action not in {"BUY", "SELL"}:
+                            persist_action = pine_result.action.value
+                        persist_buy = bool(pine_result.buy_signal)
+                        persist_sell = bool(pine_result.sell_signal)
+                        persist_score = float(pine_result.score)
+                        persist_conf = float(pine_result.confidence)
                         persist_summary = pine_result.reason_summary
                         persist_detail = pine_result.reason_detail
                         persist_reasons = list(pine_result.reasons)
-                persist_trend = str(
-                    getattr(pine_result, "trend", None)
-                    or pine_result.features.get("trend")
-                    or "NEUTRAL"
-                ).upper()
-                if persist_trend not in {"BULLISH", "BEARISH", "NEUTRAL"}:
-                    persist_trend = "NEUTRAL"
-                pine_key = f"pine.signal.{symbol.upper()}"
-                # Always rewrite from recomputed 15m history so stale U1 sticky
-                # BUY cannot linger after a later pivot high / D1 (VEDL).
-                try:
-                    prev = kv.get(pine_key)
-                    if (
-                        isinstance(prev, dict)
-                        and str(prev.get("action") or "").upper() == "BUY"
-                        and persist_action == "SELL"
-                    ):
-                        kv.delete(pine_key)
-                except Exception:  # noqa: BLE001
-                    pass
-                pine_feats = {
-                    k: v
-                    for k, v in pine_result.features.items()
-                    if isinstance(v, (int, float, bool, str, type(None)))
-                }
-                pine_feats.setdefault("action_no_hold", True)
-                pine_feats.setdefault("signal_engine", "reversal_pro_v32")
-                pine_feats.setdefault("pine", True)
-                kv.set(
-                    pine_key,
-                    {
-                        "symbol": symbol.upper(),
-                        "action": persist_action,
-                        "trend": persist_trend,
-                        "buy_signal": persist_buy,
-                        "sell_signal": persist_sell,
-                        "action_source": getattr(
-                            pine_result, "action_source", "none"
-                        ),
-                        "score": persist_score,
-                        "confidence": persist_conf,
-                        "reasons": persist_reasons,
-                        "reason_kind": "pine",
-                        "reason_summary": persist_summary,
-                        "reason_detail": persist_detail,
-                        "features": pine_feats,
-                        "bar_ts": bar_ts_iso,
-                        "updated_at": now_utc.isoformat(),
-                        "timeframe": "15m",
-                        "signal_engine": "reversal_pro_v32",
-                    },
-                )
+                    else:
+                        persist_action = SignalAction.HOLD.value
+                        persist_buy = False
+                        persist_sell = False
+                        persist_score = 0.0
+                        persist_conf = 0.0
+                        if pine_result.action != SignalAction.HOLD:
+                            persist_summary = "stale Pine signal → HOLD"
+                            persist_detail = (
+                                "Neutral: signal bar no longer current "
+                                f"(bar_ts={bar_ts_iso}); watchlist Action expired to HOLD"
+                            )
+                            persist_reasons = [
+                                f"signal bar {bar_ts_iso} expired → HOLD",
+                                *list(pine_result.reasons)[:6],
+                            ]
+                        else:
+                            persist_summary = pine_result.reason_summary
+                            persist_detail = pine_result.reason_detail
+                            persist_reasons = list(pine_result.reasons)
+                    persist_trend = str(
+                        getattr(pine_result, "trend", None)
+                        or pine_result.features.get("trend")
+                        or "NEUTRAL"
+                    ).upper()
+                    if persist_trend not in {"BULLISH", "BEARISH", "NEUTRAL"}:
+                        persist_trend = "NEUTRAL"
+                    # Always rewrite from recomputed 15m history so stale U1 sticky
+                    # BUY cannot linger after a later pivot high / D1 (VEDL).
+                    try:
+                        prev = kv.get(pine_key)
+                        if (
+                            isinstance(prev, dict)
+                            and str(prev.get("action") or "").upper() == "BUY"
+                            and persist_action == "SELL"
+                        ):
+                            kv.delete(pine_key)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    pine_feats = {
+                        k: v
+                        for k, v in pine_result.features.items()
+                        if isinstance(v, (int, float, bool, str, type(None)))
+                    }
+                    pine_feats.setdefault("action_no_hold", True)
+                    pine_feats.setdefault("signal_engine", "reversal_pro_v32")
+                    pine_feats.setdefault("pine", True)
+                    pine_feats["candle_source"] = "upstox"
+                    kv.set(
+                        pine_key,
+                        {
+                            "symbol": symbol.upper(),
+                            "action": persist_action,
+                            "trend": persist_trend,
+                            "buy_signal": persist_buy,
+                            "sell_signal": persist_sell,
+                            "action_source": getattr(
+                                pine_result, "action_source", "none"
+                            ),
+                            "score": persist_score,
+                            "confidence": persist_conf,
+                            "reasons": persist_reasons,
+                            "reason_kind": "pine",
+                            "reason_summary": persist_summary,
+                            "reason_detail": persist_detail,
+                            "features": pine_feats,
+                            "bar_ts": bar_ts_iso,
+                            "updated_at": now_utc.isoformat(),
+                            "timeframe": "15m",
+                            "signal_engine": "reversal_pro_v32",
+                            "candle_source": "upstox",
+                        },
+                    )
         except Exception:  # noqa: BLE001
             logger.exception("%s pine signal persist failed", symbol)
     else:

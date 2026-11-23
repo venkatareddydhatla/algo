@@ -153,6 +153,127 @@ def apply_pine_result_to_row(
     return row
 
 
+def _delete_pine_kv(sym: str) -> bool:
+    """Delete ``pine.signal.{SYM}``; return True when a key was removed."""
+    key_sym = str(sym or "").strip().upper()
+    if not key_sym:
+        return False
+    try:
+        from options_portal_persistence.kv_store import KvStore
+
+        kv = KvStore()
+        if not kv.available:
+            return False
+        return bool(kv.delete(f"pine.signal.{key_sym}"))
+    except Exception:  # noqa: BLE001
+        logger.exception("delete pine.signal.%s failed", key_sym)
+        return False
+
+
+def apply_candle_miss_fallback(row: dict[str, Any]) -> dict[str, Any]:
+    """When GET has no real Upstox candles — do not leave stale KV Action/Trend.
+
+    Deletes ``pine.signal.*``, applies pivot/signal feature gates, and forces
+    Trend **NEUTRAL** when buy/sellsignal evidence is missing or bar_ts is stale
+    (TV may already show NEUTRAL while sticky BULLISH lingered from synthetic).
+    """
+    sym = str(row.get("symbol") or "").strip().upper()
+    if sym:
+        _delete_pine_kv(sym)
+    feats = dict(row.get("features") or {})
+    # Refuse synthetic-sourced sticky (worker hash bars).
+    src = str(
+        row.get("candle_source") or feats.get("candle_source") or ""
+    ).strip().lower()
+    if src and src != "upstox":
+        feats.pop("last_confirmed_pivot_is_high", None)
+        feats.pop("lastConfirmedPivotIsHigh", None)
+        # Keep signal only if it came with upstox; synthetic → wipe sticky bias.
+        if src == "synthetic":
+            feats.pop("signal", None)
+            feats.pop("buysignal", None)
+            feats.pop("sellsignal", None)
+
+    before = _norm_action(row.get("action") or row.get("pine_action"))
+    action = enforce_pivot_aligned_action(before, row.get("trend"), features=feats)
+    pivot = _feature_pivot(feats)
+    source = "pivot" if pivot is not None else "stale_cleared"
+    if pivot is None:
+        try:
+            sig = int(feats["signal"]) if feats.get("signal") is not None else None
+        except (TypeError, ValueError):
+            sig = None
+        if sig is not None and sig < 0:
+            action = "SELL"
+            source = "signal"
+        elif sig is not None and sig > 0 and src == "upstox":
+            action = "BUY"
+            source = "signal"
+        else:
+            # Unverified / synthetic sticky — curated seed (BAJFINANCE=SELL)
+            # or refuse unverified BUY (cannot prove pivot low without candles).
+            seed_action = None
+            try:
+                from app.mock_data import MOCK_SIGNALS
+
+                for seed in MOCK_SIGNALS:
+                    if str(seed.get("symbol") or "").upper() == sym:
+                        seed_action = _norm_action(seed.get("action"))
+                        break
+            except Exception:  # noqa: BLE001
+                seed_action = None
+            if seed_action in {"BUY", "SELL"}:
+                action = seed_action
+                source = "seed_fallback"
+            elif before == "BUY":
+                action = "SELL"
+                source = "refuse_unverified_buy"
+
+    # Trend: without fresh candles never trust sticky BULLISH/BEARISH alone.
+    bar_ok = pine_signal_bar_is_current(row.get("bar_ts"))
+    try:
+        bs = int(feats.get("buysignal") or 0)
+    except (TypeError, ValueError):
+        bs = 0
+    try:
+        ss = int(feats.get("sellsignal") or 0)
+    except (TypeError, ValueError):
+        ss = 0
+    if bar_ok and src == "upstox":
+        if bs == 1 and ss != 1:
+            trend = "BULLISH"
+        elif ss == 1 and bs != 1:
+            trend = "BEARISH"
+        else:
+            trend = "NEUTRAL"
+    else:
+        # Stale bar or unverified source → match TV-style NEUTRAL until recompute.
+        trend = "NEUTRAL"
+
+    action = enforce_pivot_aligned_action(action, trend, features=feats)
+    if pivot is True:
+        action = "SELL"
+        source = "pivot"
+    elif pivot is False:
+        action = "BUY"
+        source = "pivot"
+    row["action"] = action
+    row["pine_action"] = action
+    row["display_action"] = action
+    row["trend"] = trend
+    row["features"] = {
+        **feats,
+        "trend": trend,
+        "pine_recompute_failed": True,
+    }
+    row["action_source"] = source
+    row["pine_recompute_failed"] = True
+    row["pine_persisted"] = False
+    row["candle_source"] = src or "unavailable"
+    row["updated_at"] = datetime.now(tz=timezone.utc).isoformat()
+    return row
+
+
 def persist_recomputed_pine_row(row: Mapping[str, Any]) -> None:
     """Rewrite ``pine.signal.*`` KV from an API-side recompute (clear stale BUY)."""
     sym = str(row.get("symbol") or "").strip().upper()
@@ -177,6 +298,13 @@ def persist_recomputed_pine_row(row: Mapping[str, Any]) -> None:
                 kv.delete(key)
         except Exception:  # noqa: BLE001
             pass
+        feats = {
+            **dict(row.get("features") or {}),
+            "action_no_hold": True,
+            "signal_engine": "reversal_pro_v32",
+            "pine": True,
+            "candle_source": "upstox",
+        }
         kv.set(
             key,
             {
@@ -192,17 +320,13 @@ def persist_recomputed_pine_row(row: Mapping[str, Any]) -> None:
                 "reason_kind": "pine",
                 "reason_summary": row.get("reason_summary"),
                 "reason_detail": row.get("reason_detail"),
-                "features": {
-                    **dict(row.get("features") or {}),
-                    "action_no_hold": True,
-                    "signal_engine": "reversal_pro_v32",
-                    "pine": True,
-                },
+                "features": feats,
                 "bar_ts": row.get("bar_ts"),
                 "updated_at": row.get("updated_at")
                 or datetime.now(tz=timezone.utc).isoformat(),
                 "timeframe": str(row.get("timeframe") or "15m"),
                 "signal_engine": "reversal_pro_v32",
+                "candle_source": "upstox",
             },
         )
     except Exception:  # noqa: BLE001
@@ -259,10 +383,16 @@ async def refresh_rows_from_candles(
     """Recompute Pine Action/Trend from live 15m candles when needed.
 
     Runs on GET /signals so after-hours (worker idle) still updates VEDL.
-    Without Upstox token / candles, falls through to feature invariant only.
+    When Upstox candles are missing, **clears stale KV** and applies the
+    pivot/signal feature gate (never leaves synthetic BUY+BULLISH).
     """
     if not rows:
-        return {"recomputed": [], "attempted": [], "candle_symbols": 0}
+        return {
+            "recomputed": [],
+            "attempted": [],
+            "candle_symbols": 0,
+            "candle_miss_cleared": [],
+        }
     need: list[str] = []
     for row in rows:
         sym = str(row.get("symbol") or "").strip().upper()
@@ -272,19 +402,27 @@ async def refresh_rows_from_candles(
             need.append(sym)
     need = sorted(set(need))
     if not need:
-        return {"recomputed": [], "attempted": [], "candle_symbols": 0}
+        return {
+            "recomputed": [],
+            "attempted": [],
+            "candle_symbols": 0,
+            "candle_miss_cleared": [],
+        }
 
     from app.marks import _live_15m_candles_map
 
     candles_by_sym = await _live_15m_candles_map(need)
     params = pine_params_from_config(cfg)
     recomputed: list[str] = []
+    cleared: list[str] = []
     for row in rows:
         sym = str(row.get("symbol") or "").strip().upper()
         if sym not in need:
             continue
         candles = candles_by_sym.get(sym) or []
         if not candles:
+            apply_candle_miss_fallback(row)
+            cleared.append(sym)
             continue
         try:
             result = evaluate_pine_signal(
@@ -303,8 +441,11 @@ async def refresh_rows_from_candles(
             recomputed.append(sym)
         except Exception:  # noqa: BLE001
             logger.exception("API pine recompute failed for %s", sym)
+            apply_candle_miss_fallback(row)
+            cleared.append(sym)
     return {
         "recomputed": recomputed,
         "attempted": need,
         "candle_symbols": len(candles_by_sym),
+        "candle_miss_cleared": cleared,
     }

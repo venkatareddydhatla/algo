@@ -399,3 +399,84 @@ async def test_force_all_recomputes_whole_watchlist_board(
             assert row["action"] == "SELL", row["symbol"]
         if pivot is False:
             assert row["action"] == "BUY", row["symbol"]
+
+
+def test_candle_miss_fallback_forces_sell_on_pivot_high():
+    """Empty-candle GET path: pivot high → SELL; Trend NEUTRAL when unverified."""
+    from app.pine_refresh import apply_candle_miss_fallback, enforce_bearish_pivot_invariant
+
+    row = {
+        "symbol": "BAJFINANCE",
+        "action": "BUY",
+        "pine_action": "BUY",
+        "display_action": "BUY",
+        "trend": "BULLISH",
+        "pine_persisted": True,
+        "candle_source": "synthetic",
+        "bar_ts": "2026-11-20T04:00:00+00:00",  # stale
+        "features": {
+            "last_confirmed_pivot_is_high": True,
+            "signal": 1,
+            "buysignal": 1,
+            "candle_source": "synthetic",
+        },
+    }
+    apply_candle_miss_fallback(row)
+    enforce_bearish_pivot_invariant([row])
+    assert row["action"] == "SELL"
+    assert row["trend"] == "NEUTRAL"
+    assert row.get("pine_recompute_failed") is True
+
+
+def test_candle_miss_fallback_refuses_synthetic_buy_without_pivot():
+    from app.pine_refresh import apply_candle_miss_fallback
+
+    row = {
+        "symbol": "BAJFINANCE",
+        "action": "BUY",
+        "pine_action": "BUY",
+        "trend": "BULLISH",
+        "candle_source": "synthetic",
+        "features": {"signal": 1, "buysignal": 1, "candle_source": "synthetic"},
+    }
+    apply_candle_miss_fallback(row)
+    # Seed for BAJFINANCE is SELL, or refuse_unverified_buy → SELL.
+    assert row["action"] == "SELL"
+    assert row["trend"] == "NEUTRAL"
+
+
+@pytest.mark.asyncio
+async def test_refresh_clears_kv_when_candles_empty(monkeypatch: pytest.MonkeyPatch):
+    from app import pine_refresh as pr
+
+    async def _empty(_symbols):
+        return {}
+
+    cleared: list[str] = []
+
+    def _del(sym: str) -> bool:
+        cleared.append(sym)
+        return True
+
+    monkeypatch.setattr("app.marks._live_15m_candles_map", _empty)
+    monkeypatch.setattr(pr, "_delete_pine_kv", _del)
+
+    rows = [
+        {
+            "symbol": "BAJFINANCE",
+            "action": "BUY",
+            "pine_action": "BUY",
+            "trend": "BULLISH",
+            "pine_persisted": True,
+            "features": {
+                "last_confirmed_pivot_is_high": True,
+                "signal": 1,
+                "buysignal": 1,
+            },
+        }
+    ]
+    meta = await pr.refresh_rows_from_candles(rows, cfg={}, force_all=True)
+    assert "BAJFINANCE" in meta["candle_miss_cleared"]
+    assert "BAJFINANCE" in cleared
+    assert rows[0]["action"] == "SELL"
+    assert rows[0]["trend"] == "NEUTRAL"
