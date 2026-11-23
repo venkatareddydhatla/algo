@@ -413,3 +413,85 @@ async def test_no_secrets_in_health_payload(monkeypatch: pytest.MonkeyPatch):
     assert "super-secret-secret-value" not in blob
     assert health["authenticated"] is True
     assert health["api_key_configured"] is True
+
+
+@pytest.mark.asyncio
+async def test_merges_intraday_when_end_is_today():
+    """ALG-95: dated historical omits live session — merge intraday so Pine=TV."""
+    ist = timezone(timedelta(hours=5, minutes=30))
+    today = datetime.now(tz=ist).date()
+    yday = today - timedelta(days=1)
+    hist_ts = f"{yday.isoformat()}T15:15:00+05:30"
+    intra_open = f"{today.isoformat()}T09:15:00+05:30"
+    intra_now = f"{today.isoformat()}T10:30:00+05:30"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if "/intraday/" in url:
+            return httpx.Response(
+                200,
+                json={
+                    "status": "success",
+                    "data": {
+                        "candles": [
+                            [intra_now, 1109.55, 1112.0, 1108.7, 1109.4, 100, 0],
+                            [intra_open, 1125.25, 1130.5, 1111.0, 1112.45, 200, 0],
+                        ]
+                    },
+                },
+            )
+        assert "/v3/historical-candle/" in url
+        return httpx.Response(
+            200,
+            json={
+                "status": "success",
+                "data": {
+                    "candles": [
+                        [hist_ts, 1118.3, 1122.0, 1118.3, 1122.0, 50, 0],
+                    ]
+                },
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        adapter = UpstoxAdapter(
+            access_token="test-token-not-real",
+            http_client=client,
+            base_url="https://api.upstox.com",
+        )
+        end = datetime.now(tz=timezone.utc)
+        start = end - timedelta(days=5)
+        candles = await adapter.get_real_candles("BAJFINANCE", "15m", start, end)
+
+    assert adapter.last_candle_source == "upstox"
+    assert len(candles) == 3
+    assert candles[0].close == pytest.approx(1122.0)
+    assert candles[-1].close == pytest.approx(1109.4)
+    assert candles[0].ts < candles[-1].ts
+    # Live session bar present (would be missing with historical-only).
+    assert candles[-1].ts.astimezone(ist).date() == today
+
+
+@pytest.mark.asyncio
+async def test_intraday_merge_skipped_for_past_end_date():
+    """Past-range fetches must not call intraday (backtest / closed days)."""
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(200, json=_candle_payload())
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        adapter = UpstoxAdapter(
+            access_token="test-token-not-real",
+            http_client=client,
+        )
+        end = datetime(2024, 6, 3, 12, tzinfo=timezone.utc)
+        start = end - timedelta(days=1)
+        candles = await adapter.get_candles("NIFTY", "15m", start, end)
+
+    assert len(candles) == 3
+    assert all("/intraday/" not in u for u in calls)
+    assert any("/v3/historical-candle/" in u for u in calls)

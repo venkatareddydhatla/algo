@@ -7,7 +7,8 @@ Credentials (never commit values — env names only):
   UPSTOX_INSTRUMENT_MAP (optional JSON symbol→instrument_key overrides)
 
 When ``UPSTOX_ACCESS_TOKEN`` is present, ``get_candles`` calls Upstox Historical
-Candle V3 and ``get_ltp`` hits market-quote/ltp. Equity dry-run paper fills
+Candle V3, merges current-session **intraday** bars (dated historical often
+omits today), and ``get_ltp`` hits market-quote/ltp. Equity dry-run paper fills
 prefer LTP as the fill mark (exit/entry/soft_flatten); candle close is only a
 logged fallback when LTP is unavailable. On missing token, unresolved
 instrument, or HTTP failure → synthetic candles (current dry-run fallback).
@@ -32,7 +33,11 @@ logger = logging.getLogger(__name__)
 
 UPSTOX_API_BASE = "https://api.upstox.com"
 # Historical Candle Data V3 — custom minute intervals (15m for TA).
+# Dated historical often omits the *current* session until EOD; merge intraday.
 HISTORICAL_V3_PATH = "/v3/historical-candle/{instrument_key}/{unit}/{interval}/{to_date}/{from_date}"
+INTRADAY_V3_PATH = (
+    "/v3/historical-candle/intraday/{instrument_key}/{unit}/{interval}"
+)
 QUOTE_LTP_PATH = "/v2/market-quote/ltp"
 QUOTE_FULL_PATH = "/v2/market-quote/quotes"
 TOKEN_URL = "https://api.upstox.com/v2/login/authorization/token"
@@ -304,7 +309,90 @@ class UpstoxAdapter:
         resp.raise_for_status()
         payload = resp.json()
         raw_candles = (payload.get("data") or {}).get("candles") or []
-        return _parse_upstox_candles(symbol, timeframe, raw_candles)
+        candles = _parse_upstox_candles(symbol, timeframe, raw_candles)
+        # Dated historical often returns 0 bars for the current IST session.
+        # Intraday V3 supplies today's forming/completed bars so Pine matches TV.
+        candles = await self._merge_intraday_candles(
+            symbol,
+            instrument_key,
+            timeframe,
+            unit=unit,
+            interval=interval,
+            end=end,
+            candles=candles,
+        )
+        return candles
+
+    async def _merge_intraday_candles(
+        self,
+        symbol: str,
+        instrument_key: str,
+        timeframe: Timeframe,
+        *,
+        unit: str,
+        interval: int,
+        end: datetime,
+        candles: list[Candle],
+    ) -> list[Candle]:
+        """Append current-session bars when ``end`` reaches today's IST date.
+
+        Upstox dated historical frequently omits the live session (empty
+        ``to=today``). Without these bars, Reversal Pro stays stuck on the
+        prior session's last pivot (BAJFINANCE BUY+BULLISH vs TV SELL+NEUTRAL).
+        Soft-fails: historical-only series is returned if intraday errors.
+        """
+        # Daily bars do not need minute intraday merge.
+        if unit != "minutes":
+            return candles
+        ist = timezone(timedelta(hours=5, minutes=30))
+        end_ist = end.astimezone(ist).date()
+        today_ist = datetime.now(tz=ist).date()
+        if end_ist < today_ist:
+            return candles
+        encoded_key = quote(instrument_key, safe="")
+        path = INTRADAY_V3_PATH.format(
+            instrument_key=encoded_key,
+            unit=unit,
+            interval=interval,
+        )
+        url = f"{self.base_url}{path}"
+        try:
+            client = await self._get_client()
+            resp = await client.get(url, headers=self._auth_headers())
+            if resp.status_code == 401 and self.refresh_token:
+                refreshed = await self.refresh_access_token()
+                if refreshed:
+                    resp = await client.get(url, headers=self._auth_headers())
+            if resp.status_code != 200:
+                logger.warning(
+                    "%s intraday candles: HTTP %s — keeping historical only",
+                    symbol.upper(),
+                    resp.status_code,
+                )
+                return candles
+            raw = (resp.json().get("data") or {}).get("candles") or []
+            intra = _parse_upstox_candles(symbol, timeframe, raw)
+            if not intra:
+                return candles
+            by_ts = {c.ts: c for c in candles}
+            for bar in intra:
+                by_ts[bar.ts] = bar
+            merged = sorted(by_ts.values(), key=lambda c: c.ts)
+            logger.info(
+                "%s candles: merged intraday bars=%d (hist=%d → total=%d) last_ts=%s",
+                symbol.upper(),
+                len(intra),
+                len(candles),
+                len(merged),
+                merged[-1].ts.isoformat() if merged else None,
+            )
+            return merged
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "%s intraday candles: merge failed — keeping historical only",
+                symbol.upper(),
+            )
+            return candles
 
     async def get_ltp(self, symbol: str) -> dict[str, Any] | None:
         """Fetch last traded price for ``symbol`` only (never another instrument).
