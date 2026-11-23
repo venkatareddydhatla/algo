@@ -1,4 +1,4 @@
-"""Watchlist / universe read APIs + custom equity append/remove."""
+"""Watchlist / universe read APIs + custom equity append/remove + active-watch delete."""
 
 from __future__ import annotations
 
@@ -8,9 +8,13 @@ from pydantic import BaseModel, Field
 from options_portal_broker.instruments import resolve_instrument_key
 from options_portal_domain.config import load_config, scan_symbols, watchlist_symbols
 from options_portal_domain.custom_watchlist import (
+    KV_KEY_EXCLUDED_CURATED,
     add_custom_symbol,
     load_custom_symbols,
+    load_excluded_curated_symbols,
     remove_custom_symbol,
+    remove_from_active_watch,
+    restore_excluded_curated_symbol,
 )
 from options_portal_domain.universe import INDEX_SYMBOLS, load_universe_csv, resolve_universe_path
 
@@ -95,6 +99,10 @@ async def list_watchlist(
 
     max_active = trading.get("max_active_symbols", 0)
     unlimited = max_active is None or int(max_active or 0) <= 0
+    excluded = load_excluded_curated_symbols()
+    base_active = trading.get("symbols_base_active") or [
+        s for s in base if s not in set(excluded)
+    ]
     return {
         "items": items,
         "total": total,
@@ -106,14 +114,19 @@ async def list_watchlist(
         "scan_batch_size": trading.get("scan_batch_size_resolved")
         or trading.get("scan_batch_size", 8),
         "base_count": len(base),
+        "base_active_count": len(base_active),
+        "excluded_count": len(excluded),
+        "excluded_symbols": excluded,
         "custom_count": len(customs),
         "custom_symbols": customs,
         "source": "config+universe+custom_kv",
         "note": (
             "Worker scores curated TradingView watchlist plus portal custom equities "
-            f"(base={len(base)} custom={len(customs)} active_scan={len(active)}"
+            f"(base={len(base)} base_active={len(base_active)} excluded={len(excluded)} "
+            f"custom={len(customs)} active_scan={len(active)}"
             f"{' unlimited' if unlimited else ''}). "
-            "Customs persist in SQLite kv_store; duplicates of curated names are skipped."
+            "Customs + curated exclusions persist in SQLite kv_store; "
+            "curated CSV is never edited. Delete via DELETE /api/v1/watchlist/active/{{symbol}}."
         ),
     }
 
@@ -183,7 +196,7 @@ async def append_custom_watchlist(body: CustomSymbolBody) -> dict:
 
 @router.delete("/watchlist/custom/{symbol}")
 async def delete_custom_watchlist(symbol: str) -> dict:
-    """Remove a portal-added custom equity (curated CSV names cannot be deleted)."""
+    """Remove a portal-added custom equity (curated CSV names cannot be deleted here)."""
     result = remove_custom_symbol(symbol)
     if not result.get("ok"):
         status = result.get("status")
@@ -195,4 +208,81 @@ async def delete_custom_watchlist(symbol: str) -> dict:
         **result,
         "watchlist_total": len(watchlist_symbols(cfg)),
         "active_scan_count": len(scan_symbols(cfg)),
+    }
+
+
+@router.delete("/watchlist/active/{symbol}")
+async def delete_active_watchlist_symbol(
+    symbol: str,
+    confirm: bool = Query(
+        True,
+        description="UI confirm gate; set false only to preview/reject without mutating",
+    ),
+) -> dict:
+    """Remove one symbol from the active Signals / scan watch (dry-run).
+
+    - Custom → existing custom KV remove + clear ``pine.signal.{SYM}``
+    - Curated → exclusion list (CSV unchanged) + clear ``pine.signal.{SYM}``
+
+    Confirm in the portal UI before calling. Restore curated names via
+    ``DELETE /api/v1/watchlist/exclusions/{symbol}`` or Signals **Add** with the
+    same ticker.
+    """
+    if not confirm:
+        raise HTTPException(
+            status_code=400,
+            detail="confirm=true required to delete from active watch",
+        )
+    cfg = load_config()
+    base, _, _ = _base_and_custom(cfg)
+    result = remove_from_active_watch(symbol, base_watchlist=base)
+    if not result.get("ok"):
+        status = result.get("status")
+        code = 404 if status in {"not_on_watch", "not_curated", "not_custom"} else 400
+        raise HTTPException(status_code=code, detail=result.get("message") or "rejected")
+
+    cfg2 = load_config()
+    return {
+        **result,
+        "watchlist_total": len(watchlist_symbols(cfg2)),
+        "active_scan_count": len(scan_symbols(cfg2)),
+        "excluded_symbols": load_excluded_curated_symbols(),
+        "custom_symbols": load_custom_symbols(),
+    }
+
+
+@router.get("/watchlist/exclusions")
+async def list_curated_exclusions() -> dict:
+    """List curated TradingView names excluded from the active watch."""
+    cfg = load_config()
+    base, _, _ = _base_and_custom(cfg)
+    excluded = load_excluded_curated_symbols()
+    return {
+        "items": [{"symbol": s, "source": "curated", "excluded": True} for s in excluded],
+        "total": len(excluded),
+        "base_count": len(base),
+        "kv_key": KV_KEY_EXCLUDED_CURATED,
+        "source": "sqlite_kv",
+        "note": (
+            "Restore with DELETE /api/v1/watchlist/exclusions/{symbol} or "
+            "POST /api/v1/watchlist/custom with the same ticker (Add on Signals)."
+        ),
+    }
+
+
+@router.delete("/watchlist/exclusions/{symbol}")
+async def restore_curated_exclusion(symbol: str) -> dict:
+    """Restore a curated name previously dropped from the active watch."""
+    result = restore_excluded_curated_symbol(symbol)
+    if not result.get("ok"):
+        status = result.get("status")
+        code = 404 if status == "not_excluded" else 400
+        raise HTTPException(status_code=code, detail=result.get("message") or "rejected")
+
+    cfg = load_config()
+    return {
+        **result,
+        "watchlist_total": len(watchlist_symbols(cfg)),
+        "active_scan_count": len(scan_symbols(cfg)),
+        "excluded_symbols": load_excluded_curated_symbols(),
     }

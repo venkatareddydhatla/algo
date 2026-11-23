@@ -340,6 +340,38 @@ export const api = {
       `/api/v1/watchlist/custom/${encodeURIComponent(sym)}`,
     );
   },
+  /** Remove custom or exclude curated from active Signals watch (+ clear pine.signal KV). */
+  removeActiveWatchSymbol: (symbol: string, opts?: { confirm?: boolean }) => {
+    const sym = String(symbol || "")
+      .trim()
+      .toUpperCase();
+    if (!sym) {
+      return Promise.reject(new Error("symbol required"));
+    }
+    const confirm = opts?.confirm ?? true;
+    return deleteJson<CustomWatchlistPayload>(
+      `/api/v1/watchlist/active/${encodeURIComponent(sym)}${qs({ confirm })}`,
+    );
+  },
+  /** Restore a curated name dropped via exclusion list. */
+  restoreExcludedSymbol: (symbol: string) => {
+    const sym = String(symbol || "")
+      .trim()
+      .toUpperCase();
+    if (!sym) {
+      return Promise.reject(new Error("symbol required"));
+    }
+    return deleteJson<CustomWatchlistPayload>(
+      `/api/v1/watchlist/exclusions/${encodeURIComponent(sym)}`,
+    );
+  },
+  excludedWatchlist: () =>
+    getJson<{
+      items: Array<{ symbol: string; source?: string; excluded?: boolean }>;
+      total: number;
+      kv_key?: string;
+      note?: string;
+    }>("/api/v1/watchlist/exclusions"),
   backtestRun: (body: {
     symbol: string;
     bars?: number;
