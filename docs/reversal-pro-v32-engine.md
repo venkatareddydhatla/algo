@@ -25,7 +25,7 @@ Defaults: **Confirmed Only**, **Medium** sensitivity, ATR length 14, method `ave
 - Preview pivots are **never** used for trading.
 - Watchlist **Action** (BUY/SELL only — no HOLD) = **freshest U1/D1** (TV labels):
   1. Fresh U1 → BUY / D1 → SELL
-  2. **Hard invariant:** `lastConfirmedPivotIsHigh` + Trend BEARISH → **SELL** (ignores ZigZag `signal` sticky)
+  2. **Hard invariant:** `lastConfirmedPivotIsHigh` → **SELL** / pivot low → **BUY** (ignores ZigZag `signal` sticky and Trend; ALG-94)
   3. Else ZigZag `signal` sticky (last confirmed reversal; later D1 replaces older U1)
   4. Else last confirmed pivot when `signal==0` (high→SELL / low→BUY)
   5. Else EMA Trend fallback (`buysignal`/`sellsignal`) when last unset

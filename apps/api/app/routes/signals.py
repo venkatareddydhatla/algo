@@ -100,14 +100,19 @@ async def _prepare_signal_rows(
     *,
     cfg: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Normalize → candle recompute (after-hours) → price floor → overlay → invariant.
+    """Normalize → candle recompute (full watchlist) → price floor → overlay → invariant.
 
     Signals page reads ``action`` / ``trend`` from this path only — no alternate
-    stale BUY channel. Hard gate: BEARISH + lastConfirmedPivotIsHigh → SELL.
+    stale BUY channel. Always recomputes every equity row from live 15m candles
+    on GET (worker idle / stale ``pine.signal.*`` cannot blanket the board).
+    Hard gate: lastConfirmedPivotIsHigh → SELL / pivot low → BUY
+    (independent of Trend).
     """
     config = cfg or load_config()
     _normalize_pine_actions(rows)
-    refresh_meta = await refresh_rows_from_candles(rows, cfg=config)
+    # force_all: systemic fix — every curated + custom row follows last
+    # confirmed Reversal Pro pivot + Trend from candles, not sticky KV.
+    refresh_meta = await refresh_rows_from_candles(rows, cfg=config, force_all=True)
     _normalize_pine_actions(rows)
     rows, floor_meta = await _apply_min_equity_price_filter(rows, cfg=config)
     apply_open_trade_display_actions(rows)
@@ -218,10 +223,12 @@ async def list_signals(
         "invariant_forced_sell": prep_meta.get("invariant_forced_sell", 0),
         "open_trade_action_overlay": sticky,
         "note": (
-            "Action = Reversal Pro U1→BUY / D1→SELL; hard invariant: Trend "
-            "BEARISH + lastConfirmedPivotIsHigh → SELL (ignores signal sticky). "
-            "API recomputes from 15m candles on GET when BUY+BEARISH / stale KV "
-            "so Sunday/after-hours still flips without a worker scan. "
+            "Action = Reversal Pro U1→BUY / D1→SELL; hard invariant: "
+            "lastConfirmedPivotIsHigh → SELL / pivot low → BUY (ignores "
+            "signal sticky and Trend). API recomputes from 15m candles on GET "
+            "when Action vs pivot mismatches, BUY without pivot evidence, "
+            "stale bar_ts, or BUY+BEARISH — so morning/after-hours still flips "
+            "without a worker scan. "
             "Open-trade overlay never hides a fresher opposite pine Action; "
             "Trend is never overwritten. "
             "Watchlist rows omit reason_* (UI shows Action + Trend only). "

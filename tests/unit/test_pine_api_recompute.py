@@ -1,4 +1,4 @@
-"""ALG-86: API-side pine refresh + hard BEARISH+pivot-high → SELL guarantee."""
+"""ALG-86/94: API pine refresh + pivot-aligned Action (high→SELL / low→BUY)."""
 
 from __future__ import annotations
 
@@ -11,7 +11,9 @@ from options_portal_domain.pine_signals import (
     PineBarState,
     PineParams,
     enforce_bearish_pivot_sell_action,
+    enforce_pivot_aligned_action,
     evaluate_pine_signal,
+    latest_closed_bar_open,
     map_watchlist_action,
     map_trend,
 )
@@ -56,7 +58,7 @@ def _custom_params() -> PineParams:
 
 
 def test_hard_invariant_bearish_pivot_high_ignores_signal_sticky():
-    """Trend BEARISH + lastConfirmedPivotIsHigh → SELL even if signal=+1."""
+    """lastConfirmedPivotIsHigh → SELL even if signal=+1 (any Trend)."""
     p = _custom_params()
     state = PineBarState(
         ema9=1.0,
@@ -88,6 +90,24 @@ def test_hard_invariant_bearish_pivot_high_ignores_signal_sticky():
             features={"last_confirmed_pivot_is_high": True, "signal": 1},
         )
         == "SELL"
+    )
+    # BAJFINANCE class: BUY+BULLISH + pivot high → SELL
+    assert (
+        enforce_pivot_aligned_action(
+            "BUY",
+            "BULLISH",
+            features={"last_confirmed_pivot_is_high": True, "signal": 1},
+        )
+        == "SELL"
+    )
+    # Symmetric: sticky SELL + pivot low → BUY
+    assert (
+        enforce_pivot_aligned_action(
+            "SELL",
+            "BEARISH",
+            features={"last_confirmed_pivot_is_high": False, "signal": -1},
+        )
+        == "BUY"
     )
 
 
@@ -121,6 +141,36 @@ def test_api_invariant_gate_blocks_buy_bearish_pivot_high():
     )
 
 
+def test_api_invariant_gate_blocks_bajfinance_buy_bullish_pivot_high():
+    """ALG-94: BUY+BULLISH + lastConfirmedPivotIsHigh cannot leave the API."""
+    from app.pine_refresh import enforce_bearish_pivot_invariant
+
+    rows: list[dict[str, Any]] = [
+        {
+            "symbol": "BAJFINANCE",
+            "action": "BUY",
+            "pine_action": "BUY",
+            "display_action": "BUY",
+            "trend": "BULLISH",
+            "features": {
+                "last_confirmed_pivot_is_high": True,
+                "signal": 1,
+                "buysignal": 1,
+            },
+        }
+    ]
+    forced = enforce_bearish_pivot_invariant(rows)
+    assert forced == 1
+    assert rows[0]["action"] == "SELL"
+    assert rows[0]["pine_action"] == "SELL"
+    assert rows[0]["display_action"] == "SELL"
+    assert rows[0]["trend"] == "BULLISH"  # Trend untouched
+    assert not (
+        rows[0]["action"] == "BUY"
+        and rows[0]["features"]["last_confirmed_pivot_is_high"] is True
+    )
+
+
 def test_apply_pine_result_enforces_invariant_on_vedl_like_series():
     from app.pine_refresh import apply_pine_result_to_row, enforce_bearish_pivot_invariant
 
@@ -145,12 +195,16 @@ def test_apply_pine_result_enforces_invariant_on_vedl_like_series():
     }
     apply_pine_result_to_row(row, result, bar_ts=candles[-1].ts)
     enforce_bearish_pivot_invariant([row])
-    if row["trend"] == "BEARISH" and (
-        row.get("features") or {}
-    ).get("last_confirmed_pivot_is_high") is True:
+    pivot = (row.get("features") or {}).get("last_confirmed_pivot_is_high")
+    # Action always follows last confirmed pivot after recompute + gate.
+    if pivot is True:
         assert row["action"] == "SELL"
-    # After D1 path on this series, Action must not be leftover BUY when signal-
-    if (row.get("features") or {}).get("signal", 0) < 0:
+    elif pivot is False:
+        assert row["action"] == "BUY"
+    if row["trend"] == "BEARISH" and pivot is True:
+        assert row["action"] == "SELL"
+    # signal- without a later pivot-low flip still cannot leave BUY.
+    if (row.get("features") or {}).get("signal", 0) < 0 and pivot is not False:
         assert row["action"] == "SELL"
 
 
@@ -178,6 +232,28 @@ def test_row_needs_recompute_for_buy_bearish():
             "features": {},
         }
     )
+    # BAJFINANCE: BUY+BULLISH + pivot high → must recompute
+    assert row_needs_candle_recompute(
+        {
+            "action": "BUY",
+            "trend": "BULLISH",
+            "pine_persisted": True,
+            "signal_engine": "reversal_pro_v32",
+            "features": {"last_confirmed_pivot_is_high": True},
+        }
+    )
+    # BUY without pivot evidence → recompute (cannot prove last pivot is low)
+    assert row_needs_candle_recompute(
+        {
+            "action": "BUY",
+            "trend": "BULLISH",
+            "pine_persisted": True,
+            "signal_engine": "reversal_pro_v32",
+            "features": {"signal": 1},
+            "bar_ts": latest_closed_bar_open().isoformat(),
+        }
+    )
+    # Healthy SELL + pivot high + current bar → no recompute
     assert not row_needs_candle_recompute(
         {
             "action": "SELL",
@@ -185,6 +261,7 @@ def test_row_needs_recompute_for_buy_bearish():
             "pine_persisted": True,
             "signal_engine": "reversal_pro_v32",
             "features": {"last_confirmed_pivot_is_high": True},
+            "bar_ts": latest_closed_bar_open().isoformat(),
         }
     )
 
@@ -236,3 +313,89 @@ async def test_refresh_rows_from_candles_flips_stale_buy(
         rows[0].get("features") or {}
     ).get("last_confirmed_pivot_is_high") is True:
         assert rows[0]["action"] == "SELL"
+
+
+@pytest.mark.asyncio
+async def test_force_all_recomputes_whole_watchlist_board(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """ALG-94 systemic: force_all refreshes every symbol, not only BUY+BEARISH."""
+    from app import pine_refresh as pr
+
+    closes: list[float] = []
+    for i in range(30):
+        closes.append(100.0 + i * 2.0)
+    for i in range(20):
+        closes.append(160.0 - i * 3.0)
+    for i in range(25):
+        closes.append(100.0 + i * 3.0)
+    for i in range(30):
+        closes.append(175.0 - i * 3.0)
+
+    def _series(symbol: str) -> list[Candle]:
+        return [_bar(i, close=c, symbol=symbol) for i, c in enumerate(closes)]
+
+    async def _fake_candles(symbols):
+        return {str(s).upper(): _series(str(s).upper()) for s in symbols}
+
+    monkeypatch.setattr(pr, "persist_recomputed_pine_row", lambda row: None)
+    monkeypatch.setattr("app.marks._live_15m_candles_map", _fake_candles)
+
+    # Stale board: several BUY+BULLISH rows that old tip would skip (not BUY+BEARISH).
+    rows = [
+        {
+            "symbol": "BAJFINANCE",
+            "action": "BUY",
+            "pine_action": "BUY",
+            "trend": "BULLISH",
+            "pine_persisted": True,
+            "signal_engine": "reversal_pro_v32",
+            "bar_ts": latest_closed_bar_open().isoformat(),
+            "features": {
+                "last_confirmed_pivot_is_high": False,  # stale U1 pivot claim
+                "signal": 1,
+                "buysignal": 1,
+            },
+        },
+        {
+            "symbol": "RELIANCE",
+            "action": "BUY",
+            "pine_action": "BUY",
+            "trend": "BULLISH",
+            "pine_persisted": True,
+            "signal_engine": "reversal_pro_v32",
+            "bar_ts": latest_closed_bar_open().isoformat(),
+            "features": {
+                "last_confirmed_pivot_is_high": False,
+                "signal": 1,
+                "buysignal": 1,
+            },
+        },
+        {
+            "symbol": "INFY",
+            "action": "SELL",
+            "pine_action": "SELL",
+            "trend": "BEARISH",
+            "pine_persisted": True,
+            "signal_engine": "reversal_pro_v32",
+            "bar_ts": latest_closed_bar_open().isoformat(),
+            "features": {
+                "last_confirmed_pivot_is_high": True,
+                "signal": -1,
+                "sellsignal": 1,
+            },
+        },
+    ]
+    # Without force_all, BUY+BULLISH+stale-pivot-low+current-bar looks "healthy"
+    # and would blanket the board — force_all is what GET /signals uses.
+    assert not pr.row_needs_candle_recompute(rows[0])
+    assert not pr.row_needs_candle_recompute(rows[1])
+    meta = await pr.refresh_rows_from_candles(rows, cfg={}, force_all=True)
+    assert set(meta["recomputed"]) >= {"BAJFINANCE", "RELIANCE", "INFY"}
+    for row in rows:
+        pr.enforce_bearish_pivot_invariant([row])
+        pivot = (row.get("features") or {}).get("last_confirmed_pivot_is_high")
+        if pivot is True:
+            assert row["action"] == "SELL", row["symbol"]
+        if pivot is False:
+            assert row["action"] == "BUY", row["symbol"]

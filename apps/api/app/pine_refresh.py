@@ -1,9 +1,11 @@
 """API-side Reversal Pro refresh so Sunday/after-hours still flips Action.
 
 GET /signals previously only read stale ``pine.signal.*`` KV. When the worker
-is idle (after hours), that left VEDL Action=BUY + Trend=BEARISH even after
-tip #66. This module recomputes from live 15m candles on read and enforces
-the hard invariant: Trend BEARISH + lastConfirmedPivotIsHigh → Action SELL.
+is idle (after hours / morning before first scan), that left symbols like
+VEDL (BUY+BEARISH) and BAJFINANCE (BUY+BULLISH) stuck on an older U1 while
+the last confirmed Reversal Pro pivot was already a high (SELL). This module
+recomputes from live 15m candles on read and enforces: last confirmed pivot
+high → Action SELL / low → BUY (independent of Trend).
 """
 
 from __future__ import annotations
@@ -15,8 +17,9 @@ from typing import Any, Mapping, Sequence
 from options_portal_domain.pine_signals import (
     TREND_BEARISH,
     evaluate_pine_signal,
-    enforce_bearish_pivot_sell_action,
+    enforce_pivot_aligned_action,
     pine_params_from_config,
+    pine_signal_bar_is_current,
 )
 
 logger = logging.getLogger(__name__)
@@ -42,18 +45,38 @@ def _norm_trend(trend: Any) -> str:
     return "NEUTRAL"
 
 
-def row_needs_candle_recompute(row: Mapping[str, Any]) -> bool:
-    """True when KV/placeholder may be stale vs chart (esp. BUY+BEARISH).
+def _feature_pivot(feats: Mapping[str, Any]) -> bool | None:
+    pivot = feats.get("last_confirmed_pivot_is_high")
+    if pivot is None:
+        pivot = feats.get("lastConfirmedPivotIsHigh")
+    if pivot is None:
+        return None
+    if isinstance(pivot, bool):
+        return pivot
+    text = str(pivot).strip().lower()
+    if text in {"1", "true", "yes"}:
+        return True
+    if text in {"0", "false", "no"}:
+        return False
+    return None
 
-    Also forces refresh for HOLD (customs stuck on hybrid-era HOLD) and any
-    non-Reversal-Pro engine so Action/Trend never linger from old hybrid KV.
+
+def row_needs_candle_recompute(row: Mapping[str, Any]) -> bool:
+    """True when KV/placeholder may be stale vs chart (pivot / bar mismatch).
+
+    GET ``/signals`` uses ``force_all=True`` so the whole watchlist refreshes
+    every read; this helper remains for targeted callers / tests.
+
+    Forces refresh for:
+      - HOLD / non-Reversal-Pro engine / missing pine_persisted
+      - BUY+BEARISH (VEDL) or Action vs last pivot mismatch (any symbol)
+      - Stale ``bar_ts`` (action_no_hold keeps BUY forever otherwise)
+      - Missing pivot while Action is BUY/SELL (cannot prove last pivot)
     """
     action = _norm_action(row.get("action") or row.get("pine_action"))
     trend = _norm_trend(row.get("trend"))
     feats = dict(row.get("features") or {})
-    pivot = feats.get("last_confirmed_pivot_is_high")
-    if pivot is None:
-        pivot = feats.get("lastConfirmedPivotIsHigh")
+    pivot = _feature_pivot(feats)
     if action == "HOLD":
         return True
     engine = str(
@@ -63,9 +86,20 @@ def row_needs_candle_recompute(row: Mapping[str, Any]) -> bool:
         return True
     if action == "BUY" and trend == TREND_BEARISH:
         return True
+    # Action disagrees with last confirmed pivot (board-wide sticky bug).
+    if action == "BUY" and pivot is True:
+        return True
+    if action == "SELL" and pivot is False:
+        return True
+    # Without pivot evidence, sticky Action can blanket the watchlist — refresh.
+    if action in {"BUY", "SELL"} and pivot is None:
+        return True
     if trend == TREND_BEARISH and pivot is None:
         return True
     if not row.get("pine_persisted"):
+        return True
+    # action_no_hold keeps stale BUY/SELL across bars; recompute when bar lags.
+    if not pine_signal_bar_is_current(row.get("bar_ts")):
         return True
     return False
 
@@ -84,7 +118,7 @@ def apply_pine_result_to_row(
         for k, v in dict(result.features or {}).items()
         if isinstance(v, (int, float, bool, str, type(None)))
     }
-    action = enforce_bearish_pivot_sell_action(
+    action = enforce_pivot_aligned_action(
         action,
         trend,
         features=feats,
@@ -176,25 +210,29 @@ def persist_recomputed_pine_row(row: Mapping[str, Any]) -> None:
 
 
 def enforce_bearish_pivot_invariant(rows: Sequence[dict[str, Any]]) -> int:
-    """Screenshot guarantee: no BUY+BEARISH+pivot-high leaves the API.
+    """Screenshot guarantee: Action follows last confirmed pivot.
 
+    No BUY while ``lastConfirmedPivotIsHigh``; no SELL while pivot low.
     Mutates ``action`` / ``pine_action`` / ``display_action`` in place.
-    Returns how many rows were forced to SELL.
+    Returns how many rows were forced.
     """
     fixed = 0
     for row in rows:
         trend = _norm_trend(row.get("trend"))
         feats = dict(row.get("features") or {})
         before = _norm_action(row.get("action") or row.get("pine_action"))
-        after = enforce_bearish_pivot_sell_action(before, trend, features=feats)
+        after = enforce_pivot_aligned_action(before, trend, features=feats)
         if after != before:
             row["action"] = after
             row["pine_action"] = after
             row["display_action"] = after
             row["action_source"] = "pivot"
-            row["invariant_forced_sell"] = True
+            if after == "SELL":
+                row["invariant_forced_sell"] = True
+            else:
+                row["invariant_forced_buy"] = True
             fixed += 1
-        elif after == "SELL" and trend == TREND_BEARISH:
+        elif after == "SELL":
             # Keep pine_action aligned even when action already SELL.
             row["pine_action"] = "SELL"
             if row.get("display_action") == "BUY" and not row.get(
@@ -202,6 +240,13 @@ def enforce_bearish_pivot_invariant(rows: Sequence[dict[str, Any]]) -> int:
             ):
                 row["display_action"] = "SELL"
                 row["action"] = "SELL"
+        elif after == "BUY":
+            row["pine_action"] = "BUY"
+            if row.get("display_action") == "SELL" and not row.get(
+                "action_from_open_trade"
+            ):
+                row["display_action"] = "BUY"
+                row["action"] = "BUY"
     return fixed
 
 
